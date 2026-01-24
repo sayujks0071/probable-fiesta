@@ -1,0 +1,45 @@
+2026-01-24 04:41:36,615 - AdvancedOptionsRanker - WARNING - Could not import openalgo_mock. Sandbox mode unavailable.
+📊 DAILY OPTIONS STRATEGY ANALYSIS - 2026-01-24
+
+📈 MARKET DATA SUMMARY:
+- NIFTY Spot: 24500 | VIX: 18.5 (rising)
+- GIFT Nifty: 24550 | Gap: 0.2% | Bias: Neutral
+- News Sentiment: Neutral | Key Events: RBI Policy Meeting, Global Market Sell-off
+- PCR (NIFTY): 0.85 | OI Trend: Building
+
+🎯 STRATEGY OPPORTUNITIES (Ranked):
+
+1. Iron Condor - NIFTY - Score: 72.8/100
+   - Rationale: Neutral view on NIFTY, VIX 18.5 suggests 200 width wings.
+   - Filters Passed: ✅ VIX ✅ Liquidity ✅ Sentiment ✅ Greeks
+
+2. Short Strangle - NIFTY - Score: 72.8/100
+   - Rationale: Selling premium with wide strikes due to elevated VIX.
+   - Filters Passed: ✅ VIX ✅ Liquidity ✅ Sentiment ✅ Greeks
+
+3. Iron Condor - BANKNIFTY - Score: 72.8/100
+   - Rationale: Neutral view on BANKNIFTY, VIX 18.5 suggests 500 width wings.
+   - Filters Passed: ✅ VIX ✅ Liquidity ✅ Sentiment ✅ Greeks
+
+4. Short Strangle - BANKNIFTY - Score: 72.8/100
+   - Rationale: Selling premium with wide strikes due to elevated VIX.
+   - Filters Passed: ✅ VIX ✅ Liquidity ✅ Sentiment ✅ Greeks
+
+5. Iron Condor - SENSEX - Score: 72.8/100
+   - Rationale: Neutral view on SENSEX, VIX 18.5 suggests 500 width wings.
+   - Filters Passed: ✅ VIX ✅ Liquidity ✅ Sentiment ✅ Greeks
+
+🔧 STRATEGY ENHANCEMENTS APPLIED:
+- VIX Filter: Adjusted wing widths based on VIX level.
+- Sentiment Filter: Adjusted scores based on news sentiment.
+- Greeks Filter: Scored based on Gamma/Theta profile.
+
+💡 NEW STRATEGIES CREATED:
+- VIX-Based Iron Condor: Dynamically adjusts wings based on VIX.
+- Short Strangle: Included when VIX is high.
+- Gap Fade: Triggered by large GIFT Nifty gaps.
+
+⚠️ RISK WARNINGS:
+
+🚀 DEPLOYMENT PLAN:
+- Deploy: ['Iron Condor NIFTY', 'Short Strangle NIFTY', 'Iron Condor BANKNIFTY', 'Short Strangle BANKNIFTY', 'Iron Condor SENSEX']

@@ -18,15 +18,42 @@ import pandas as pd
 import numpy as np
 
 # Configure logging
+# Determine log file path
+log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "log", "strategies")
+if not os.path.exists(log_dir):
+    try:
+        os.makedirs(log_dir)
+    except:
+        # Fallback to current directory or temp
+        log_dir = "."
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('openalgo/strategies/logs/advanced_options_ranker.log')
+        logging.FileHandler(os.path.join(log_dir, 'advanced_options_ranker.log'))
     ]
 )
 logger = logging.getLogger("AdvancedOptionsRanker")
+
+# Add paths for OpenAlgo mock integration
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_strategies_dir = os.path.dirname(_script_dir)
+_utils_dir = os.path.join(_strategies_dir, 'utils')
+sys.path.insert(0, _utils_dir)
+
+# Try importing OpenAlgo Mock
+try:
+    from openalgo_mock import get_mock, set_current_timestamp, OpenAlgoAPIMock
+    MOCK_AVAILABLE = True
+except ImportError:
+    try:
+        from openalgo.strategies.utils.openalgo_mock import get_mock, set_current_timestamp, OpenAlgoAPIMock
+        MOCK_AVAILABLE = True
+    except ImportError:
+        logger.warning("Could not import openalgo_mock. Sandbox mode unavailable.")
+        MOCK_AVAILABLE = False
 
 # Constants
 DHAN_API_URL = "http://localhost:5002/api/v1"
@@ -35,10 +62,13 @@ INDICES = ["NIFTY", "BANKNIFTY", "SENSEX"]
 def get_timestamp_str():
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def fetch_market_data() -> Dict[str, Any]:
+def fetch_market_data(use_sandbox: bool = False) -> Dict[str, Any]:
     """
     Fetch market data from Dhan API and other sources.
     Includes Options Chain, Greeks, VIX, GIFT Nifty, and News Sentiment.
+
+    Args:
+        use_sandbox: If True, force usage of OpenAlgo Mock/Sandbox environment.
     """
     data = {
         "timestamp": get_timestamp_str(),
@@ -48,31 +78,87 @@ def fetch_market_data() -> Dict[str, Any]:
         "news_sentiment": {}
     }
 
-    # 1. Fetch Options Chain & Greeks (Dhan API)
-    try:
-        # Try connecting to the local API
-        # Using a short timeout to fail fast if not running
-        with httpx.Client(timeout=2.0) as client:
+    api_connected = False
+    mock_instance = None
+
+    # 1. Try Live API (unless sandbox forced)
+    if not use_sandbox:
+        try:
+            with httpx.Client(timeout=2.0) as client:
+                for index in INDICES:
+                    try:
+                        resp = client.get(f"{DHAN_API_URL}/optionchain", params={"symbol": index})
+                        if resp.status_code == 200:
+                            chain = resp.json()
+                            data["indices"][index] = chain
+                            api_connected = True
+                        else:
+                             logger.warning(f"API returned {resp.status_code} for {index}")
+                    except httpx.RequestError:
+                        pass
+        except Exception as e:
+            logger.warning(f"Error fetching live data: {e}. Switching to Sandbox/Mock mode.")
+
+    # 2. Fallback to OpenAlgo Sandbox/Mock if API failed or sandbox forced
+    if (use_sandbox or not api_connected) and MOCK_AVAILABLE:
+        logger.info("Using OpenAlgo Sandbox/Mock data.")
+
+        # Set a fixed timestamp for consistent testing (using a date present in the mock data filenames)
+        # Data files: OPTIDX_NIFTY_CE_12-Aug-2025_TO_12-Nov-2025.csv
+        # We'll use a date within this range
+        test_date = datetime.datetime(2025, 9, 15, 9, 30)
+        set_current_timestamp(test_date)
+        mock_instance = get_mock()
+
+        if mock_instance:
             for index in INDICES:
-                try:
-                    resp = client.get(f"{DHAN_API_URL}/optionchain", params={"symbol": index})
-                    if resp.status_code == 200:
-                        chain = resp.json()
-                        data["indices"][index] = chain
-                        # Calculate Greeks from chain if available, or fetch separately
-                        # For now assume chain has what we need or we mock if missing key fields
-                    else:
-                         logger.warning(f"API returned {resp.status_code} for {index}")
-                except httpx.RequestError:
-                    pass # Fallback to mock
+                # Sensex might not be in the mock data, but Nifty/BankNifty are
+                if index == "SENSEX": continue
 
-            # Fetch VIX, GIFT if available via API
-            # resp = client.get(f"{DHAN_API_URL}/market_data", params={"type": "vix"})
+                # Fetch chain from mock
+                resp = mock_instance.post_json("optionchain", {
+                    "underlying": index,
+                    "exchange": "NSE",
+                    "strike_count": 10
+                })
 
-    except Exception as e:
-        logger.warning(f"Error fetching live data: {e}. Falling back to mock data.")
+                if resp.get("status") == "success":
+                    # Transform mock format to expected format if necessary
+                    # Mock returns {"chain": [...]} which matches our expectation
+                    data["indices"][index] = resp
 
-    # Fill missing data with Mock/Simulated Data for robust execution
+                    # Also fetch/calculate Greeks via Mock
+                    # (Mock 'optionchain' result might already have what we need or we iterate)
+
+                    # Populate Greeks for the Spot/ATM
+                    # Simplified: Just grab the first strike's underlying value as spot
+                    if resp.get("chain"):
+                        # Get Spot Price
+                        first_strike = resp["chain"][0]
+                        # Mock chain structure: {strike: X, ce: {...}, pe: {...}}
+                        # Need to dig into CE/PE to get underlying/spot?
+                        # The mock `optionchain` implementation returns `ce` object with `ltp`, etc.
+                        # It doesn't explicitly return 'spot' in the root, but we can infer or fetch quote
+
+                        quote_resp = mock_instance.post_json("quotes", {"symbol": index, "exchange": "NSE"})
+                        if quote_resp.get("status") == "success":
+                            spot = quote_resp["data"]["ltp"]
+                            data["indices"][index]["spot"] = spot
+                            data["indices"][index]["max_pain"] = spot # Placeholder
+                            data["indices"][index]["pcr"] = 0.9 # Mock calculation
+                            data["indices"][index]["iv_rank"] = 55 # Mock
+                            data["indices"][index]["liquidity_score"] = 85
+
+                            # Fetch Greeks for ATM
+                            atm_strike = min(resp["chain"], key=lambda x: abs(x["strike"] - spot))
+                            atm_symbol = atm_strike["ce"]["symbol"]
+
+                            greeks_resp = mock_instance.post_json("optiongreeks", {"symbol": atm_symbol, "exchange": "NSE"})
+                            if greeks_resp.get("status") == "success":
+                                data["indices"][index]["greeks"] = greeks_resp["greeks"]
+
+
+    # 3. Fill missing critical data (VIX/Sentiment) if still empty (Mock doesn't provide VIX yet)
     if not data["vix"]:
         data["vix"] = {
             "current": 18.5,
@@ -93,8 +179,9 @@ def fetch_market_data() -> Dict[str, Any]:
             "key_events": ["RBI Policy Meeting", "Global Market Sell-off"]
         }
 
+    # Final fallback for indices if Mock failed or data missing (e.g. SENSEX)
     for index in INDICES:
-        if index not in data["indices"] or not data["indices"][index]:
+        if index not in data["indices"]:
             spot_price = 24500 if index == "NIFTY" else (52000 if index == "BANKNIFTY" else 80000)
             data["indices"][index] = {
                 "spot": spot_price,
@@ -133,21 +220,14 @@ def calculate_composite_score(strategy: Dict[str, Any], market_data: Dict[str, A
         iv_score = 100 - iv_rank
 
     # 2. Greeks Alignment Score (0-100)
-    # Check if strategy delta aligns with bias
-    # If Neutral, low delta is better. If Directional, higher delta is better.
     strat_bias = strategy.get("bias", "Neutral")
-    # For simulation, we assume the proposed strategy has appropriate Greeks
-    # But we check against market condition suitability
     greeks_score = 75 # Base
 
     if strat_bias == "Neutral":
-        # Neutral strategies prefer low realized volatility (Gamma risk)
-        # If Gamma is high (near expiry), risk is high -> lower score
         gamma = index_data.get("greeks", {}).get("gamma", 0.01)
         if gamma > 0.05: greeks_score -= 20
         else: greeks_score += 10
 
-    # Theta is good for sellers
     theta = index_data.get("greeks", {}).get("theta", -10)
     if strategy["type"] in ["Iron Condor", "Credit Spread"]:
         if theta < -20: greeks_score += 10 # High decay
@@ -263,7 +343,6 @@ def create_strategies(market_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             })
 
         # 3. Gap Fade Strategy (Contra-Trend)
-        # If gap is significant (>0.5%), trade against it
         if abs(gift_gap) > 0.5:
             fade_bias = "Bearish" if gift_gap > 0 else "Bullish"
             strategies.append({
@@ -271,9 +350,9 @@ def create_strategies(market_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "index": index,
                 "bias": fade_bias,
                 "params": {
-                    "strike": spot, # ATM
-                    "option_type": "PE" if fade_bias == "Bullish" else "CE", # Buy option to fade
-                    "dte": 0 # Intraday
+                    "strike": spot,
+                    "option_type": "PE" if fade_bias == "Bullish" else "CE",
+                    "dte": 0
                 },
                 "rationale": f"Fading the {gift_gap}% gap. Expecting reversal."
             })
@@ -313,7 +392,8 @@ def deploy_top_strategies():
     print(f"📊 DAILY OPTIONS STRATEGY ANALYSIS - {datetime.date.today()}\n")
 
     # 1. Fetch Data
-    market_data = fetch_market_data()
+    # Pass use_sandbox=False to attempt live connection first, but logic will fallback
+    market_data = fetch_market_data(use_sandbox=False)
 
     # Print Market Summary
     vix = market_data["vix"]
@@ -321,10 +401,12 @@ def deploy_top_strategies():
     sentiment = market_data["news_sentiment"]
 
     print("📈 MARKET DATA SUMMARY:")
-    print(f"- NIFTY Spot: {market_data['indices']['NIFTY']['spot']} | VIX: {vix['current']} ({vix['trend']})")
+    print(f"- NIFTY Spot: {market_data['indices'].get('NIFTY', {}).get('spot', 'N/A')} | VIX: {vix['current']} ({vix['trend']})")
     print(f"- GIFT Nifty: {gift['price']} | Gap: {gift['gap']}% | Bias: {gift['bias']}")
     print(f"- News Sentiment: {sentiment['label']} | Key Events: {', '.join(sentiment['key_events'])}")
-    print(f"- PCR (NIFTY): {market_data['indices']['NIFTY']['pcr']} | OI Trend: {market_data['indices']['NIFTY']['oi_trend']}")
+
+    nifty_data = market_data['indices'].get('NIFTY', {})
+    print(f"- PCR (NIFTY): {nifty_data.get('pcr', 'N/A')} | OI Trend: {nifty_data.get('oi_trend', 'N/A')}")
     print("\n🎯 STRATEGY OPPORTUNITIES (Ranked):\n")
 
     # 2. Generate Strategies
@@ -338,7 +420,6 @@ def deploy_top_strategies():
         scored_strategies.append(strategy)
 
     # 4. Rank and Filter
-    # Sort by score descending
     scored_strategies.sort(key=lambda x: x["score"], reverse=True)
 
     top_strategies = scored_strategies[:5]
@@ -370,12 +451,6 @@ def deploy_top_strategies():
 
     print("🚀 DEPLOYMENT PLAN:")
     print(f"- Deploy: {[s['type'] + ' ' + s['index'] for s in top_strategies]}")
-
-    # Simulate API Deployment Call
-    # try:
-    #     requests.post("http://localhost:5002/python/start", json={"strategies": top_strategies})
-    # except:
-    #     pass
 
 if __name__ == "__main__":
     deploy_top_strategies()
