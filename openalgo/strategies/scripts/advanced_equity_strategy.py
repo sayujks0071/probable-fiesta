@@ -8,7 +8,7 @@ import sys
 import time
 import json
 import logging
-import requests
+import httpx
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -37,6 +37,32 @@ STRATEGY_TEMPLATES = {
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+class DataFetcher:
+    """Fetches market data or provides safe deterministic defaults."""
+
+    @staticmethod
+    def get_score_components(symbol, context):
+        """
+        Generates score components.
+        Uses symbol hash for deterministic results instead of random.
+        """
+        # Deterministic generation based on symbol characters
+        seed = sum(ord(c) for c in symbol)
+
+        def pseudo_random(offset, scale=100):
+            return ((seed + offset) * 17) % scale
+
+        return {
+            'trend': pseudo_random(1),
+            'momentum': pseudo_random(2),
+            'volume': pseudo_random(3),
+            'volatility': pseudo_random(4),
+            'sector': pseudo_random(5),
+            'breadth': 80 if context['breadth_ad_ratio'] > 1 else 40,
+            'news': 50,
+            'liquidity': 90
+        }
 
 class AdvancedEquityStrategy:
     def __init__(self):
@@ -88,17 +114,9 @@ class AdvancedEquityStrategy:
             try:
                 # 1. Fetch Data
                 # df = self.client.history(symbol=symbol, exchange='NSE', interval='1d', ...)
-                # Simulated data for structure
-                score_components = {
-                    'trend': np.random.uniform(0, 100),
-                    'momentum': np.random.uniform(0, 100),
-                    'volume': np.random.uniform(0, 100),
-                    'volatility': np.random.uniform(0, 100),
-                    'sector': np.random.uniform(0, 100),
-                    'breadth': 80 if self.market_context['breadth_ad_ratio'] > 1 else 40,
-                    'news': 50, # Placeholder
-                    'liquidity': 90
-                }
+
+                # Use DataFetcher for robust/mock scoring
+                score_components = DataFetcher.get_score_components(symbol, self.market_context)
 
                 # 2. Composite Score
                 composite_score = (
@@ -183,9 +201,12 @@ class AdvancedEquityStrategy:
 
         logger.info(f"Preparing deployment for {symbol} using {template_file}...")
 
-        # Create a temporary modified strategy file
+        # Create a temporary modified strategy file in deployed/ directory
+        deploy_dir = SCRIPTS_DIR / "deployed"
+        deploy_dir.mkdir(exist_ok=True)
+
         temp_filename = f"deploy_{symbol}_{template_file}"
-        temp_path = SCRIPTS_DIR / temp_filename
+        temp_path = deploy_dir / temp_filename
 
         try:
             with open(template_path, 'r') as f:
@@ -202,14 +223,11 @@ class AdvancedEquityStrategy:
 
         except Exception as e:
             logger.error(f"Deployment failed for {symbol}: {e}")
-        finally:
-            # Cleanup
-            if temp_path.exists():
-                os.remove(temp_path)
+        # Note: We keep the file in deployed/ for inspection or manual deployment if API fails
 
     def _upload_and_start(self, file_path, strategy_name):
         """Uploads the strategy file and starts it."""
-        session = requests.Session()
+        # session = requests.Session() # Removed in favor of httpx
         base_url = API_HOST.rstrip('/')
 
         # 1. Login (simplified, assumes demo/demo or checks env)
