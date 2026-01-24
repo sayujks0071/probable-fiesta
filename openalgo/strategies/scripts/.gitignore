@@ -3,6 +3,7 @@
 
 # But keep this .gitignore file
 !.gitignore
+!advanced_options_ranker.py
 
 # Ignore log files if any
 *.log
