@@ -46,6 +46,7 @@ STRATEGY_NAME_MAP = {
     'trend_pullback': 'trend_pullback_strategy',
     'delta_neutral_iron_condor': 'delta_neutral_iron_condor_nifty',
     'options_ranker': 'options_ranker_strategy',
+    'gap_strategy': 'gap_strategy',
 }
 
 
