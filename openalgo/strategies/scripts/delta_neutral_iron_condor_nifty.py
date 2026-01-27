@@ -17,10 +17,10 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[3]))
 
 try:
-    from openalgo.strategies.utils.trading_utils import APIClient
+    from openalgo.strategies.utils.trading_utils import APIClient, PositionManager
 except ImportError:
-    logging.warning("Could not import APIClient from utils, using local definition or failing.")
-    from openalgo import api as APIClient
+    logging.warning("Could not import utils. Check path configuration.")
+    sys.exit(1)
 
 # Configuration
 SYMBOL = "NIFTY"
@@ -45,7 +45,7 @@ logger = logging.getLogger(f"IC_{SYMBOL}")
 class DeltaNeutralIronCondor:
     def __init__(self):
         self.api_client = APIClient(api_key=API_KEY, host=HOST)
-        self.positions = {}
+        self.pm = PositionManager(f"IC_{SYMBOL}")
         self.market_data = {}
 
     def _post(self, endpoint, payload):
@@ -94,11 +94,21 @@ class DeltaNeutralIronCondor:
 
     def get_option_chain(self):
         """Fetch option chain with greeks"""
-        # Simplified expiry: Next Thursday
         today = datetime.now()
+
+        # Find nearest Thursday (today or future)
         days_ahead = 3 - today.weekday()
-        if days_ahead <= 0: days_ahead += 7
-        next_expiry = (today + timedelta(days=days_ahead)).strftime("%d%b%y").upper()
+        if days_ahead < 0:
+            days_ahead += 7
+
+        expiry_date = today + timedelta(days=days_ahead)
+
+        # Enforce MIN_DTE
+        while (expiry_date - today).days < MIN_DTE:
+            expiry_date += timedelta(days=7)
+
+        next_expiry = expiry_date.strftime("%d%b%y").upper()
+        logger.info(f"Selected Expiry: {next_expiry} (DTE: {(expiry_date - today).days})")
 
         payload = {
             "underlying": SYMBOL,
@@ -169,13 +179,15 @@ class DeltaNeutralIronCondor:
                 except Exception as e:
                     logger.error(f"Failed to place leg {leg_name}: {e}")
 
+        self.pm.update_position(1, 0.0, 'BUY') # Mark strategy as active
         self.positions = strikes
+        logger.info("Iron Condor State Saved.")
 
     def manage_positions(self):
         """Monitor and adjust positions"""
         # Placeholder for complex management logic
         # For daily audit, we just log that we are holding
-        logger.info(f"Managing positions: {self.positions}")
+        logger.info(f"Managing active Iron Condor position. Net Qty: {self.pm.position}")
 
     def run(self):
         logger.info(f"Starting Delta Neutral Iron Condor for {SYMBOL}")
@@ -183,13 +195,18 @@ class DeltaNeutralIronCondor:
             try:
                 self.fetch_market_context()
 
-                if not self.positions:
+                if not self.pm.has_position():
                     if self.check_filters():
                         chain = self.get_option_chain()
                         if chain and chain.get('status') == 'success':
                             strikes = self.select_strikes(chain)
                             if strikes:
                                 self.place_iron_condor(strikes)
+                elif not self.positions and self.pm.has_position():
+                    # Recovered from restart, we know we have a position but lost strike details.
+                    # We mark it so we don't open new ones.
+                    logger.info("Active position detected from previous session.")
+                    self.positions = {'status': 'RECOVERED'}
                         else:
                             logger.warning(f"Option chain fetch failed: {chain}")
                 else:
