@@ -25,7 +25,8 @@ logger = logging.getLogger("MCX_Momentum_Enhanced")
 
 class MCXMomentumStrategy:
     def __init__(self, symbol, timeframe="15minute",
-                 global_trend="Neutral", usd_inr_volatility=0.0, seasonality_score=50):
+                 global_trend="Neutral", usd_inr_volatility=0.0, seasonality_score=50,
+                 fundamental_score=50, days_to_expiry=30):
         self.symbol = symbol
         self.timeframe = timeframe
 
@@ -33,6 +34,8 @@ class MCXMomentumStrategy:
         self.global_trend = global_trend # 'Up', 'Down', 'Neutral'
         self.usd_inr_volatility = usd_inr_volatility # percentage (e.g. 0.5)
         self.seasonality_score = seasonality_score # 0-100
+        self.fundamental_score = fundamental_score # 0-100
+        self.days_to_expiry = days_to_expiry # Days
 
         # Strategy Parameters
         self.ema_period = 20
@@ -73,6 +76,7 @@ class MCXMomentumStrategy:
         Logic: Risk 1% of capital. Stop loss distance = 2 * ATR.
         Size = (Capital * 0.01) / (2 * ATR)
         Adjustment: Reduce size if USD/INR volatility is high (> 0.5%).
+        Adjustment: Reduce size if close to expiry (< 10 days).
         """
         if atr == 0: return 0
 
@@ -85,8 +89,21 @@ class MCXMomentumStrategy:
         # If volatility > 0.5%, reduce size by 30%
         adjustment_factor = 1.0
         if self.usd_inr_volatility > 0.5:
-            adjustment_factor = 0.7
+            adjustment_factor *= 0.7
             logger.info(f"High USD/INR Volatility ({self.usd_inr_volatility}%) -> Reducing size by 30%")
+
+        # Expiry Adjustment
+        if self.days_to_expiry < 10:
+            adjustment_factor *= 0.5
+            logger.info(f"Close to Expiry ({self.days_to_expiry} days) -> Reducing size by 50%")
+
+        # Seasonality Adjustment
+        if self.seasonality_score > 80:
+            adjustment_factor *= 1.2
+            logger.info(f"Strong Seasonality ({self.seasonality_score}) -> Increasing size by 20%")
+        elif self.seasonality_score < 50:
+            adjustment_factor *= 0.8
+            logger.info(f"Weak Seasonality ({self.seasonality_score}) -> Reducing size by 20%")
 
         return int(raw_size * adjustment_factor)
 
@@ -117,7 +134,17 @@ class MCXMomentumStrategy:
             logger.info("Signal filtered by Global Trend (Up vs Sell)")
             return "NEUTRAL", 0
 
-        # 4. Position Sizing
+        # 4. Fundamental Filter
+        if self.fundamental_score < 40:
+            logger.info(f"Signal filtered by Weak Fundamentals (Score: {self.fundamental_score})")
+            return "NEUTRAL", 0
+
+        # 5. Expiry Filter
+        if self.days_to_expiry < 3:
+            logger.info(f"Signal filtered by Expiry Proximity ({self.days_to_expiry} days)")
+            return "NEUTRAL", 0
+
+        # 6. Position Sizing
         size = 0
         if signal != "NEUTRAL":
             size = self.calculate_position_size(last['close'], last['atr'])

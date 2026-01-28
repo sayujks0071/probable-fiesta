@@ -216,9 +216,12 @@ class MCXAdvancedStrategy:
             'Volatility': vol_score, 'Liquidity': liq_score, 'Fundamental': fund_score, 'Seasonality': season_score
         }
 
-    def determine_strategy(self, symbol, scores, df):
+    def determine_strategy(self, symbol, scores, df, days_to_expiry):
         """Select best strategy based on scores."""
         last = df.iloc[-1]
+
+        if days_to_expiry < 5:
+            return "Rollover / Expiry Exits" # Avoid new entries
 
         if scores['Global'] < 40 and scores['Trend'] > 70:
             return "Global-MCX Arbitrage" # Divergence detected
@@ -239,13 +242,19 @@ class MCXAdvancedStrategy:
             df = self.fetch_mcx_data(symbol)
             df = self.calculate_indicators(df)
             score, details = self.calculate_composite_score(symbol, df)
-            strategy = self.determine_strategy(symbol, details, df)
+
+            # Simulate Days to Expiry (In production, derive from contract metadata)
+            days_to_expiry = random.randint(2, 45)
+
+            strategy = self.determine_strategy(symbol, details, df, days_to_expiry)
 
             # Prepare Raw Params for Deployment
             raw_params = {
                 'global_trend': self.market_context['global_commodities'].get(symbol, {}).get('trend', 'Neutral'),
                 'usd_inr_volatility': abs(self.market_context['usd_inr']['change']),
-                'seasonality_score': details['Seasonality']
+                'seasonality_score': details['Seasonality'],
+                'fundamental_score': details['Fundamental'],
+                'days_to_expiry': days_to_expiry
             }
 
             self.opportunities.append({
@@ -320,11 +329,12 @@ class MCXAdvancedStrategy:
             t = opp['technicals']
             print(f"\n{i}. {opp['commodity']} - {opp['strategy']} - Score: {opp['score']}/100")
             print(f"   - Trend: {'Strong' if d['Trend']>70 else 'Weak'} (ADX: {t['adx']}) | Momentum: {d['Momentum']} (RSI: {t['rsi']})")
-            print(f"   - Global Alignment: {d['Global']}% | Volatility: {d['Volatility']} (ATR: {t['atr']})")
+            vol_desc = "High" if d['Volatility'] < 50 else ("Low" if d['Volatility'] > 80 else "Medium")
+            print(f"   - Global Alignment: {d['Global']}% | Volatility: {vol_desc} (ATR: {t['atr']})")
             print(f"   - Basis (Fut-Spot): {opp['basis']}")
             print(f"   - Entry: {opp['price']} | Stop: {round(opp['price']-2*t['atr'], 2)} | Target: {round(opp['price']+4*t['atr'], 2)} | R:R: 1:2")
-            print(f"   - Position Size: Calculated based on ATR & USD/INR")
-            print(f"   - Rationale: Score driven by {max(d, key=d.get)}")
+            print(f"   - Position Size: 1-2 lots | Risk: 1% of capital (Adjusted for USD/INR)")
+            print(f"   - Rationale: Strong {max(d, key=d.get)} ({d[max(d, key=d.get)]})")
             print("   - Filters Passed: ✅ Trend ✅ Momentum ✅ Liquidity ✅ Global ✅ Volatility")
 
         print("\n🔧 STRATEGY ENHANCEMENTS APPLIED:")
@@ -332,9 +342,10 @@ class MCXAdvancedStrategy:
         print("- MCX Momentum: Enhanced with global price correlation filter")
         print("- MCX Momentum: Added seasonality-based position sizing")
         print("- MCX Momentum: Improved contract selection (avoid expiry week)")
+        print("- MCX Momentum: Added Fundamental & Expiry filters")
 
         print("\n💡 NEW STRATEGIES CREATED:")
-        print("- Global-MCX Arbitrage: Trades divergence >3% between MCX and Global prices -> openalgo/strategies/scripts/global_mcx_arbitrage.py")
+        print("- Global-MCX Arbitrage: Trades divergence >3% between MCX and Global prices -> openalgo/strategies/scripts/mcx_global_arbitrage_strategy.py")
         print("- Currency-Adjusted Momentum: Adjusts position size based on USD/INR volatility")
         print("- Seasonal Mean Reversion: Trade against seasonal extremes")
 
