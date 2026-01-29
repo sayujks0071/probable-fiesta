@@ -1,0 +1,6 @@
+# Ignore credential files
+.credentials.json
+.credentials.enc
+.salt
+__pycache__/
+*.pyc
