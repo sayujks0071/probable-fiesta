@@ -39,8 +39,8 @@ class SuperTrendVWAPStrategy:
         self.sector_benchmark = sector_benchmark
 
         # Optimization Parameters
-        self.threshold = 155  # Modified on 2026-01-27: Low Win Rate (40.0% < 60%). Tightening filters (threshold +5).
-        self.stop_pct = 1.8  # Modified on 2026-01-27: Low R:R (1.00 < 1.5). Tightening stop_pct to improve R:R.
+        self.threshold = 155
+        self.stop_pct = 1.8
 
         self.logger = logging.getLogger(f"VWAP_{symbol}")
         self.client = APIClient(api_key=self.api_key, host=self.host)
@@ -79,6 +79,11 @@ class SuperTrendVWAPStrategy:
         except:
             return True # Fail open if sector data missing
 
+    def get_vix(self):
+        # Simulated VIX for dynamic deviation
+        # Ideally fetch 'INDIA VIX'
+        return 15.0 # Default
+
     def run(self):
         self.logger.info(f"Starting SuperTrend VWAP for {self.symbol}")
 
@@ -106,19 +111,25 @@ class SuperTrendVWAPStrategy:
                 # Sector Check
                 sector_bullish = self.check_sector_correlation()
 
+                # Dynamic Deviation based on VIX
+                vix = self.get_vix()
+                dev_threshold = 0.02
+                if vix > 20:
+                    dev_threshold = 0.01 # Tighten in high volatility
+                elif vix < 12:
+                    dev_threshold = 0.03 # Loosen in low volatility
+
                 # Logic
                 is_above_vwap = last['close'] > last['vwap']
                 is_volume_spike = last['volume'] > df['volume'].mean() * (self.threshold / 100.0)
                 is_above_poc = last['close'] > poc_price
-                is_not_overextended = abs(last['vwap_dev']) < 0.02
+                is_not_overextended = abs(last['vwap_dev']) < dev_threshold
 
                 if self.pm and self.pm.has_position():
-                    # Manage Position (Simple Stop/Target handled by PM logic usually, or here)
-                    # For brevity, rely on logging or external monitor
                     pass
                 else:
                     if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish:
-                        self.logger.info(f"VWAP Crossover Buy. POC: {poc_price:.2f}, Sector: Bullish")
+                        self.logger.info(f"VWAP Crossover Buy. POC: {poc_price:.2f}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}")
                         if self.pm:
                             self.pm.update_position(self.quantity, last['close'], 'BUY')
 
