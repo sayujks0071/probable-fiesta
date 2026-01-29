@@ -31,7 +31,7 @@ MAX_DTE = 14
 SHORT_DELTA_TARGET = 0.20
 LONG_DELTA_TARGET = 0.05
 MAX_NET_DELTA = 0.10
-VIX_MIN_SELL = 15
+VIX_MIN_SELL = 20  # Updated to 20 as per prompt
 STOP_LOSS_MULTIPLIER = 2.0
 TARGET_PROFIT_PCT = 0.50
 
@@ -78,7 +78,7 @@ class DeltaNeutralIronCondor:
                 self.market_data['vix'] = df['close'].iloc[-1]
                 self.logger.info(f"Market VIX: {self.market_data['vix']}")
             else:
-                self.market_data['vix'] = 22.0 # Fallback
+                self.market_data['vix'] = 22.0 # Fallback > 20 for testing
                 self.logger.warning("Could not fetch INDIA VIX, using fallback 22.0")
 
             # Sentiment derived from Price vs SMA
@@ -86,12 +86,21 @@ class DeltaNeutralIronCondor:
                                               start_date=(datetime.now()-timedelta(days=5)).strftime("%Y-%m-%d"),
                                               end_date=datetime.now().strftime("%Y-%m-%d"))
             if not nifty_df.empty:
-                change = nifty_df['close'].iloc[-1] - nifty_df['close'].iloc[-2]
+                close = nifty_df['close'].iloc[-1]
+                prev = nifty_df['close'].iloc[-2]
+                change = close - prev
                 self.market_data['sentiment'] = "Positive" if change > 0 else "Negative"
+
+                # GIFT Nifty Gap Estimation (Mock: using today's open vs prev close)
+                # Ideally fetch real GIFT data, here using Nifty Open gap as proxy
+                open_price = nifty_df['open'].iloc[-1]
+                gap_pct = ((open_price - prev) / prev) * 100
+                self.market_data['gift_gap'] = gap_pct
+                self.logger.info(f"Est. Gap: {gap_pct:.2f}%")
             else:
                 self.market_data['sentiment'] = "Neutral"
+                self.market_data['gift_gap'] = 0.0
 
-            self.market_data['gift_gap'] = 0.0
         except Exception as e:
             self.logger.error(f"Error fetching market context: {e}")
             self.market_data['vix'] = 22.0
@@ -125,34 +134,32 @@ class DeltaNeutralIronCondor:
         vix = self.market_data.get('vix', 20)
 
         # --- Dynamic Wing Width based on VIX (Refined) ---
-        # Low VIX (<13): Very tight wings, Market is complacent. Risk is expansion.
+        # Low VIX (<13): Very tight wings.
         # Mid VIX (13-18): Standard wings.
         # High VIX (18-24): Wide wings.
-        # Extreme VIX (>24): Very wide wings or stay out.
+        # Extreme VIX (>24): Very wide wings.
 
         if vix < 13:
-            short_dist_pct = 0.012 # 1.2% OTM
-            wing_width_pct = 0.008 # 0.8% Width
+            short_dist_pct = 0.012
+            wing_width_pct = 0.008
         elif vix < 18:
-            short_dist_pct = 0.020 # 2.0% OTM
-            wing_width_pct = 0.015 # 1.5% Width
+            short_dist_pct = 0.020
+            wing_width_pct = 0.015
         elif vix < 24:
-            short_dist_pct = 0.030 # 3.0% OTM
-            wing_width_pct = 0.020 # 2.0% Width
+            short_dist_pct = 0.030
+            wing_width_pct = 0.020
         else: # Extreme
-            short_dist_pct = 0.040 # 4.0% OTM
-            wing_width_pct = 0.025 # 2.5% Width
+            short_dist_pct = 0.040
+            wing_width_pct = 0.025
 
-        # Skew based on Gap (Delta Minimization Attempt)
-        # If Gap Up, Call premiums inflate? Actually usually Puts have skew.
-        # If Gap Up, we might want to shift range UP to be Delta Neutral relative to NEW price range expectation.
-
+        # Skew based on Gap
         gap_bias = self.market_data.get('gift_gap', 0.0)
         skew_pct = 0.0
-        if gap_bias > 0.5:
-            skew_pct = 0.005 # Shift Up
-        elif gap_bias < -0.5:
-            skew_pct = -0.005 # Shift Down
+        # If Gap Up (>0.3%), Shift Range Up slightly to align with momentum/support
+        if gap_bias > 0.3:
+            skew_pct = 0.005 # Shift Up 0.5%
+        elif gap_bias < -0.3:
+            skew_pct = -0.005 # Shift Down 0.5%
 
         short_ce_strike = int(round(spot * (1 + short_dist_pct + skew_pct) / 50) * 50)
         long_ce_strike = int(round(spot * (1 + short_dist_pct + wing_width_pct + skew_pct) / 50) * 50)
@@ -177,7 +184,6 @@ class DeltaNeutralIronCondor:
 
         if vix < VIX_MIN_SELL:
             self.logger.info(f"VIX {vix} too low for selling (Min {VIX_MIN_SELL})")
-            # In low VIX, maybe switch to Calendars? For now just skip.
             return False
 
         # Sentiment Filter
@@ -194,7 +200,7 @@ class DeltaNeutralIronCondor:
 
         if vix > 30:
             self.logger.warning(f"High VIX ({vix}) detected. Reducing position size by 50%.")
-            return base_qty
+            return int(base_qty * 0.5)
 
         if vix > 25:
             return base_qty
