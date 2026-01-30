@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+
+# [Optimization 2026-01-30] Changes: threshold: 155 -> 150 (Lowered due to Rejection 80.0%), stop_pct: 1.8 -> 1.6 (Tightened due to R:R 0.00)
 SuperTrend VWAP Strategy
 VWAP mean reversion with volume profile analysis, Enhanced Sector RSI Filter, and Dynamic Risk.
 """
@@ -70,8 +72,11 @@ class SuperTrendVWAPStrategy:
         self.sector_benchmark = sector_benchmark
 
         # Optimization Parameters
-        self.threshold = 155
-        self.stop_pct = 1.8
+        self.threshold = 150
+        self.stop_pct = 1.6
+
+        # Allow override from kwargs if provided (e.g. from argparse wrappers)
+        # But here we stick to defaults or params injected later
 
         # State
         self.trailing_stop = 0.0
@@ -321,10 +326,13 @@ class SuperTrendVWAPStrategy:
                 # Logic
                 is_above_vwap = last['close'] > last['vwap']
 
-                # Dynamic Volume Threshold (Mean + 1.5 StdDev)
+                # Dynamic Volume Threshold (Mean + Threshold/100 StdDev)
+                # self.threshold = 150 -> 1.55 StdDev
                 vol_mean = df['volume'].rolling(20).mean().iloc[-1]
                 vol_std = df['volume'].rolling(20).std().iloc[-1]
-                dynamic_threshold = vol_mean + (1.5 * vol_std)
+
+                vol_mult = self.threshold / 100.0
+                dynamic_threshold = vol_mean + (vol_mult * vol_std)
                 is_volume_spike = last['volume'] > dynamic_threshold
 
                 is_above_poc = last['close'] > poc_price
@@ -373,6 +381,7 @@ def run_strategy():
     parser.add_argument("--host", type=str, default='http://127.0.0.1:5001', help="Host")
     parser.add_argument("--ignore_time", action="store_true", help="Ignore market hours")
     parser.add_argument("--sector", type=str, default="NIFTY BANK", help="Sector Benchmark")
+    parser.add_argument("--stop_pct", type=float, help="Stop Loss Percentage")
     parser.add_argument("--logfile", type=str, help="Log file path")
 
     args = parser.parse_args()
@@ -397,7 +406,7 @@ def run_strategy():
     if not logfile:
         log_dir = os.path.join(strategies_dir, "..", "log", "strategies")
         os.makedirs(log_dir, exist_ok=True)
-        logfile = os.path.join(log_dir, f"{symbol}_supertrend.log")
+        logfile = os.path.join(log_dir, f"supertrend_vwap_strategy_{symbol}.log")
 
     strategy = SuperTrendVWAPStrategy(
         symbol=symbol,
@@ -408,6 +417,8 @@ def run_strategy():
         sector_benchmark=args.sector,
         logfile=logfile
     )
+    if args.stop_pct:
+        strategy.stop_pct = args.stop_pct
     strategy.run()
 
 # Module level wrapper for SimpleBacktestEngine
