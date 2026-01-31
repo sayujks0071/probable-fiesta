@@ -46,6 +46,20 @@ def get_running_strategies():
             log_match = re.search(r'--logfile\s+([^\s]+)', cmdline)
             logfile = log_match.group(1) if log_match else None
 
+            # Auto-detect logfile if not provided
+            if not logfile and symbol != "UNKNOWN":
+                 # Heuristic based on common strategy patterns
+                 possible_names = [
+                     f"{symbol}_supertrend.log",
+                     f"{symbol}_{script_name.replace('.py', '')}.log",
+                     f"{script_name.replace('.py', '')}_{symbol}.log"
+                 ]
+                 for name in possible_names:
+                     candidate = os.path.join(LOG_DIR, name)
+                     if os.path.exists(candidate):
+                         logfile = candidate
+                         break
+
             strategies.append({
                 "pid": pid,
                 "script": script_name,
