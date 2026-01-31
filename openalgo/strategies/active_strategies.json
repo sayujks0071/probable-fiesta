@@ -21,7 +21,7 @@
     },
     "AI_Hybrid_RELIANCE": {
         "strategy": "ai_hybrid_reversion_breakout",
-        "symbol": "RELIANCE",
+        "underlying": "RELIANCE",
         "exchange": "NSE",
         "params": {
             "rsi_lower": 30,

@@ -118,7 +118,7 @@ class SymbolResolver:
             # 2. Symbol matches Name + 'M' + Date (e.g., SILVERM...) vs SILVER...
 
             # Check for explicitly 'MINI' or 'M' suffix on underlying name
-            mini_pattern = r'({}M|{}MINI)'.format(underlying, underlying)
+            mini_pattern = r'(?:{}M|{}MINI)'.format(underlying, underlying)
 
             mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
 
