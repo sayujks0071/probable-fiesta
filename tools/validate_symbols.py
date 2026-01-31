@@ -81,6 +81,9 @@ def scan_files_for_hardcoded_symbols(instruments):
     issues = []
     strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
 
+    if not os.path.exists(strategies_dir):
+        return issues
+
     for root, dirs, files in os.walk(strategies_dir):
         # Exclude tests
         if 'tests' in dirs:
