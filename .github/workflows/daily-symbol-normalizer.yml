@@ -25,6 +25,10 @@ jobs:
         run: |
           pip install pandas httpx
 
+      - name: Get Date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
       - name: A) Sync Instruments
         id: sync
         run: python3 tools/sync_instruments.py
@@ -67,14 +71,14 @@ jobs:
         if: steps.gate.outputs.gate_ok == 'true'
         uses: peter-evans/create-pull-request@v5
         with:
-          branch: chore/symbols-daily
-          title: "chore: Daily Symbol Normalization"
+          branch: chore/symbols-daily-${{ steps.date.outputs.date }}
+          title: "chore: Daily Symbol Normalization ${{ steps.date.outputs.date }}"
           body: |
-            Daily symbol normalization report.
+            Daily symbol normalization report for ${{ steps.date.outputs.date }}.
             See attached audit report for details.
 
             [Audit Report](reports/symbol_audit.md)
-          commit-message: "chore: normalize symbols"
+          commit-message: "chore: normalize symbols ${{ steps.date.outputs.date }}"
           add-paths: |
             openalgo/strategies/**/*.py
             reports/symbol_audit.md

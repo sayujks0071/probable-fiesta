@@ -32,6 +32,23 @@ def normalize_symbol(symbol):
 
     return symbol
 
+def format_mcx_symbol(base_symbol, expiry_date, mini=False):
+    """
+    Format MCX symbol strictly.
+    Example: GOLD + date(2026,2,5) + mini=True -> GOLDM05FEB26FUT
+    """
+    symbol = base_symbol.upper()
+    if mini:
+        # Append M for mini contracts if not already present/implied
+        # Heuristic: Append M
+        symbol += "M"
+
+    day = expiry_date.day
+    month = expiry_date.strftime("%b").upper()
+    year = expiry_date.strftime("%y") # 2 digit year
+
+    return f"{symbol}{day:02d}{month}{year}FUT"
+
 def is_market_open():
     """
     Check if NSE market is open (09:15 - 15:30 IST) on weekdays.
