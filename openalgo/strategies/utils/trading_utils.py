@@ -10,6 +10,15 @@ import httpx
 import pandas as pd
 import numpy as np
 
+# Try to import RiskManager
+try:
+    from risk_manager import RiskManager
+except ImportError:
+    try:
+        from openalgo.strategies.utils.risk_manager import RiskManager
+    except ImportError:
+        RiskManager = None
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("TradingUtils")
@@ -105,7 +114,16 @@ class PositionManager:
         self.entry_price = 0.0
         self.pnl = 0.0
 
+        # Risk Manager Integration
+        self.rm = RiskManager() if RiskManager else None
+
         self.load_state()
+
+    def check_risk(self, qty, price, side):
+        """Delegate to RiskManager."""
+        if self.rm:
+            return self.rm.can_trade(self.symbol, qty, price, side)
+        return True
 
     def load_state(self):
         if self.state_file.exists():
@@ -148,6 +166,9 @@ class PositionManager:
                 self.pnl += realized_pnl
                 logger.info(f"Closed Short. PnL: {realized_pnl}")
 
+                if self.rm:
+                    self.rm.update_pnl(realized_pnl)
+
             self.position += qty
 
         elif side == 'SELL':
@@ -158,6 +179,9 @@ class PositionManager:
                 realized_pnl = (price - self.entry_price) * qty
                 self.pnl += realized_pnl
                 logger.info(f"Closed Long. PnL: {realized_pnl}")
+
+                if self.rm:
+                    self.rm.update_pnl(realized_pnl)
 
             self.position -= qty
 
@@ -258,9 +282,12 @@ class APIClient:
     """
     Fallback API Client using httpx if openalgo package is missing.
     """
-    def __init__(self, api_key, host="http://127.0.0.1:5001"):
-        self.api_key = api_key
-        self.host = host.rstrip('/')
+    def __init__(self, api_key=None, host=None):
+        self.api_key = api_key or os.getenv('OPENALGO_APIKEY')
+        self.host = (host or os.getenv('OPENALGO_HOST', "http://127.0.0.1:5001")).rstrip('/')
+
+        if not self.api_key:
+             logger.warning("APIClient initialized without API Key. Calls may fail.")
 
     def history(self, symbol, exchange="NSE", interval="5m", start_date=None, end_date=None, max_retries=3):
         """Fetch historical data with retry logic and exponential backoff"""

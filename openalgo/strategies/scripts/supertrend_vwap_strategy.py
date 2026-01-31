@@ -8,6 +8,7 @@ import sys
 import time
 import logging
 import argparse
+import signal
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -24,39 +25,13 @@ try:
     from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
     from symbol_resolver import SymbolResolver
 except ImportError:
+    # Fallback for direct execution or different structure
     try:
-        sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-        from utils.symbol_resolver import SymbolResolver
+        from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+        from openalgo.strategies.utils.symbol_resolver import SymbolResolver
     except ImportError:
-        try:
-            from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
-        except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            SymbolResolver = None
-            normalize_symbol = lambda s: s
-            is_market_open = lambda: True
-            def calculate_intraday_vwap(df):
-                df = df.copy()
-                if 'datetime' not in df.columns:
-                    if isinstance(df.index, pd.DatetimeIndex):
-                        df['datetime'] = df.index
-                    elif 'timestamp' in df.columns:
-                        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-                    else:
-                        df['datetime'] = pd.to_datetime(df.index)
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df['date'] = df['datetime'].dt.date
-                typical_price = (df['high'] + df['low'] + df['close']) / 3
-                df['pv'] = typical_price * df['volume']
-                df['cum_pv'] = df.groupby('date')['pv'].cumsum()
-                df['cum_vol'] = df.groupby('date')['volume'].cumsum()
-                df['vwap'] = df['cum_pv'] / df['cum_vol']
-                df['vwap_dev'] = (df['close'] - df['vwap']) / df['vwap']
-                return df
+        print("Error: Could not import trading_utils. Check python path.")
+        sys.exit(1)
 
 class SuperTrendVWAPStrategy:
     def __init__(self, symbol, quantity, api_key=None, host=None, ignore_time=False, sector_benchmark='NIFTY BANK', logfile=None, client=None):
@@ -272,7 +247,16 @@ class SuperTrendVWAPStrategy:
         self.symbol = normalize_symbol(self.symbol)
         self.logger.info(f"Starting SuperTrend VWAP for {self.symbol}")
 
-        while True:
+        # Graceful Shutdown
+        self.running = True
+        def signal_handler(sig, frame):
+            self.logger.info("Shutdown signal received.")
+            self.running = False
+
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
+        while self.running:
             try:
                 if not self.ignore_time and not is_market_open():
                     time.sleep(60)
@@ -382,15 +366,27 @@ class SuperTrendVWAPStrategy:
                     if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish:
                         adj_qty = int(self.quantity * size_multiplier)
                         if adj_qty < 1: adj_qty = 1 # Minimum 1
-                        self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
+
+                        # Risk Check
+                        can_trade = True
                         if self.pm:
-                            self.pm.update_position(adj_qty, last['close'], 'BUY')
-                            self.trailing_stop = last['close'] - (2 * self.atr)
+                            can_trade = self.pm.check_risk(adj_qty, last['close'], 'BUY')
+
+                        if can_trade:
+                            self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
+                            if self.pm:
+                                self.pm.update_position(adj_qty, last['close'], 'BUY')
+                                self.trailing_stop = last['close'] - (2 * self.atr)
+                        else:
+                            self.logger.warning("Trade skipped due to Risk Limits.")
 
             except Exception as e:
                 self.logger.error(f"Error in SuperTrend VWAP strategy for {self.symbol}: {e}", exc_info=True)
 
-            time.sleep(60)
+            # Interruptible sleep
+            for _ in range(60):
+                if not self.running: break
+                time.sleep(1)
 
 def run_strategy():
     parser = argparse.ArgumentParser(description="SuperTrend VWAP Strategy")
