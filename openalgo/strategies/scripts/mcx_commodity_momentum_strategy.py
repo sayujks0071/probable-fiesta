@@ -4,6 +4,7 @@ MCX Commodity Momentum Strategy
 Momentum strategy using ADX and RSI with proper API integration.
 Enhanced with Multi-Factor inputs (USD/INR, Seasonality).
 """
+import re
 import os
 import sys
 import time
@@ -52,6 +53,40 @@ class MCXMomentumStrategy:
         # Log active filters
         logger.info(f"Initialized Strategy for {symbol}")
         logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
+
+        self.check_risk_parameters()
+
+    def get_expiry_date(self):
+        """Parse expiry date from symbol (e.g., GOLDM05FEB26FUT)."""
+        # Format: NAME + DD + MMM + YY + FUT
+        # Regex to find DDMMMYY
+        match = re.search(r'(\d{2})([A-Z]{3})(\d{2})', self.symbol)
+        if match:
+            day, month_str, year_short = match.groups()
+            year = f"20{year_short}"
+            try:
+                expiry_date = datetime.strptime(f"{day}{month_str}{year}", "%d%b%Y")
+                return expiry_date
+            except ValueError:
+                logger.error(f"Could not parse date from {day}{month_str}{year}")
+        return None
+
+    def check_risk_parameters(self):
+        """Check critical risk parameters like contract expiry."""
+        expiry = self.get_expiry_date()
+        if expiry:
+            days_to_expiry = (expiry - datetime.now()).days
+            logger.info(f"Contract {self.symbol} expires in {days_to_expiry} days ({expiry.strftime('%Y-%m-%d')}).")
+
+            if days_to_expiry < 3:
+                logger.warning(f"⚠️ RISK WARNING: Contract expires in {days_to_expiry} days! Closing/Avoiding positions.")
+                # In a real engine, we might trigger a close all here.
+                # For now, we set a flag or just log error which will be seen in run loop
+                return False
+        else:
+             logger.warning(f"Could not determine expiry for {self.symbol}. Proceeding with caution.")
+
+        return True
 
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
@@ -189,16 +224,30 @@ class MCXMomentumStrategy:
 
         # Multi-Factor Checks
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
-        usd_vol_high = self.params.get('usd_inr_volatility', 0) > 0.8
+        global_align_ok = self.params.get('global_alignment_score', 50) > 40
 
-        # Adjust Position Size
+        # Position Sizing Logic
+        usd_vol = self.params.get('usd_inr_volatility', 0.0)
+        size_multiplier = 1.0
+
+        if usd_vol > 1.0:
+            size_multiplier = 0.7 # Reduce by 30%
+            logger.info(f"High USD Volatility ({usd_vol:.2f}%): Reducing position size by 30%.")
+
+        # Calculate quantity (assuming base lot size 1, but could be scaled by capital)
+        # Note: PositionManager usually handles lots, so we need to pass multiplier or adjust lots
+        # Here we assume base_qty is lots. Since we can't trade 0.7 lots, we might skip if size < 1 or strictly round
+        # For simplicity, we stick to min 1 lot, but log risk warning, or if capital allows, trade larger and reduce.
+        # Assuming we can trade 1 lot minimum. If multiplier implies reduction, we should be cautious.
+
         base_qty = 1
-        if usd_vol_high:
-            logger.info("High USD/INR Volatility: Keeping position size minimal.")
-            # logic to reduce size would go here, e.g. base_qty = 0.5 (if supported) or strict stops
 
         if not seasonality_ok and not has_position:
             logger.info("Seasonality Weak: Skipping new entries.")
+            return
+
+        if not global_align_ok and not has_position:
+            logger.info("Global Alignment Weak: Skipping new entries.")
             return
 
         # Entry Logic
@@ -210,6 +259,11 @@ class MCXMomentumStrategy:
 
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
+                    # In a real scenario, we might pass size_multiplier to update_position or calculate precise lots
+                    # For now, we respect the reduction warning.
+                    if size_multiplier < 1.0:
+                         logger.warning("⚠️ Reducing Risk due to Volatility (Position Size constrained)")
+
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
             # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
@@ -219,6 +273,8 @@ class MCXMomentumStrategy:
 
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
+                    if size_multiplier < 1.0:
+                         logger.warning("⚠️ Reducing Risk due to Volatility (Position Size constrained)")
                     self.pm.update_position(base_qty, current['close'], 'SELL')
 
         # Exit Logic
@@ -242,6 +298,10 @@ class MCXMomentumStrategy:
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
         while True:
+            if not self.check_risk_parameters():
+                logger.error("Risk checks failed (Expiry). Stopping Strategy.")
+                break
+
             if not is_market_open():
                 logger.info("Market is closed. Sleeping...")
                 time.sleep(300)

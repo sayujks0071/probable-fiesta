@@ -9,6 +9,11 @@ import httpx
 from datetime import datetime
 from pathlib import Path
 
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
+
 # Add utils directory to path for imports
 utils_path = Path(__file__).parent.parent / 'utils'
 if str(utils_path) not in sys.path:
@@ -34,8 +39,9 @@ API_KEY = os.getenv('OPENALGO_APIKEY', 'demo_key')
 # Strategy Parameters
 PARAMS = {
     'divergence_threshold': 3.0, # Percent
-    'convergence_threshold': 1.5, # Percent (increased from 0.5% to prevent premature exits)
+    'convergence_threshold': 1.5, # Percent
     'lookback_period': 20,
+    'multiplier': 1.0, # Conversion multiplier (Global -> MCX units)
 }
 
 # Setup Logging
@@ -54,43 +60,76 @@ class MCXGlobalArbitrageStrategy:
         self.cooldown_seconds = 300  # 5 minutes cooldown between trades
 
     def fetch_data(self):
-        """Fetch live MCX and Global prices from Kite API via OpenAlgo."""
-        if not self.api_client:
-            logger.error("❌ CRITICAL: No API client available. Cannot fetch real data. Strategy stopping.")
-            raise RuntimeError("Cannot trade without real API data. Strategy requires API client.")
+        """Fetch live MCX (Kite) and Global (yfinance/Kite) prices."""
         
         try:
-            logger.info(f"Fetching REAL data for {self.symbol} vs {self.global_symbol}...")
+            logger.info(f"Fetching data for {self.symbol} vs {self.global_symbol}...")
+            
+            mcx_price = 0.0
+            global_price_inr = 0.0
 
-            # Fetch REAL MCX Price from Kite API
-            mcx_quote = self.api_client.get_quote(self.symbol, exchange="MCX")
+            # 1. Fetch MCX Price (REAL)
+            if self.api_client:
+                mcx_quote = self.api_client.get_quote(self.symbol, exchange="MCX")
+                if mcx_quote and 'ltp' in mcx_quote:
+                    mcx_price = float(mcx_quote['ltp'])
+                else:
+                     logger.warning(f"Could not fetch MCX quote for {self.symbol}. Using fallback/last known.")
+                     # If data exists, use last
+                     if not self.data.empty: mcx_price = self.data.iloc[-1]['mcx_price']
             
-            if not mcx_quote or 'ltp' not in mcx_quote:
-                logger.error(f"❌ CRITICAL: Failed to fetch REAL MCX price for {self.symbol} from Kite API.")
-                logger.error("❌ Strategy STOPPING - Cannot trade without real market data.")
-                raise RuntimeError(f"Cannot fetch real MCX price for {self.symbol}. Strategy requires real Kite API data.")
-            
-            mcx_price = float(mcx_quote['ltp'])
+            if mcx_price == 0.0 and self.api_client:
+                 raise RuntimeError(f"Cannot fetch MCX price for {self.symbol}")
 
-            # For global price, we need to fetch from a global gold API or use a conversion
-            # Since we don't have direct access to global gold prices, we'll use MCX price as reference
-            # and note that this strategy requires a real global price source
-            # For now, if global_symbol is not available via API, we'll skip trading
-            global_quote = self.api_client.get_quote(self.global_symbol, exchange="MCX")
+            # 2. Fetch Global Price
+            # Check if Global Symbol is a Yahoo Ticker (ends with =F or contains =)
+            is_yahoo = '=' in self.global_symbol or '^' in self.global_symbol
             
-            if not global_quote or 'ltp' not in global_quote:
-                logger.error(f"❌ CRITICAL: Cannot fetch REAL global price for {self.global_symbol} from Kite API.")
-                logger.error("❌ Strategy STOPPING - Cannot trade without real global price data.")
-                raise RuntimeError(f"Cannot fetch real global price for {self.global_symbol}. Strategy requires real Kite API data.")
+            if is_yahoo and yf:
+                # Fetch Global Asset + USDINR
+                tickers = f"{self.global_symbol} INR=X"
+                data = yf.download(tickers, period="1d", interval="1m", progress=False)
+
+                if not data.empty:
+                    # Handle Multi-Index
+                    closes = data['Close'] if 'Close' in data.columns else data
+
+                    # Get latest prices
+                    g_price = 0.0
+                    usd_price = 84.0 # Fallback
+
+                    if self.global_symbol in closes.columns:
+                        g_series = closes[self.global_symbol].dropna()
+                        if not g_series.empty: g_price = g_series.iloc[-1]
+
+                    if 'INR=X' in closes.columns:
+                        u_series = closes['INR=X'].dropna()
+                        if not u_series.empty: usd_price = u_series.iloc[-1]
+
+                    if g_price > 0:
+                        # Apply Conversion: Global(USD) * USDINR * Multiplier
+                        global_price_inr = g_price * usd_price * self.params.get('multiplier', 1.0)
+                        logger.info(f"Global: ${g_price:.2f} | USD/INR: {usd_price:.2f} | Conv: {global_price_inr:.2f}")
+                    else:
+                        logger.warning("Yahoo fetch returned 0/empty for global symbol.")
             
-            global_price = float(global_quote['ltp'])
-            
+            # Fallback to Kite if not Yahoo or Yahoo failed (and not 0)
+            if global_price_inr == 0.0:
+                 if self.api_client:
+                    global_quote = self.api_client.get_quote(self.global_symbol, exchange="MCX") # Or USE EQUITY?
+                    if global_quote and 'ltp' in global_quote:
+                        global_price_inr = float(global_quote['ltp'])
+
+            if mcx_price == 0 or global_price_inr == 0:
+                logger.warning("Missing price data. Skipping candle.")
+                return
+
             current_time = datetime.now()
 
             new_row = pd.DataFrame({
                 'timestamp': [current_time],
                 'mcx_price': [mcx_price],
-                'global_price': [global_price]
+                'global_price': [global_price_inr]
             })
 
             self.data = pd.concat([self.data, new_row], ignore_index=True)
@@ -228,11 +267,15 @@ class MCXGlobalArbitrageStrategy:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='MCX Global Arbitrage Strategy')
     parser.add_argument('--symbol', type=str, help='MCX Symbol (e.g., GOLDM05FEB26FUT)')
-    parser.add_argument('--global_symbol', type=str, help='Global Symbol for comparison')
+    parser.add_argument('--global_symbol', type=str, help='Global Symbol (e.g., GC=F or GOLD_GLOBAL)')
+    parser.add_argument('--multiplier', type=float, default=1.0, help='Unit multiplier (Global -> MCX)')
     parser.add_argument('--port', type=int, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key')
 
     args = parser.parse_args()
+
+    if args.multiplier:
+        PARAMS['multiplier'] = args.multiplier
 
     # Use command-line args if provided, otherwise fall back to environment variables
     # OpenAlgo sets environment variables, so this allows both methods
