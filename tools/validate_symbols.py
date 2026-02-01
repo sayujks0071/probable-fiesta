@@ -79,58 +79,67 @@ def validate_config_symbols(resolver):
 
 def scan_files_for_hardcoded_symbols(instruments):
     issues = []
+    paths_to_scan = []
+
+    # 1. Strategies
     strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    if os.path.exists(strategies_dir):
+        for root, dirs, files in os.walk(strategies_dir):
+            if 'tests' in dirs: dirs.remove('tests')
+            if 'test' in dirs: dirs.remove('test')
+            for file in files:
+                if file.endswith('.py') or file.endswith('.json'):
+                    paths_to_scan.append(os.path.join(root, file))
 
-    for root, dirs, files in os.walk(strategies_dir):
-        # Exclude tests
-        if 'tests' in dirs:
-            dirs.remove('tests')
-        if 'test' in dirs:
-            dirs.remove('test')
+    # 2. Configs (if any)
+    configs_dir = os.path.join(REPO_ROOT, 'configs')
+    if os.path.exists(configs_dir):
+        for root, dirs, files in os.walk(configs_dir):
+            for file in files:
+                if file.endswith('.json') or file.endswith('.yaml'):
+                    paths_to_scan.append(os.path.join(root, file))
 
-        for file in files:
-            if file.endswith('.py'):
-                filepath = os.path.join(root, file)
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                except UnicodeDecodeError:
-                    continue # Skip binary/bad files
+    for filepath in paths_to_scan:
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            continue # Skip binary/bad files
 
-                for match in MCX_PATTERN.finditer(content):
-                    symbol_str = match.group(0)
-                    parts = match.groups() # (Symbol, Day, Month, Year)
+        for match in MCX_PATTERN.finditer(content):
+            symbol_str = match.group(0)
+            parts = match.groups() # (Symbol, Day, Month, Year)
 
-                    # Validate Month
-                    if parts[2].upper() not in MONTHS:
-                        issues.append({
-                            "source": os.path.basename(filepath),
-                            "symbol": symbol_str,
-                            "error": f"Invalid month: {parts[2]}",
-                            "status": "INVALID"
-                        })
-                        continue
+            # Validate Month
+            if parts[2].upper() not in MONTHS:
+                issues.append({
+                    "source": os.path.basename(filepath),
+                    "symbol": symbol_str,
+                    "error": f"Invalid month: {parts[2]}",
+                    "status": "INVALID"
+                })
+                continue
 
-                    # Normalized form:
-                    normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
+            # Normalized form:
+            normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
 
-                    if symbol_str != normalized:
-                         issues.append({
-                            "source": os.path.basename(filepath),
-                            "symbol": symbol_str,
-                            "normalized": normalized,
-                            "error": "Symbol is malformed (needs normalization)",
-                            "status": "MALFORMED"
-                        })
+            if symbol_str != normalized:
+                    issues.append({
+                    "source": os.path.basename(filepath),
+                    "symbol": symbol_str,
+                    "normalized": normalized,
+                    "error": "Symbol is malformed (needs normalization)",
+                    "status": "MALFORMED"
+                })
 
-                    if normalized not in instruments:
-                        issues.append({
-                            "source": os.path.basename(filepath),
-                            "symbol": symbol_str,
-                            "normalized": normalized,
-                            "error": "Symbol not found in master",
-                            "status": "MISSING"
-                        })
+            if normalized not in instruments:
+                issues.append({
+                    "source": os.path.basename(filepath),
+                    "symbol": symbol_str,
+                    "normalized": normalized,
+                    "error": "Symbol not found in master",
+                    "status": "MISSING"
+                })
 
     return issues
 
@@ -144,11 +153,10 @@ def main():
     fresh, msg = check_instruments_freshness()
     if not fresh:
         print(f"❌ Instrument Check Failed: {msg}")
-        # In strict mode, fail with code 3
-        if args.strict:
-            sys.exit(3)
-        else:
-            print("Warning: proceeding with stale data.")
+
+    resolver_error = None
+    resolver = None
+    instruments = set()
 
     # Load resolver
     try:
@@ -157,14 +165,14 @@ def main():
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
         except ImportError:
             sys.path.insert(0, os.path.join(REPO_ROOT, 'openalgo'))
-            from strategies.utils.symbol_resolver import SymbolResolver
+            sys.path.insert(0, REPO_ROOT)
+            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 
         resolver = SymbolResolver(INSTRUMENTS_FILE)
         instruments = set(resolver.df['symbol'].unique()) if not resolver.df.empty else set()
     except Exception as e:
         print(f"Error loading SymbolResolver: {e}")
-        if args.strict:
-            sys.exit(3)
+        resolver_error = str(e)
         resolver = None
         instruments = set()
 
@@ -172,6 +180,7 @@ def main():
         "timestamp": datetime.now().isoformat(),
         "strict_mode": args.strict,
         "instrument_status": msg,
+        "resolver_error": resolver_error,
         "issues": []
     }
 
@@ -194,7 +203,10 @@ def main():
          f.write("# Symbol Validation Report\n\n")
          f.write(f"Date: {datetime.now()}\n")
          f.write(f"Strict Mode: {args.strict}\n")
-         f.write(f"Instrument Status: {msg}\n\n")
+         f.write(f"Instrument Status: {msg}\n")
+         if resolver_error:
+             f.write(f"Resolver Error: {resolver_error}\n")
+         f.write("\n")
 
          if not audit_report["issues"]:
               f.write("✅ All symbols valid.\n")
@@ -212,12 +224,19 @@ def main():
         print(f"❌ Validation Failed: {invalid_count} issues found.")
         for issue in audit_report["issues"]:
             print(f" - [{issue['status']}] {issue.get('source')}: {issue.get('symbol', issue.get('id', 'Unknown'))} -> {issue.get('error')}")
-
-        if args.strict:
-            sys.exit(2)
     else:
         print("✅ All symbols valid.")
-        sys.exit(0)
+
+    # Strict Exit Codes
+    if args.strict:
+        if not fresh or resolver_error:
+             print("❌ Strict Mode: Exiting due to missing/stale instruments.")
+             sys.exit(3)
+        if invalid_count > 0:
+             print("❌ Strict Mode: Exiting due to invalid symbols.")
+             sys.exit(2)
+
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
