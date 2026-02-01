@@ -380,30 +380,6 @@ def generate_signal(df, client=None, symbol=None, params=None):
     strat.logger.addHandler(logging.NullHandler())
 
     # Set Time Stop (if using attribute injection for engine)
-    # The class sets it in __init__ but engine might look for it on instance or module?
-    # SimpleBacktestEngine checks: if strategy_module and hasattr(strategy_module, 'TIME_STOP_BARS')
-    # It checks the MODULE (passed as strategy_module).
-    # Wait, SimpleBacktestEngine receives `strategy_module` which is the python module.
-    # So `TIME_STOP_BARS` must be module-level attribute?
-    # The wrapper generates the signal.
-    # The engine loop:
-    # check_exits(..., strategy_module)
-    # def check_exits(..., strategy_module=None):
-    #    if strategy_module and hasattr(strategy_module, 'TIME_STOP_BARS'):
-
-    # So I need to set module level attribute dynamically? That's bad for concurrency.
-    # But for this simple engine, it's fine.
-    # Or better, I set it on the module object that 'run_leaderboard' loaded.
-
-    # However, 'generate_signal' is just a function.
-    # I can't easily change the module level attribute from here for the *current* backtest
-    # unless I know which module object is being used.
-    # But since params change, the Time Stop might change.
-
-    # For now, I will set it on the function object? No.
-    # I will assume fixed Time Stop for now or set it globally in module.
-
-    # Let's set it globally for this run.
     global TIME_STOP_BARS
     TIME_STOP_BARS = getattr(strat, 'time_stop_bars', 12)
 
@@ -411,6 +387,30 @@ def generate_signal(df, client=None, symbol=None, params=None):
 
 # Global default for engine check
 TIME_STOP_BARS = 12
+
+def check_exit(historical_df, position):
+    """
+    Custom exit: Profit Protect (Breakeven after 1R)
+    """
+    try:
+        current_price = historical_df.iloc[-1]['close']
+
+        # Calculate Risk (Difference between Entry and Initial SL)
+        risk = abs(position.entry_price - position.stop_loss)
+        if risk == 0: return False, None, None # Should not happen
+
+        if position.side == 'BUY':
+            # Check for Profit Protect
+            if current_price > position.entry_price + (1.5 * risk):
+                # Move SL to Entry + Fees (approx 0.1% buffer)
+                new_sl = position.entry_price * 1.001
+                if new_sl > position.stop_loss:
+                    position.stop_loss = new_sl
+
+    except Exception:
+        pass
+
+    return False, None, None
 
 if __name__ == "__main__":
     run_strategy()

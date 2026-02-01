@@ -294,5 +294,21 @@ def generate_signal(df, client=None, symbol=None, params=None):
 
     return strat.calculate_signal(df)
 
+def check_exit(historical_df, position):
+    try:
+        current_price = historical_df.iloc[-1]['close']
+
+        # Aggressive Trail for Momentum
+        # If > 8% Profit, trail at 3% distance
+        entry = position.entry_price
+        if position.side == 'BUY':
+            if current_price > entry * 1.08:
+                new_sl = current_price * 0.97
+                if new_sl > position.stop_loss:
+                    position.stop_loss = new_sl
+    except:
+        pass
+    return False, None, None
+
 if __name__ == "__main__":
     run_strategy()

@@ -105,8 +105,11 @@ class MCXMomentumStrategy:
 
         # Volatility Filter
         min_atr = self.params.get('min_atr', 0)
-        if current.get('atr', 0) < min_atr:
-             return 'HOLD', 0.0, {'reason': 'Low Volatility'}
+        max_atr = self.params.get('max_atr', 10000) # Guard against extreme shock
+        atr = current.get('atr', 0)
+
+        if atr < min_atr or atr > max_atr:
+             return 'HOLD', 0.0, {'reason': 'Volatility Filter'}
 
         if (current['adx'] > self.params['adx_threshold'] and
             current['rsi'] > 50 and
@@ -118,7 +121,7 @@ class MCXMomentumStrategy:
               current['close'] < prev['close']):
             action = 'SELL'
 
-        return action, 1.0, {'atr': current.get('atr', 0)}
+        return action, 1.0, {'atr': atr}
 
     def calculate_indicators(self):
         """Calculate technical indicators."""
@@ -350,7 +353,28 @@ def generate_signal(df, client=None, symbol=None, params=None):
 
     strat = MCXMomentumStrategy(symbol or "TEST", api_key, host, strat_params)
 
-    # Set Time Stop for Engine
-    setattr(strat, 'TIME_STOP_BARS', 12) # 3 Hours (12 * 15m)
+    # Set Time Stop for Engine (Reduced to 8 bars = 2 hours)
+    setattr(strat, 'TIME_STOP_BARS', 8)
 
     return strat.generate_signal(df)
+
+def check_exit(historical_df, position):
+    """
+    Custom exit: Profit Protect
+    """
+    try:
+        current_price = historical_df.iloc[-1]['close']
+
+        # Simple Profit Protect: If > 3% Profit, trail SL closely
+        entry = position.entry_price
+        pnl_pct = 0
+        if position.side == 'BUY':
+            pnl_pct = (current_price - entry) / entry
+            if pnl_pct > 0.03: # 3% gain
+                # Trail to 1.5%
+                new_sl = entry * 1.015
+                if new_sl > position.stop_loss:
+                    position.stop_loss = new_sl
+    except:
+        pass
+    return False, None, None
