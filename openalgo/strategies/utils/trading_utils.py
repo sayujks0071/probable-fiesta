@@ -232,10 +232,26 @@ class SmartOrder:
         if urgency == 'HIGH':
             order_type = "MARKET"
             price = 0
-        elif urgency == 'LOW' and not limit_price:
-            # Low urgency but no limit price provided? Fallback to Market but warn
-            logger.warning("SmartOrder: Low urgency requested but no limit price. Using MARKET.")
-            order_type = "MARKET"
+        elif urgency != 'HIGH' and not limit_price:
+            # Smart Slippage Protection
+            # If not High urgency and no limit price, try to place a marketable limit order
+            # to protect against freak trades/slippage.
+            quote = self.client.get_quote(symbol, exchange=exchange)
+            if quote and 'ltp' in quote:
+                ltp = float(quote['ltp'])
+                slippage_buffer = 0.005 # 0.5% buffer
+
+                if action.upper() == 'BUY':
+                    price = round(ltp * (1 + slippage_buffer), 2)
+                else:
+                    price = round(ltp * (1 - slippage_buffer), 2)
+
+                order_type = "LIMIT"
+                logger.info(f"SmartOrder: Slippage Protection Active. Converting MARKET to LIMIT @ {price} (LTP: {ltp})")
+            else:
+                # Fallback if quote fails
+                logger.warning("SmartOrder: Could not fetch quote for slippage protection. Using MARKET.")
+                order_type = "MARKET"
 
         # In a real async system, we would:
         # 1. Place Limit at Bid/Ask
@@ -261,7 +277,8 @@ class SmartOrder:
                     price_type=order_type,
                     product=product,
                     quantity=quantity,
-                    position_size=quantity # Simplification
+                    position_size=quantity, # Simplification
+                    price=price
                 )
             else:
                 logger.error("SmartOrder: Client does not support 'placesmartorder'")
@@ -441,7 +458,7 @@ class APIClient:
                 time_module.sleep(1)
         return pd.DataFrame()
 
-    def placesmartorder(self, strategy, symbol, action, exchange, price_type, product, quantity, position_size):
+    def placesmartorder(self, strategy, symbol, action, exchange, price_type, product, quantity, position_size, price=0.0):
         """Place smart order"""
         # Correct endpoint is /api/v1/placesmartorder (not /api/v1/smartorder)
         url = f"{self.host}/api/v1/placesmartorder"
@@ -456,7 +473,7 @@ class APIClient:
             "product": product,
             "quantity": str(quantity),  # API expects string
             "position_size": str(position_size),  # API expects string
-            "price": "0",
+            "price": str(price),
             "trigger_price": "0",
             "disclosed_quantity": "0"
         }
