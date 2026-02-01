@@ -4,9 +4,11 @@ import sys
 import argparse
 import re
 import json
-import pandas as pd
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 from datetime import datetime
-from collections import defaultdict
 
 # Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -48,8 +50,12 @@ def scan_file(filepath, instruments, strict=False):
     normalized_content = ""
     changes_made = False
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except UnicodeDecodeError:
+        print(f"Skipping binary/non-utf8 file: {filepath}")
+        return content, False, []
 
     def replacement_handler(match):
         nonlocal changes_made
@@ -108,12 +114,10 @@ def main():
     args = parser.parse_args()
 
     instruments = load_instruments()
+    msg = "Loaded" if instruments is not None else "Missing/Failed"
+
     if instruments is None:
-        if args.strict:
-            print("Error: Instrument master missing or unreadable in strict mode.")
-            sys.exit(3)
-        else:
-            print("Warning: Instrument master missing. Validation will be limited.")
+        print("Warning: Instrument master missing. Validation will be limited.")
 
     audit_report = {
         "timestamp": datetime.now().isoformat(),
@@ -125,17 +129,25 @@ def main():
     files_to_scan = []
     # Walk openalgo/strategies
     strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
-    for root, dirs, files in os.walk(strategies_dir):
-        # Exclude tests directories
-        if 'tests' in dirs:
-            dirs.remove('tests')
-        if 'test' in dirs:
-            dirs.remove('test')
+    if os.path.exists(strategies_dir):
+        for root, dirs, files in os.walk(strategies_dir):
+            # Exclude tests directories
+            if 'tests' in dirs:
+                dirs.remove('tests')
+            if 'test' in dirs:
+                dirs.remove('test')
 
-        for file in files:
-            if file.endswith('.py') or file.endswith('.json'):
-                files_to_scan.append(os.path.join(root, file))
+            for file in files:
+                if file.endswith('.py') or file.endswith('.json'):
+                    files_to_scan.append(os.path.join(root, file))
 
+    # Also check scripts if separate
+    scripts_dir = os.path.join(REPO_ROOT, 'openalgo', 'scripts')
+    if os.path.exists(scripts_dir):
+        for root, dirs, files in os.walk(scripts_dir):
+             for file in files:
+                if file.endswith('.py'):
+                    files_to_scan.append(os.path.join(root, file))
 
     for filepath in files_to_scan:
         new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
@@ -175,17 +187,23 @@ def main():
     # Check for strict failure
     invalid_symbols = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING')]
 
-    if args.strict and args.check:
-         # In strict check mode, fail if normalization is needed
-         normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
-         if normalized_count > 0:
-             print(f"❌ Found {normalized_count} symbols needing normalization.")
-             sys.exit(1)
-
+    # Print summary
     if invalid_symbols:
         print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols.")
-        if args.strict:
+
+    normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
+    if normalized_count > 0:
+        print(f"ℹ️  Found {normalized_count} symbols needing normalization.")
+
+    if args.strict:
+        if instruments is None:
+            print("❌ Strict Mode: Exiting due to missing/stale instruments.")
+            sys.exit(3)
+        if invalid_symbols:
             sys.exit(1)
+        if args.check and normalized_count > 0:
+             print("❌ Strict Check Failed: Symbols exist that require normalization.")
+             sys.exit(1)
 
     if args.write:
          print("✅ Normalization complete.")
