@@ -116,22 +116,25 @@ class SymbolResolver:
 
         # MCX MINI Logic
         if exchange == 'MCX':
-            # Priority:
-            # 1. Symbol contains 'MINI'
-            # 2. Symbol matches Name + 'M' + Date (e.g., SILVERM...) vs SILVER...
+            # Priority 1: Use 'lot_size' if available to find the smallest contract
+            if 'lot_size' in matches.columns:
+                # Ensure lot_size is numeric
+                matches['lot_size_num'] = pd.to_numeric(matches['lot_size'], errors='coerce').fillna(999999)
+                matches = matches.sort_values(by=['lot_size_num', 'expiry'])
+                best_match = matches.iloc[0]
+                logger.info(f"Selected smallest contract for {underlying}: {best_match['symbol']} (Lot: {best_match['lot_size']})")
+                return best_match['symbol']
 
-            # Check for explicitly 'MINI' or 'M' suffix on underlying name
-            # Use non-capturing group to avoid pandas UserWarning
-            mini_pattern = r'(?:{}M|{}MINI)'.format(underlying, underlying)
-
+            # Priority 2: Regex for MINI or M suffix if lot_size missing
+            # M is usually followed by digits (Date) e.g. GOLDM05FEB26FUT
+            mini_pattern = r'({}M\d|{}MINI)'.format(underlying, underlying)
             mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
 
             if not mini_matches.empty:
+                # Pick nearest expiry among minis
+                mini_matches = mini_matches.sort_values('expiry')
                 logger.info(f"Found MCX MINI contract for {underlying}: {mini_matches.iloc[0]['symbol']}")
                 return mini_matches.iloc[0]['symbol']
-
-            # Also check if the symbol itself ends with 'M' before some digits (less reliable but possible)
-            # e.g. CRUDEOILM23NOV...
 
             logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
 
@@ -199,8 +202,6 @@ class SymbolResolver:
 
         elif expiry_pref == 'MONTHLY':
             # Logic: Select the last expiry of the *current month cycle*.
-            # If nearest_expiry is in Oct, find the last expiry in Oct.
-
             target_year = nearest_expiry.year
             target_month = nearest_expiry.month
 
@@ -211,8 +212,8 @@ class SymbolResolver:
 
             if same_month_expiries:
                 return same_month_expiries[-1]
-            else:
-                return nearest_expiry
+
+            return nearest_expiry
 
         return nearest_expiry
 

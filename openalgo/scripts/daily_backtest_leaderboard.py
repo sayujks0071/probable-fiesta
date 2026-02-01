@@ -6,6 +6,7 @@ import logging
 import pandas as pd
 from datetime import datetime, timedelta
 import importlib.util
+import argparse
 
 # Add repo root to path
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
@@ -32,9 +33,7 @@ STRATEGIES = [
     {
         "name": "MCX_Momentum",
         "file": "openalgo/strategies/scripts/mcx_commodity_momentum_strategy.py",
-        "symbol": "SILVERMIC", # Will try to resolve if needed, but engine needs raw symbol usually?
-                               # Engine loads data. We can use a proxy symbol like 'SILVER' if using mock data,
-                               # but usually specific symbol needed.
+        "symbol": "SILVERMIC", # Will try to resolve if needed
         "exchange": "MCX"
     },
     {
@@ -88,6 +87,10 @@ def generate_variants(base_name, grid):
 def load_strategy_module(filepath):
     """Load a strategy script as a module."""
     try:
+        if not os.path.exists(os.path.join(repo_root, filepath)):
+             logger.warning(f"Strategy file not found: {filepath}")
+             return None
+
         module_name = os.path.basename(filepath).replace('.py', '')
         spec = importlib.util.spec_from_file_location(module_name, os.path.join(repo_root, filepath))
         module = importlib.util.module_from_spec(spec)
@@ -98,10 +101,41 @@ def load_strategy_module(filepath):
         logger.error(f"Failed to load strategy {filepath}: {e}")
         return None
 
-def run_leaderboard():
+def calculate_extended_metrics(res):
+    metrics = res.get('metrics', {})
+    trades = res.get('closed_trades', [])
+
+    # Expectancy
+    win_rate = metrics.get('win_rate', 0) / 100.0
+    avg_win = metrics.get('avg_win', 0)
+    avg_loss = metrics.get('avg_loss', 0) # usually negative
+    expectancy = (avg_win * win_rate) + (avg_loss * (1 - win_rate))
+
+    # Time in Market
+    total_duration = timedelta(0)
+    for t in trades:
+        if t.get('exit_time') and t.get('entry_time'):
+            try:
+                start = pd.to_datetime(t['entry_time'])
+                end = pd.to_datetime(t['exit_time'])
+                total_duration += (end - start)
+            except:
+                pass
+
+    # Format duration
+    total_hours = total_duration.total_seconds() / 3600.0
+
+    return expectancy, total_hours
+
+def run_leaderboard(output_dir=None):
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    else:
+        output_dir = os.getcwd()
+
     engine = SimpleBacktestEngine(initial_capital=100000.0)
 
-    start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
     end_date = datetime.now().strftime("%Y-%m-%d")
 
     results = []
@@ -122,16 +156,10 @@ def run_leaderboard():
 
         if strat_config['name'] in TUNING_CONFIG:
             variants = generate_variants(strat_config['name'], TUNING_CONFIG[strat_config['name']])
-            # Limit to top 3 variants if too many? For now run all (small grid)
             runs.extend(variants)
 
         for run in runs:
             logger.info(f"  > Variant: {run['name']} Params: {run['params']}")
-
-            # Monkey patch module to accept params if needed, or pass via run_backtest extension?
-            # SimpleBacktestEngine.run_backtest calls module.generate_signal(..., symbol=symbol)
-            # It doesn't pass 'params'.
-            # We need to wrap the module or monkey patch generate_signal.
 
             original_gen = module.generate_signal
 
@@ -146,8 +174,15 @@ def run_leaderboard():
                     pass
                 wrapper = ModuleWrapper()
                 wrapper.generate_signal = wrapped_gen
-                wrapper.ATR_SL_MULTIPLIER = getattr(module, 'ATR_SL_MULTIPLIER', 1.5)
-                wrapper.ATR_TP_MULTIPLIER = getattr(module, 'ATR_TP_MULTIPLIER', 2.5)
+                # Copy attributes if they exist
+                for attr in ['ATR_SL_MULTIPLIER', 'ATR_TP_MULTIPLIER', 'TIME_STOP_BARS', 'BREAKEVEN_TRIGGER_R']:
+                    if hasattr(module, attr):
+                        setattr(wrapper, attr, getattr(module, attr))
+
+                # Defaults if not present
+                if not hasattr(wrapper, 'ATR_SL_MULTIPLIER'): wrapper.ATR_SL_MULTIPLIER = 1.5
+                if not hasattr(wrapper, 'ATR_TP_MULTIPLIER'): wrapper.ATR_TP_MULTIPLIER = 2.5
+
                 target_module = wrapper
             else:
                 target_module = module
@@ -168,6 +203,8 @@ def run_leaderboard():
                     continue
 
                 metrics = res.get('metrics', {})
+                expectancy, time_in_market = calculate_extended_metrics(res)
+
                 results.append({
                     "strategy": run['name'],
                     "params": run['params'],
@@ -176,7 +213,9 @@ def run_leaderboard():
                     "drawdown": metrics.get('max_drawdown_pct', 0),
                     "win_rate": metrics.get('win_rate', 0),
                     "trades": res.get('total_trades', 0),
-                    "profit_factor": metrics.get('profit_factor', 0)
+                    "profit_factor": metrics.get('profit_factor', 0),
+                    "expectancy": expectancy,
+                    "time_in_market_hrs": time_in_market
                 })
 
             except Exception as e:
@@ -186,22 +225,28 @@ def run_leaderboard():
     results.sort(key=lambda x: (x['sharpe'], x['total_return']), reverse=True)
 
     # Save JSON
-    with open("leaderboard.json", "w") as f:
+    json_path = os.path.join(output_dir, "leaderboard.json")
+    with open(json_path, "w") as f:
         json.dump(results, f, indent=4)
 
     # Generate Markdown
     md = "# Strategy Leaderboard\n\n"
     md += f"**Date:** {datetime.now().strftime('%Y-%m-%d')}\n\n"
-    md += "| Rank | Strategy | Sharpe | Return % | Drawdown % | Win Rate % | Profit Factor | Trades |\n"
-    md += "|---|---|---|---|---|---|---|---|\n"
+    md += "| Rank | Strategy | Sharpe | Return % | Drawdown % | Win Rate % | Profit Factor | Trades | Expectancy | Exposure (Hrs) |\n"
+    md += "|---|---|---|---|---|---|---|---|---|---|\n"
 
     for i, r in enumerate(results):
-        md += f"| {i+1} | {r['strategy']} | {r['sharpe']:.2f} | {r['total_return']:.2f}% | {r['drawdown']:.2f}% | {r['win_rate']:.2f}% | {r['profit_factor']:.2f} | {r['trades']} |\n"
+        md += f"| {i+1} | {r['strategy']} | {r['sharpe']:.2f} | {r['total_return']:.2f}% | {r['drawdown']:.2f}% | {r['win_rate']:.2f}% | {r['profit_factor']:.2f} | {r['trades']} | {r['expectancy']:.2f} | {r['time_in_market_hrs']:.1f} |\n"
 
-    with open("LEADERBOARD.md", "w") as f:
+    md_path = os.path.join(output_dir, "LEADERBOARD.md")
+    with open(md_path, "w") as f:
         f.write(md)
 
-    logger.info("Leaderboard generated: LEADERBOARD.md")
+    logger.info(f"Leaderboard generated: {md_path}")
 
 if __name__ == "__main__":
-    run_leaderboard()
+    parser = argparse.ArgumentParser(description="Daily Backtest Leaderboard")
+    parser.add_argument("--output", type=str, default=".", help="Output directory")
+    args = parser.parse_args()
+
+    run_leaderboard(args.output)

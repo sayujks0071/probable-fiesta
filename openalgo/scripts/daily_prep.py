@@ -6,6 +6,7 @@ import logging
 import subprocess
 import shutil
 import glob
+import argparse
 from datetime import datetime, timedelta
 import httpx
 import pandas as pd
@@ -31,6 +32,15 @@ DATA_DIR = os.path.join(repo_root, 'openalgo/data')
 STATE_DIR = os.path.join(repo_root, 'openalgo/strategies/state')
 SESSION_DIR = os.path.join(repo_root, 'openalgo/sessions')
 CONFIG_FILE = os.path.join(repo_root, 'openalgo/strategies/active_strategies.json')
+
+def check_repo_layout():
+    logger.info("Checking Repository Layout...")
+    # Check if openalgo exists
+    if not os.path.exists(os.path.join(repo_root, 'openalgo')):
+        logger.error("FATAL: 'openalgo' directory not found in repository root.")
+        logger.error("Expected path: ./openalgo/")
+        sys.exit(1)
+    logger.info("Repository layout OK.")
 
 def check_env():
     logger.info("Checking Environment...")
@@ -238,12 +248,16 @@ def validate_symbols():
                 resolved_str = str(resolved)
                 valid_count += 1
 
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {resolved_str[:30]:<30} | {status}")
+            u_sym = config.get('underlying') or config.get('symbol', 'N/A')
+            c_type = config.get('type', 'N/A')
+            print(f"{strat_id:<25} | {c_type:<8} | {u_sym:<15} | {resolved_str[:30]:<30} | {status}")
 
         except Exception as e:
             logger.error(f"Error validating {strat_id}: {e}")
             invalid_count += 1
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {'ERROR':<30} | 🔴 Error")
+            u_sym = config.get('underlying') or config.get('symbol', 'N/A')
+            c_type = config.get('type', 'N/A')
+            print(f"{strat_id:<25} | {c_type:<8} | {u_sym:<15} | {'ERROR':<30} | 🔴 Error")
 
     print("-" * 95)
     if invalid_count > 0:
@@ -252,13 +266,36 @@ def validate_symbols():
     else:
         logger.info("All symbols valid. Ready to trade.")
 
+def run_backtest_pipeline(output_dir):
+    logger.info("Running Daily Backtest & Leaderboard...")
+    script_path = os.path.join(repo_root, 'openalgo/scripts/daily_backtest_leaderboard.py')
+
+    # We can import it or run as subprocess. Importing is cleaner since I refactored it.
+    try:
+        sys.path.append(os.path.dirname(script_path))
+        from daily_backtest_leaderboard import run_leaderboard
+        run_leaderboard(output_dir)
+    except Exception as e:
+        logger.error(f"Failed to run backtest pipeline: {e}", exc_info=True)
+
 def main():
+    parser = argparse.ArgumentParser(description="OpenAlgo Daily Prep")
+    parser.add_argument("--skip-backtest", action="store_true", help="Skip daily backtest")
+    parser.add_argument("--output", type=str, default="openalgo/log/audit_reports", help="Report output directory")
+    args = parser.parse_args()
+
     print("🚀 DAILY PREP STARTED")
+    check_repo_layout()
     check_env()
     purge_stale_state()
     check_auth()
     fetch_instruments()
     validate_symbols()
+
+    if not args.skip_backtest:
+        output_dir = os.path.join(repo_root, args.output)
+        run_backtest_pipeline(output_dir)
+
     print("✅ DAILY PREP COMPLETE")
 
 if __name__ == "__main__":
