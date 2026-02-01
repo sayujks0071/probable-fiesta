@@ -10,6 +10,27 @@ import httpx
 import pandas as pd
 import numpy as np
 
+# Import constants
+try:
+    from openalgo.strategies.utils.constants import MARKET_HOURS, ENDPOINTS, TIMEOUTS, DEFAULT_API_HOST
+except ImportError:
+    # Fallback for when running scripts directly
+    try:
+        from constants import MARKET_HOURS, ENDPOINTS, TIMEOUTS, DEFAULT_API_HOST
+    except ImportError:
+        # Default fallback if constants file missing
+        MARKET_HOURS = {}
+        ENDPOINTS = {
+            'history': '/api/v1/history',
+            'quotes': '/api/v1/quotes',
+            'instruments': '/instruments',
+            'place_smart_order': '/api/v1/placesmartorder',
+            'option_chain': '/api/v1/optionchain',
+            'option_greeks': '/api/v1/optiongreeks'
+        }
+        TIMEOUTS = {'connect': 5.0, 'read': 30.0}
+        DEFAULT_API_HOST = 'http://127.0.0.1:5001'
+
 # Configure logging
 try:
     from openalgo_observability.logging_setup import setup_logging
@@ -40,28 +61,12 @@ def is_mcx_market_open():
     """
     Check if MCX market is open (09:00 - 23:30 IST) on weekdays.
     """
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(ist)
-
-    # Check weekend
-    if now.weekday() >= 5: # 5=Sat, 6=Sun
-        return False
-
-    market_start = dt_time(9, 0)
-    market_end = dt_time(23, 30)
-    current_time = now.time()
-
-    return market_start <= current_time <= market_end
+    return is_market_open("MCX")
 
 def is_market_open(exchange="NSE"):
     """
     Check if market is open based on exchange.
-    NSE: 09:15 - 15:30 IST
-    MCX: 09:00 - 23:30 IST
     """
-    if exchange == "MCX":
-        return is_mcx_market_open()
-
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
 
@@ -69,8 +74,19 @@ def is_market_open(exchange="NSE"):
     if now.weekday() >= 5: # 5=Sat, 6=Sun
         return False
 
-    market_start = dt_time(9, 15)
-    market_end = dt_time(15, 30)
+    hours = MARKET_HOURS.get(exchange, MARKET_HOURS.get('NSE')) # Default to NSE
+    if not hours:
+         # Fallback hardcoded if constants not loaded correctly
+         if exchange == "MCX":
+             market_start = dt_time(9, 0)
+             market_end = dt_time(23, 30)
+         else:
+             market_start = dt_time(9, 15)
+             market_end = dt_time(15, 30)
+    else:
+        market_start = hours['start']
+        market_end = hours['end']
+
     current_time = now.time()
 
     return market_start <= current_time <= market_end
@@ -237,18 +253,6 @@ class SmartOrder:
             logger.warning("SmartOrder: Low urgency requested but no limit price. Using MARKET.")
             order_type = "MARKET"
 
-        # In a real async system, we would:
-        # 1. Place Limit at Bid/Ask
-        # 2. Wait 5s
-        # 3. Check fill
-        # 4. Cancel & Replace if not filled
-
-        # Since this is a synchronous/blocking call in this architecture:
-        # We rely on the 'smartorder' endpoint of the broker/server if available,
-        # or just place the simple order.
-
-        # However, we can simulate "Smartness" by choosing the right parameters
-
         try:
             # Use the client's place_smart_order if available (wrapper around placesmartorder)
             # Or use standard place_order
@@ -261,7 +265,7 @@ class SmartOrder:
                     price_type=order_type,
                     product=product,
                     quantity=quantity,
-                    position_size=quantity # Simplification
+                    position_size=quantity
                 )
             else:
                 logger.error("SmartOrder: Client does not support 'placesmartorder'")
@@ -271,279 +275,169 @@ class SmartOrder:
             logger.error(f"SmartOrder Failed: {e}")
             return None
 
-    def get_pnl(self, current_price):
-        if self.position == 0:
+    def get_pnl(self, current_price, entry_price, position_size):
+        """
+        Calculate PnL.
+        FIXED: Removed dependency on missing self.position
+        """
+        if position_size == 0:
             return 0.0
 
-        if self.position > 0:
-            return (current_price - self.entry_price) * abs(self.position)
+        if position_size > 0:
+            return (current_price - entry_price) * position_size
         else:
-            return (self.entry_price - current_price) * abs(self.position)
+            return (entry_price - current_price) * abs(position_size)
 
 class APIClient:
     """
-    Fallback API Client using httpx if openalgo package is missing.
+    Fallback API Client using httpx.
     """
-    def __init__(self, api_key, host="http://127.0.0.1:5001"):
+    def __init__(self, api_key, host=None):
         self.api_key = api_key
-        self.host = host.rstrip('/')
+        self.host = (host or DEFAULT_API_HOST).rstrip('/')
+
+    def _request(self, method, endpoint, payload=None, timeout=None, max_retries=3):
+        """Unified request handler with retry logic"""
+        url = f"{self.host}{endpoint}"
+        if timeout is None:
+            timeout = TIMEOUTS['read']
+
+        for attempt in range(max_retries):
+            try:
+                if method.lower() == 'post':
+                    response = httpx.post(url, json=payload, timeout=timeout)
+                else:
+                    response = httpx.get(url, params=payload, timeout=timeout)
+
+                if response.status_code == 200:
+                    if not response.text or len(response.text.strip()) == 0:
+                        raise ValueError("Empty response")
+
+                    try:
+                        # Some endpoints like instruments return CSV
+                        if endpoint.startswith(ENDPOINTS['instruments']):
+                            return response.text
+
+                        data = response.json()
+                        return data
+                    except ValueError:
+                         # Return raw text if JSON parsing fails but status is 200
+                         return response.text
+                else:
+                    logger.warning(f"API {endpoint} failed (HTTP {response.status_code})")
+
+                if attempt < max_retries - 1:
+                    time_module.sleep(2 ** attempt)
+
+            except Exception as e:
+                logger.warning(f"API Attempt {attempt+1}/{max_retries} failed for {endpoint}: {e}")
+                if attempt < max_retries - 1:
+                    time_module.sleep(2 ** attempt)
+        
+        return None
 
     def history(self, symbol, exchange="NSE", interval="5m", start_date=None, end_date=None, max_retries=3):
-        """Fetch historical data with retry logic and exponential backoff"""
-        url = f"{self.host}/api/v1/history"
+        """Fetch historical data"""
         payload = {
             "symbol": symbol,
             "exchange": exchange,
-            "interval": interval,  # Fixed: was "resolution"
-            "start_date": start_date,  # Fixed: was "from"
-            "end_date": end_date,  # Fixed: was "to"
+            "interval": interval,
+            "start_date": start_date,
+            "end_date": end_date,
             "apikey": self.api_key
         }
-        for attempt in range(max_retries):
-            try:
-                response = httpx.post(url, json=payload, timeout=30)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get('status') == 'success' and 'data' in data:
-                        df = pd.DataFrame(data['data'])
-                        if 'timestamp' in df.columns:
-                            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-                        required_cols = ['open', 'high', 'low', 'close', 'volume']
-                        for col in required_cols:
-                            if col not in df.columns:
-                                df[col] = 0
-                        logger.debug(f"Successfully fetched {len(df)} rows for {symbol} on {exchange}")
-                        return df
-                    else:
-                        error_msg = data.get('message', 'Unknown error')
-                        if attempt < max_retries - 1:
-                            wait_time = 2 ** attempt
-                            logger.warning(f"History fetch failed for {symbol} (attempt {attempt+1}/{max_retries}): {error_msg}. Retrying in {wait_time}s...")
-                            time_module.sleep(wait_time)
-                            continue
-                        logger.error(f"History fetch failed after {max_retries} attempts: {error_msg}")
-                else:
-                    error_text = response.text[:500] if response.text else "(empty)"
-                    if attempt < max_retries - 1:
-                        wait_time = 2 ** attempt
-                        logger.warning(f"API call failed for {symbol} (HTTP {response.status_code}, attempt {attempt+1}/{max_retries}), retrying in {wait_time}s...")
-                        time_module.sleep(wait_time)
-                        continue
-                    logger.error(f"History fetch failed after {max_retries} attempts (HTTP {response.status_code}): {error_text}")
-            except httpx.TimeoutException:
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    logger.warning(f"API timeout for {symbol} (attempt {attempt+1}/{max_retries}), retrying in {wait_time}s...")
-                    time_module.sleep(wait_time)
-                    continue
-                logger.error(f"API timeout after {max_retries} attempts for {symbol}")
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    logger.warning(f"API Error for {symbol} (attempt {attempt+1}/{max_retries}): {e}. Retrying in {wait_time}s...")
-                    time_module.sleep(wait_time)
-                    continue
-                logger.error(f"API Error after {max_retries} attempts for {symbol}: {e}")
-        
+
+        data = self._request('post', ENDPOINTS['history'], payload, max_retries=max_retries)
+
+        if data and isinstance(data, dict) and data.get('status') == 'success' and 'data' in data:
+            df = pd.DataFrame(data['data'])
+            if not df.empty:
+                if 'timestamp' in df.columns:
+                    df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
+
+                # Ensure columns exist
+                required_cols = ['open', 'high', 'low', 'close', 'volume']
+                for col in required_cols:
+                    if col not in df.columns:
+                        df[col] = 0.0
+                return df
+
         return pd.DataFrame()
 
     def get_quote(self, symbol, exchange="NSE", max_retries=3):
-        """Fetch real-time quote from Kite API via OpenAlgo"""
-        url = f"{self.host}/api/v1/quotes"
+        """Fetch real-time quote"""
         payload = {
             "symbol": symbol,
             "exchange": exchange,
             "apikey": self.api_key
         }
         
-        for attempt in range(max_retries):
-            try:
-                response = httpx.post(url, json=payload, timeout=10)
-                if response.status_code == 200:
-                    # Check if response has content
-                    if not response.text or len(response.text.strip()) == 0:
-                        if attempt < max_retries - 1:
-                            wait_time = 2 ** attempt
-                            logger.warning(f"Quote API returned empty response for {symbol} (attempt {attempt+1}/{max_retries}). Retrying in {wait_time}s...")
-                            time.sleep(wait_time)
-                            continue
-                        logger.error(f"Quote API returned empty response after {max_retries} attempts for {symbol}")
-                        return None
-                    
-                    try:
-                        data = response.json()
-                    except ValueError as json_err:
-                        error_text = response.text[:200] if response.text else "(empty)"
-                        if attempt < max_retries - 1:
-                            wait_time = 2 ** attempt
-                            logger.warning(f"Quote API returned non-JSON for {symbol} (attempt {attempt+1}/{max_retries}): {error_text}. Retrying in {wait_time}s...")
-                            time.sleep(wait_time)
-                            continue
-                        logger.error(f"Quote API returned non-JSON after {max_retries} attempts for {symbol}: {error_text}")
-                        return None
-                    
-                    if data.get('status') == 'success' and 'data' in data:
-                        quote_data = data['data']
-                        # Ensure ltp is available
-                        if 'ltp' in quote_data:
-                            return quote_data
-                        else:
-                            logger.warning(f"Quote for {symbol} missing 'ltp' field. Available fields: {list(quote_data.keys())}")
-                            return None
-                    else:
-                        error_msg = data.get('message', 'Unknown error')
-                        if attempt < max_retries - 1:
-                            wait_time = 2 ** attempt
-                            logger.warning(f"Quote fetch failed for {symbol} (attempt {attempt+1}/{max_retries}): {error_msg}. Retrying in {wait_time}s...")
-                            time.sleep(wait_time)
-                            continue
-                        logger.error(f"Quote fetch failed after {max_retries} attempts: {error_msg}")
-                else:
-                    error_text = response.text[:500] if response.text else "(empty)"
-                    if attempt < max_retries - 1:
-                        wait_time = 2 ** attempt
-                        logger.warning(f"Quote API call failed for {symbol} (HTTP {response.status_code}, attempt {attempt+1}/{max_retries}), retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                    logger.error(f"Quote fetch failed after {max_retries} attempts (HTTP {response.status_code}): {error_text}")
-            except httpx.TimeoutException:
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    logger.warning(f"Quote API timeout for {symbol} (attempt {attempt+1}/{max_retries}), retrying in {wait_time}s...")
-                    time.sleep(wait_time)
-                    continue
-                logger.error(f"Quote API timeout after {max_retries} attempts for {symbol}")
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    logger.warning(f"Quote API Error for {symbol} (attempt {attempt+1}/{max_retries}): {e}. Retrying in {wait_time}s...")
-                    time.sleep(wait_time)
-                    continue
-                logger.error(f"Quote API Error after {max_retries} attempts for {symbol}: {e}")
+        data = self._request('post', ENDPOINTS['quotes'], payload, max_retries=max_retries)
+
+        if data and isinstance(data, dict) and data.get('status') == 'success' and 'data' in data:
+            quote_data = data['data']
+            if 'ltp' in quote_data:
+                return quote_data
         
-        return None  # Failed to fetch quote
+        return None
 
     def get_instruments(self, exchange="NSE", max_retries=3):
         """Fetch instruments list"""
-        url = f"{self.host}/instruments/{exchange}"
-        for attempt in range(max_retries):
+        endpoint = f"{ENDPOINTS['instruments']}/{exchange}"
+
+        data = self._request('get', endpoint, max_retries=max_retries)
+
+        if data and isinstance(data, str):
             try:
-                response = httpx.get(url, timeout=30)
-                if response.status_code == 200:
-                    # Usually returns CSV text
-                    from io import StringIO
-                    return pd.read_csv(StringIO(response.text))
-                else:
-                    logger.warning(f"Instruments fetch failed (HTTP {response.status_code})")
-                    time_module.sleep(1)
+                from io import StringIO
+                return pd.read_csv(StringIO(data))
             except Exception as e:
-                logger.error(f"Instruments fetch error: {e}")
-                time_module.sleep(1)
+                logger.error(f"Instruments parse error: {e}")
+
         return pd.DataFrame()
 
     def placesmartorder(self, strategy, symbol, action, exchange, price_type, product, quantity, position_size):
         """Place smart order"""
-        # Correct endpoint is /api/v1/placesmartorder (not /api/v1/smartorder)
-        url = f"{self.host}/api/v1/placesmartorder"
-
         payload = {
             "apikey": self.api_key,
             "strategy": strategy,
             "symbol": symbol,
-            "action": action,  # Fixed: was "transaction_type"
+            "action": action,
             "exchange": exchange,
-            "pricetype": price_type,  # Fixed: was "order_type"
+            "pricetype": price_type,
             "product": product,
-            "quantity": str(quantity),  # API expects string
-            "position_size": str(position_size),  # API expects string
+            "quantity": str(quantity),
+            "position_size": str(position_size),
             "price": "0",
             "trigger_price": "0",
             "disclosed_quantity": "0"
         }
         
-        try:
-            response = httpx.post(url, json=payload, timeout=10)
-            
-            if response.status_code == 200:
-                # Handle response - may be JSON or empty
-                try:
-                    response_data = response.json()
-                    logger.info(f"[ENTRY] Order Placed: {response_data}")
-                    return response_data
-                except ValueError:
-                    # Response is not JSON - might be empty or HTML
-                    response_text = response.text[:200] if response.text else "(empty)"
-                    logger.warning(f"Order API returned non-JSON response (status 200): {response_text}")
-                    # Return success indication even if response isn't JSON
-                    return {"status": "success", "message": "Order placed (non-JSON response)"}
+        data = self._request('post', ENDPOINTS['place_smart_order'], payload)
+
+        if data:
+            if isinstance(data, dict):
+                logger.info(f"[ENTRY] Order Placed: {data}")
+                return data
             else:
-                error_text = response.text[:500] if response.text else "(empty)"
-                logger.error(f"Order Failed (HTTP {response.status_code}): {error_text}")
-                return {"status": "error", "message": f"HTTP {response.status_code}: {error_text}"}
-        except Exception as e:
-            logger.error(f"Order API Error: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-            return {"status": "error", "message": str(e)}
+                logger.info(f"[ENTRY] Order Response (Non-JSON): {data}")
+                return {"status": "success", "message": "Order placed (non-JSON)"}
+
+        return {"status": "error", "message": "Order failed"}
 
     def get_option_chain(self, symbol, exchange="NFO", max_retries=3):
-        """Fetch option chain for a symbol"""
-        url = f"{self.host}/api/v1/optionchain"
-        payload = {
-            "symbol": symbol,
-            "exchange": exchange,
-            "apikey": self.api_key
-        }
-
-        for attempt in range(max_retries):
-            try:
-                response = httpx.post(url, json=payload, timeout=10)
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        if data.get('status') == 'success' and 'data' in data:
-                            return data['data']
-                        else:
-                            logger.warning(f"Option Chain fetch failed: {data.get('message')}")
-                    except ValueError:
-                        logger.warning("Option Chain API returned non-JSON")
-                else:
-                    logger.warning(f"Option Chain API failed HTTP {response.status_code}")
-
-                if attempt < max_retries - 1:
-                    time_module.sleep(1)
-            except Exception as e:
-                logger.error(f"Option Chain API Error: {e}")
-                if attempt < max_retries - 1:
-                    time_module.sleep(1)
+        payload = {"symbol": symbol, "exchange": exchange, "apikey": self.api_key}
+        data = self._request('post', ENDPOINTS['option_chain'], payload, max_retries=max_retries)
+        if data and isinstance(data, dict) and data.get('status') == 'success':
+            return data.get('data', {})
         return {}
 
     def get_option_greeks(self, symbol, expiry=None, max_retries=3):
-        """Fetch option greeks"""
-        url = f"{self.host}/api/v1/optiongreeks"
-        payload = {
-            "symbol": symbol,
-            "apikey": self.api_key
-        }
-        if expiry:
-            payload['expiry'] = expiry
-
-        for attempt in range(max_retries):
-            try:
-                response = httpx.post(url, json=payload, timeout=10)
-                if response.status_code == 200:
-                    try:
-                        data = response.json()
-                        if data.get('status') == 'success' and 'data' in data:
-                            return data['data']
-                    except ValueError:
-                        pass
-                if attempt < max_retries - 1:
-                    time_module.sleep(1)
-            except Exception as e:
-                logger.error(f"Greeks API Error: {e}")
-                if attempt < max_retries - 1:
-                    time_module.sleep(1)
+        payload = {"symbol": symbol, "apikey": self.api_key}
+        if expiry: payload['expiry'] = expiry
+        data = self._request('post', ENDPOINTS['option_greeks'], payload, max_retries=max_retries)
+        if data and isinstance(data, dict) and data.get('status') == 'success':
+            return data.get('data', {})
         return {}
 
     def get_vix(self):
@@ -551,6 +445,4 @@ class APIClient:
         quote = self.get_quote("INDIA VIX", "NSE")
         if quote and 'ltp' in quote:
             return float(quote['ltp'])
-        # Fallback to a default or raise error?
-        # For safety, return None so caller handles it
         return None

@@ -365,7 +365,8 @@ class EODSquareOff:
     """
 
     def __init__(self, risk_manager: RiskManager,
-                 exit_callback: Callable[[str, str, int], Any]):
+                 exit_callback: Callable[[str, str, int], Any],
+                 api_client: Optional[Any] = None):
         """
         Initialize EOD Square-off handler.
 
@@ -373,9 +374,11 @@ class EODSquareOff:
             risk_manager: RiskManager instance
             exit_callback: Function to call for exiting positions
                           Signature: exit_callback(symbol, action, quantity) -> order_result
+            api_client: Optional API client to fetch real-time exit price
         """
         self.rm = risk_manager
         self.exit_callback = exit_callback
+        self.api_client = api_client
         self._squared_off_today = False
 
     def check_and_execute(self) -> bool:
@@ -403,12 +406,21 @@ class EODSquareOff:
                 qty = abs(pos['qty'])
                 action = "SELL" if pos['qty'] > 0 else "BUY"
 
-                logger.info(f"EOD: Closing {symbol} - {action} {qty}")
+                # Try to get current price for accurate PnL
+                exit_price = pos['entry_price'] # Fallback
+                if self.api_client:
+                    try:
+                        quote = self.api_client.get_quote(symbol)
+                        if quote and 'ltp' in quote:
+                            exit_price = float(quote['ltp'])
+                    except Exception as e:
+                        logger.warning(f"EOD: Failed to fetch quote for {symbol}: {e}")
+
+                logger.info(f"EOD: Closing {symbol} - {action} {qty} @ approx {exit_price}")
                 result = self.exit_callback(symbol, action, qty)
 
                 if result and result.get('status') == 'success':
-                    # Assume exit at current price (would need actual fill price)
-                    self.rm.register_exit(symbol, pos['entry_price'])  # Placeholder
+                    self.rm.register_exit(symbol, exit_price)
                     logger.info(f"EOD: Successfully closed {symbol}")
                 else:
                     logger.error(f"EOD: Failed to close {symbol}: {result}")
