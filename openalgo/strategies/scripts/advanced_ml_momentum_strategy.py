@@ -107,6 +107,16 @@ class MLMomentumStrategy:
         except:
             return 0.0
 
+    def get_vix(self):
+        """Fetch VIX"""
+        try:
+            quote = self.client.get_quote("INDIA VIX", "NSE_INDEX")
+            if quote and 'ltp' in quote:
+                return float(quote['ltp'])
+        except Exception:
+            pass
+        return 15.0 # Default
+
     def get_news_sentiment(self):
         # Simulated
         return 0.5 # Neutral to Positive
@@ -234,8 +244,14 @@ class MLMomentumStrategy:
                     # Volume check
                     avg_vol = df['volume'].rolling(20).mean().iloc[-1]
                     if last['volume'] > avg_vol * 0.5: # At least decent volume
-                        self.logger.info(f"Strong Momentum Signal (ROC: {last['roc']:.3f}, RS: {rs_excess:.3f}). BUY.")
-                        self.pm.update_position(100, current_price, 'BUY')
+                        # VIX Sizing
+                        vix = self.get_vix()
+                        shares = 100
+                        if vix > 25:
+                            shares = 50
+
+                        self.logger.info(f"Strong Momentum Signal (ROC: {last['roc']:.3f}, RS: {rs_excess:.3f}). BUY {shares} (VIX:{vix}).")
+                        self.pm.update_position(shares, current_price, 'BUY')
 
             except Exception as e:
                 self.logger.error(f"Error in ML Momentum strategy for {self.symbol}: {e}", exc_info=True)
