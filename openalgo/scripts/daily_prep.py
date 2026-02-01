@@ -35,8 +35,8 @@ CONFIG_FILE = os.path.join(repo_root, 'openalgo/strategies/active_strategies.jso
 def check_env():
     logger.info("Checking Environment...")
     if not os.getenv('OPENALGO_APIKEY'):
-        logger.warning("OPENALGO_APIKEY not set. Using default 'demo_key'.")
-        os.environ['OPENALGO_APIKEY'] = 'demo_key'
+        logger.error("CRITICAL: OPENALGO_APIKEY not set in environment. Exiting to prevent unauthorized access.")
+        sys.exit(1)
 
     # Verify paths
     if not os.path.exists(os.path.join(repo_root, 'openalgo')):
