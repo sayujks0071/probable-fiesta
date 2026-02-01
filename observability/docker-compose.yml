@@ -14,6 +14,7 @@ services:
     volumes:
       - ./promtail.yaml:/etc/promtail/config.yaml
       - ../logs:/var/log/openalgo:ro
+      - ../openalgo/log/strategies:/var/log/strategies:ro
     command: -config.file=/etc/promtail/config.yaml
     networks:
       - openalgo-net

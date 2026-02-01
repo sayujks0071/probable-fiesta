@@ -32,3 +32,12 @@ scrape_configs:
   - timestamp:
       source: timestamp
       format: RFC3339
+
+- job_name: strategies
+  static_configs:
+  - targets:
+      - localhost
+    labels:
+      job: strategies
+      env: local
+      __path__: /var/log/strategies/*.log
