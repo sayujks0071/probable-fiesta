@@ -83,19 +83,21 @@ def calculate_intraday_vwap(df):
     df = df.copy()
     
     # Handle datetime column or index
-    if isinstance(df.index, pd.DatetimeIndex):
-        df['datetime'] = df.index
-    elif 'datetime' not in df.columns and 'timestamp' in df.columns:
-        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-    elif 'datetime' not in df.columns:
-        # If no datetime info, create from index if it's numeric (Unix timestamp)
-        if df.index.dtype in ['int64', 'float64']:
-            df['datetime'] = pd.to_datetime(df.index, unit='s')
+    if 'datetime' not in df.columns:
+        if isinstance(df.index, pd.DatetimeIndex):
+            df['datetime'] = df.index
+        elif 'timestamp' in df.columns:
+            df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
         else:
-            df['datetime'] = pd.to_datetime(df.index)
+            # If no datetime info, create from index if it's numeric (Unix timestamp)
+            if df.index.dtype in ['int64', 'float64']:
+                df['datetime'] = pd.to_datetime(df.index, unit='s')
+            else:
+                df['datetime'] = pd.to_datetime(df.index)
 
-    # Ensure datetime is datetime object
-    df['datetime'] = pd.to_datetime(df['datetime'])
+    # Ensure datetime is datetime object and valid
+    df['datetime'] = pd.to_datetime(df['datetime'], errors='coerce')
+    df = df.dropna(subset=['datetime'])
     df['date'] = df['datetime'].dt.date
 
     # Typical Price
@@ -554,3 +556,23 @@ class APIClient:
         # Fallback to a default or raise error?
         # For safety, return None so caller handles it
         return None
+
+    def check_connection(self):
+        """Verify connection to broker API."""
+        try:
+            # Use a lightweight call to check health or get a standard quote
+            response = httpx.get(f"{self.host}/", timeout=5)
+            if response.status_code == 200:
+                logger.info(f"Connected to Broker API at {self.host}")
+                return True
+            else:
+                logger.warning(f"Broker API responded with {response.status_code}")
+        except Exception as e:
+            logger.error(f"Failed to connect to Broker API at {self.host}: {e}")
+
+        # Fallback: Try fetching a quote to be sure
+        quote = self.get_quote("NIFTY 50", "NSE_INDEX", max_retries=1)
+        if quote:
+             logger.info(f"Connection Verified (Quote Fetch Success)")
+             return True
+        return False

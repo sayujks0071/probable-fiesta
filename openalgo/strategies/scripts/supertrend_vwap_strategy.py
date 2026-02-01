@@ -35,30 +35,8 @@ except ImportError:
             from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
         except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            SymbolResolver = None
-            normalize_symbol = lambda s: s
-            is_market_open = lambda: True
-            def calculate_intraday_vwap(df):
-                df = df.copy()
-                if 'datetime' not in df.columns:
-                    if isinstance(df.index, pd.DatetimeIndex):
-                        df['datetime'] = df.index
-                    elif 'timestamp' in df.columns:
-                        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-                    else:
-                        df['datetime'] = pd.to_datetime(df.index)
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df['date'] = df['datetime'].dt.date
-                typical_price = (df['high'] + df['low'] + df['close']) / 3
-                df['pv'] = typical_price * df['volume']
-                df['cum_pv'] = df.groupby('date')['pv'].cumsum()
-                df['cum_vol'] = df.groupby('date')['volume'].cumsum()
-                df['vwap'] = df['cum_pv'] / df['cum_vol']
-                df['vwap_dev'] = (df['close'] - df['vwap']) / df['vwap']
-                return df
+            print("Error: Required modules not found. Ensure openalgo package is installed or paths are correct.")
+            sys.exit(1)
 
 class SuperTrendVWAPStrategy:
     def __init__(self, symbol, quantity, api_key=None, host=None, ignore_time=False, sector_benchmark='NIFTY BANK', logfile=None, client=None):
@@ -279,6 +257,12 @@ class SuperTrendVWAPStrategy:
     def run(self):
         self.symbol = normalize_symbol(self.symbol)
         self.logger.info(f"Starting SuperTrend VWAP for {self.symbol}")
+
+        # Check connection before starting loop
+        if self.client and hasattr(self.client, 'check_connection'):
+            if not self.client.check_connection():
+                self.logger.error("Broker connection failed. Exiting.")
+                return
 
         while True:
             try:
