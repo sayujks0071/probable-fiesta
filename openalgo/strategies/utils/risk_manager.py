@@ -12,7 +12,7 @@ This module provides essential risk management features that MUST be used by all
 CRITICAL: All strategies MUST use this module to prevent catastrophic losses.
 
 Author: OpenAlgo Risk Management
-Version: 1.0.0
+Version: 1.0.1
 """
 
 import os
@@ -365,7 +365,8 @@ class EODSquareOff:
     """
 
     def __init__(self, risk_manager: RiskManager,
-                 exit_callback: Callable[[str, str, int], Any]):
+                 exit_callback: Callable[[str, str, int], Any],
+                 api_client: Optional[Any] = None):
         """
         Initialize EOD Square-off handler.
 
@@ -373,9 +374,11 @@ class EODSquareOff:
             risk_manager: RiskManager instance
             exit_callback: Function to call for exiting positions
                           Signature: exit_callback(symbol, action, quantity) -> order_result
+            api_client: Optional API Client to fetch real-time prices for accurate PnL
         """
         self.rm = risk_manager
         self.exit_callback = exit_callback
+        self.client = api_client
         self._squared_off_today = False
 
     def check_and_execute(self) -> bool:
@@ -403,12 +406,26 @@ class EODSquareOff:
                 qty = abs(pos['qty'])
                 action = "SELL" if pos['qty'] > 0 else "BUY"
 
+                # Try to get current price for accurate PnL
+                current_price = pos['entry_price'] # Default fallback
+                if self.client:
+                    try:
+                        quote = self.client.get_quote(symbol, exchange=self.rm.exchange)
+                        if quote and 'ltp' in quote:
+                            current_price = float(quote['ltp'])
+                            logger.info(f"EOD: Fetched current price for {symbol}: {current_price}")
+                    except Exception as e:
+                        logger.warning(f"EOD: Failed to fetch quote for {symbol}: {e}")
+
                 logger.info(f"EOD: Closing {symbol} - {action} {qty}")
                 result = self.exit_callback(symbol, action, qty)
 
                 if result and result.get('status') == 'success':
-                    # Assume exit at current price (would need actual fill price)
-                    self.rm.register_exit(symbol, pos['entry_price'])  # Placeholder
+                    # Use fetched price if available
+                    if current_price == pos['entry_price']:
+                        logger.warning(f"EOD: Using entry price for {symbol} exit (PnL=0). Inaccurate PnL.")
+
+                    self.rm.register_exit(symbol, current_price)
                     logger.info(f"EOD: Successfully closed {symbol}")
                 else:
                     logger.error(f"EOD: Failed to close {symbol}: {result}")
