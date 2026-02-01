@@ -1,0 +1,182 @@
+[
+    {
+        "Strategy":"AI_Hybrid_base",
+        "Regime":"trending",
+        "Return %":1.7540475812,
+        "Sharpe":10.5461338205,
+        "Drawdown %":1.4850897918,
+        "Win Rate %":50.0,
+        "Trades":0
+    },
+    {
+        "Strategy":"AI_Hybrid_v1_easy",
+        "Regime":"trending",
+        "Return %":1.7540475812,
+        "Sharpe":10.5461338205,
+        "Drawdown %":1.4850897918,
+        "Win Rate %":50.0,
+        "Trades":0
+    },
+    {
+        "Strategy":"AI_Hybrid_v2_wideSL",
+        "Regime":"trending",
+        "Return %":1.7540475812,
+        "Sharpe":10.5461338205,
+        "Drawdown %":1.4850897918,
+        "Win Rate %":50.0,
+        "Trades":0
+    },
+    {
+        "Strategy":"MCX_Momentum_base",
+        "Regime":"ranging",
+        "Return %":-0.0064219799,
+        "Sharpe":0.2562548946,
+        "Drawdown %":0.1485823302,
+        "Win Rate %":48.9361702128,
+        "Trades":0
+    },
+    {
+        "Strategy":"MCX_Momentum_v1_sens",
+        "Regime":"ranging",
+        "Return %":-0.0064219799,
+        "Sharpe":0.2562548946,
+        "Drawdown %":0.1485823302,
+        "Win Rate %":48.9361702128,
+        "Trades":0
+    },
+    {
+        "Strategy":"MCX_Momentum_v2_fast",
+        "Regime":"ranging",
+        "Return %":-0.0064219799,
+        "Sharpe":0.2562548946,
+        "Drawdown %":0.1485823302,
+        "Win Rate %":48.9361702128,
+        "Trades":0
+    },
+    {
+        "Strategy":"SuperTrend_VWAP_base",
+        "Regime":"trending",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0
+    },
+    {
+        "Strategy":"SuperTrend_VWAP_v1_loose",
+        "Regime":"trending",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0
+    },
+    {
+        "Strategy":"SuperTrend_VWAP_v2_wideSL",
+        "Regime":"trending",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0
+    },
+    {
+        "Strategy":"SuperTrend_VWAP_base",
+        "Regime":"ranging",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0
+    },
+    {
+        "Strategy":"SuperTrend_VWAP_v1_loose",
+        "Regime":"ranging",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0
+    },
+    {
+        "Strategy":"SuperTrend_VWAP_v2_wideSL",
+        "Regime":"ranging",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0
+    },
+    {
+        "Strategy":"MCX_Momentum_base",
+        "Regime":"trending",
+        "Return %":-0.0932528966,
+        "Sharpe":-1.2299586467,
+        "Drawdown %":0.1672053892,
+        "Win Rate %":46.3414634146,
+        "Trades":0
+    },
+    {
+        "Strategy":"MCX_Momentum_v1_sens",
+        "Regime":"trending",
+        "Return %":-0.0932528966,
+        "Sharpe":-1.2299586467,
+        "Drawdown %":0.1672053892,
+        "Win Rate %":46.3414634146,
+        "Trades":0
+    },
+    {
+        "Strategy":"MCX_Momentum_v2_fast",
+        "Regime":"trending",
+        "Return %":-0.0932528966,
+        "Sharpe":-1.2299586467,
+        "Drawdown %":0.1672053892,
+        "Win Rate %":46.3414634146,
+        "Trades":0
+    },
+    {
+        "Strategy":"ML_Momentum_base",
+        "Regime":"trending",
+        "Return %":-0.1554986842,
+        "Sharpe":-3.18317636,
+        "Drawdown %":0.2039955592,
+        "Win Rate %":41.1764705882,
+        "Trades":0
+    },
+    {
+        "Strategy":"ML_Momentum_v1_lowThresh",
+        "Regime":"trending",
+        "Return %":-0.1554986842,
+        "Sharpe":-3.18317636,
+        "Drawdown %":0.2039955592,
+        "Win Rate %":41.1764705882,
+        "Trades":0
+    },
+    {
+        "Strategy":"AI_Hybrid_base",
+        "Regime":"ranging",
+        "Return %":-9.0899216872,
+        "Sharpe":-43.6691648674,
+        "Drawdown %":8.9582358002,
+        "Win Rate %":0.0,
+        "Trades":0
+    },
+    {
+        "Strategy":"AI_Hybrid_v1_easy",
+        "Regime":"ranging",
+        "Return %":-9.0899216872,
+        "Sharpe":-43.6691648674,
+        "Drawdown %":8.9582358002,
+        "Win Rate %":0.0,
+        "Trades":0
+    },
+    {
+        "Strategy":"AI_Hybrid_v2_wideSL",
+        "Regime":"ranging",
+        "Return %":-9.0899216872,
+        "Sharpe":-43.6691648674,
+        "Drawdown %":8.9582358002,
+        "Win Rate %":0.0,
+        "Trades":0
+    }
+]

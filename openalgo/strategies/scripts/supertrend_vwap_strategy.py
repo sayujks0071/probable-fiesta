@@ -144,7 +144,8 @@ class SuperTrendVWAPStrategy:
 
         vol_mean = df['volume'].rolling(20).mean().iloc[-1]
         vol_std = df['volume'].rolling(20).std().iloc[-1]
-        dynamic_threshold = vol_mean + (1.5 * vol_std)
+        # Relaxed Volume Threshold (1.0 vs 1.5)
+        dynamic_threshold = vol_mean + (1.0 * vol_std)
         is_volume_spike = last['volume'] > dynamic_threshold
 
         is_above_poc = last['close'] > poc_price
@@ -166,7 +167,10 @@ class SuperTrendVWAPStrategy:
             'adx': adx
         }
 
-        if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish and is_strong_trend and is_uptrend:
+        # Regime Check
+        is_favorable_regime = is_uptrend and is_strong_trend
+
+        if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish and is_favorable_regime:
             return 'BUY', 1.0, details
 
         # Sell Logic (Inverse for completeness?)
@@ -466,13 +470,43 @@ def generate_signal(df, client=None, symbol=None, params=None):
         if 'stop_pct' in params: strat.stop_pct = params['stop_pct']
         if 'adx_threshold' in params: strat.adx_threshold = params['adx_threshold']
 
-    # Set Breakeven Trigger
+    # Set Breakeven Trigger and Trailing
     setattr(strat, 'BREAKEVEN_TRIGGER_R', 1.5)
-    setattr(strat, 'ATR_SL_MULTIPLIER', 3.0)
-    setattr(strat, 'ATR_TP_MULTIPLIER', 5.0)
+    setattr(strat, 'ATR_SL_MULTIPLIER', 2.0) # Tighter SL
+    setattr(strat, 'ATR_TP_MULTIPLIER', 6.0) # Wider TP
 
     action, score, details = strat.generate_signal(df)
     return action, score, details
+
+# Custom Exit Logic for Backtest Engine
+def check_exit(historical_df, position):
+    """
+    Custom exit logic: Trailing Stop
+    """
+    try:
+        current_price = historical_df.iloc[-1]['close']
+
+        # Trailing Stop: If price moves in favor, tighten SL
+        if position.side == 'BUY':
+            # Initial Risk
+            risk = position.entry_price - position.stop_loss
+
+            # If moved 1R, move SL to Breakeven
+            if current_price > position.entry_price + (1.0 * risk):
+                new_sl = position.entry_price + (0.1 * risk) # Slight profit
+                if new_sl > position.stop_loss:
+                    position.stop_loss = new_sl
+
+            # If moved 2R, Trail by 1R distance
+            if current_price > position.entry_price + (2.0 * risk):
+                new_sl = current_price - risk
+                if new_sl > position.stop_loss:
+                    position.stop_loss = new_sl
+
+    except Exception:
+        pass
+
+    return False, None, None
 
 if __name__ == "__main__":
     run_strategy()
