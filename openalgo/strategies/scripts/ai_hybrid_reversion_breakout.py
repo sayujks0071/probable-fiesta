@@ -70,6 +70,10 @@ class AIHybridStrategy:
         self.earnings_date = earnings_date
         self.time_stop_bars = time_stop_bars
 
+        # Cache for sector check
+        self.last_sector_check = 0
+        self.sector_strength_cache = True
+
     def calculate_signal(self, df):
         """Calculate signal for a given dataframe (Backtesting support)."""
         if df.empty or len(df) < 20:
@@ -191,6 +195,11 @@ class AIHybridStrategy:
         return False
 
     def check_sector_strength(self):
+        # Check cache (1 hour expiry)
+        current_time = time.time()
+        if current_time - self.last_sector_check < 3600:
+            return self.sector_strength_cache
+
         try:
             sector_symbol = normalize_symbol(self.sector)
             
@@ -202,19 +211,26 @@ class AIHybridStrategy:
                                 end_date=datetime.now().strftime("%Y-%m-%d"))
             if df.empty or len(df) < 20:
                 self.logger.warning(f"Insufficient data for sector strength check ({len(df)} rows). Defaulting to allow trades.")
+                self.sector_strength_cache = True # Default allow
+                self.last_sector_check = current_time
                 return True
             df['sma20'] = df['close'].rolling(20).mean()
             last_close = df.iloc[-1]['close']
             last_sma20 = df.iloc[-1]['sma20']
             if pd.isna(last_sma20):
                 self.logger.warning(f"SMA20 is NaN for {sector_symbol}. Defaulting to allow trades.")
+                self.sector_strength_cache = True
+                self.last_sector_check = current_time
                 return True
             is_strong = last_close > last_sma20
             self.logger.debug(f"Sector {sector_symbol} strength: Close={last_close:.2f}, SMA20={last_sma20:.2f}, Strong={is_strong}")
+
+            self.sector_strength_cache = is_strong
+            self.last_sector_check = current_time
             return is_strong
         except Exception as e:
             self.logger.warning(f"Error checking sector strength: {e}. Defaulting to allow trades.")
-            return True
+            return True # Fail-safe, don't update cache time so it retries
 
     def run(self):
         self.symbol = normalize_symbol(self.symbol)
