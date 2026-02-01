@@ -183,5 +183,34 @@ class TestEODSquareOff(unittest.TestCase):
         executed_again = self.eod.check_and_execute()
         self.assertFalse(executed_again)
 
+    @patch('openalgo.strategies.utils.risk_manager.datetime')
+    def test_execute_square_off_with_client(self, mock_datetime):
+        # Mock time to be past square off
+        mock_now = datetime(2023, 10, 27, 15, 20)
+        mock_datetime.now.return_value = mock_now
+
+        # Reset Risk Manager state for this test
+        self.rm.positions = {}
+        self.rm.daily_pnl = 0.0
+        self.rm.register_entry("POS2", 10, 100, "LONG")
+
+        # Setup mock client
+        mock_client = MagicMock()
+        # Mock get_quote to return 90 (loss of 10 per share)
+        mock_client.get_quote.return_value = {'ltp': 90.0}
+
+        # Create EOD with client
+        eod_with_client = EODSquareOff(self.rm, self.mock_exit, api_client=mock_client)
+
+        executed = eod_with_client.check_and_execute()
+        self.assertTrue(executed)
+
+        # Verify get_quote was called
+        mock_client.get_quote.assert_called_with("POS2", exchange="NSE")
+
+        # Verify PnL calculation
+        # Entry was 100, Exit 90. Loss = (90 - 100) * 10 = -100
+        self.assertAlmostEqual(self.rm.daily_pnl, -100.0)
+
 if __name__ == '__main__':
     unittest.main()
