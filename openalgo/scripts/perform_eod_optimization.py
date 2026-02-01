@@ -68,7 +68,7 @@ class StrategyOptimizer:
                     signals += 1
 
                 # Entry Detection
-                if "BUY" in line or "SELL" in line:
+                if "BUY" in line.upper() or "SELL" in line.upper():
                     if "Signal" in line or "Crossover" in line: # Avoid double counting updates
                         entries += 1
 
@@ -87,8 +87,9 @@ class StrategyOptimizer:
                 elif "Trailing Stop Hit" in line:
                     # Fallback if PnL not logged explicitly, assume small win or track entry
                     # specific to supertrend mock
-                    wins += 1 # Assumption for this specific log format
-                    gross_win += 100 # Dummy value
+                    # wins += 1 # Assumption for this specific log format
+                    # gross_win += 100 # Dummy value
+                    pass
 
             total_trades = wins + losses
             win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
