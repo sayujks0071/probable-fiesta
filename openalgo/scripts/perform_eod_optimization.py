@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import sys
 import re
 import glob
 import logging
@@ -11,6 +12,10 @@ import numpy as np
 # Setup paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
+
+# Add real repo root to sys.path to find openalgo_observability
+sys.path.append(os.path.dirname(REPO_ROOT))
+
 LOG_DIR = os.path.join(REPO_ROOT, 'log', 'strategies')
 STRATEGIES_DIR = os.path.join(REPO_ROOT, 'strategies', 'scripts')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
@@ -18,7 +23,12 @@ REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 # Setup Logging
-logging.basicConfig(level=logging.INFO, format='%(message)s')
+try:
+    from openalgo_observability.logging_setup import setup_logging
+    setup_logging()
+except ImportError:
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
+
 logger = logging.getLogger("EOD_Optimizer")
 
 # Tunable Parameters Definition
