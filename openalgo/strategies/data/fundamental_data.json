@@ -1,7 +1,7 @@
 {
-    "GOLD": {"score": 60, "note": "Safe haven demand due to geopolitical tension"},
-    "SILVER": {"score": 55, "note": "Industrial demand picking up"},
-    "CRUDEOIL": {"score": 45, "note": "High inventory levels reported by EIA"},
-    "NATURALGAS": {"score": 80, "note": "Cold snap forecast in US"},
-    "COPPER": {"score": 50, "note": "China demand stable"}
+    "GOLD": {"score": 60, "note": "Safe haven demand due to geopolitical tension; Festivals approaching"},
+    "SILVER": {"score": 55, "note": "Industrial demand picking up; Tracking Gold"},
+    "CRUDEOIL": {"score": 45, "note": "High inventory levels reported by EIA; OPEC+ meeting pending"},
+    "NATURALGAS": {"score": 80, "note": "Cold snap forecast in US; Low storage levels"},
+    "COPPER": {"score": 50, "note": "China demand stable; Supply disruptions in Peru"}
 }

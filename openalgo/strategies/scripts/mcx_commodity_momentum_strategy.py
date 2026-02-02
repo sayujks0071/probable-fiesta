@@ -196,6 +196,8 @@ class MCXMomentumStrategy:
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
         global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
         usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
+        expiring_soon = self.params.get('contracts_expiring_soon', False)
+        volume_ok = current.get('volume', 0) > self.params.get('volume_threshold', 0)
 
         # Adjust Position Size
         base_qty = 1
@@ -209,6 +211,14 @@ class MCXMomentumStrategy:
 
         if not global_alignment_ok and not has_position:
             logger.info("Global Alignment Weak: Skipping new entries.")
+            return
+
+        if expiring_soon and not has_position:
+            logger.warning("Contract Expiring Soon: Skipping new entries.")
+            return
+
+        if not volume_ok and not has_position:
+            logger.info(f"Low Liquidity (Vol {current.get('volume', 0)} < {self.params.get('volume_threshold', 0)}): Skipping new entries.")
             return
 
         # Entry Logic
@@ -274,6 +284,8 @@ if __name__ == "__main__":
     parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
+    parser.add_argument('--contracts_expiring_soon', action='store_true', help='Flag if contracts are expiring within 5 days')
+    parser.add_argument('--volume_threshold', type=int, default=0, help='Minimum volume threshold')
 
     args = parser.parse_args()
 
@@ -288,7 +300,9 @@ if __name__ == "__main__":
         'usd_inr_trend': args.usd_inr_trend,
         'usd_inr_volatility': args.usd_inr_volatility,
         'seasonality_score': args.seasonality_score,
-        'global_alignment_score': args.global_alignment_score
+        'global_alignment_score': args.global_alignment_score,
+        'contracts_expiring_soon': args.contracts_expiring_soon,
+        'volume_threshold': args.volume_threshold
     }
 
     # Symbol Resolution
