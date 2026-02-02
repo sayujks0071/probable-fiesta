@@ -3,38 +3,40 @@ name: PR Symbol Validation
 on:
   pull_request:
     paths:
-      - "openalgo/strategies/**"
-      - "openalgo/configs/**"
-      - "openalgo/data/instruments/**"
+      - "openalgo/**"
+      - "trading/**"
+      - "strategies/**"
+      - "configs/**"
+      - "data/instruments/**"
       - "tools/**"
-
-permissions:
-  contents: read
 
 jobs:
   validate-symbols:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install --upgrade pip
+          pip install -r openalgo/requirements.txt
+          pip install types-requests
 
-      - name: Sync Instruments
-        run: python3 tools/sync_instruments.py
+      - name: Sync Instruments (Ensure Fresh)
+        run: python tools/sync_instruments.py
 
       - name: Run Strict Validation
-        run: python3 tools/validate_symbols.py --strict --check
+        run: python tools/validate_symbols.py --strict --check
 
-      - name: Upload Report
-        if: failure()
+      - name: Upload Audit Reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: symbol-validation-report
-          path: reports/
+          name: symbol-audit-reports
+          path: reports/symbol_audit.*
