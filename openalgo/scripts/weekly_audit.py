@@ -7,6 +7,7 @@ import psutil
 import yfinance as yf
 import requests
 import pandas as pd
+import re
 from pathlib import Path
 
 # Configure Logging
@@ -43,7 +44,7 @@ class WeeklyAudit:
         self.CAPITAL = 1000000.0
 
     def add_section(self, title, content):
-        self.report_lines.append(f"\n{title}")
+        self.report_lines.append(f"\n{title}\n")
         self.report_lines.append(content)
 
     def _get_ticker(self, symbol):
@@ -97,6 +98,10 @@ class WeeklyAudit:
                             total_exposure += exposure
                             active_positions += 1
                             tracked_symbols.add(symbol)
+
+                            # Risk Check: Position Size > 2%
+                            if exposure > (self.CAPITAL * 0.02):
+                                self.risk_issues.append(f"Position Size Risk: {symbol} Exposure {exposure:,.2f} > 2% Limit")
 
                             # Fetch current price for PnL/DD
                             current_price = self.get_market_price(symbol)
@@ -451,8 +456,64 @@ class WeeklyAudit:
         )
         self.add_section("✅ COMPLIANCE CHECK:", content)
 
+    def calculate_weekly_pnl(self):
+        logger.info("Calculating Weekly P&L...")
+        total_pnl = 0.0
+        wins = 0
+        losses = 0
+        log_dir = self.root_dir / "log" / "strategies"
+
+        if not log_dir.exists():
+            self.add_section("💰 WEEKLY P&L REPORT:", "No logs found.")
+            return
+
+        week_ago = datetime.datetime.now() - datetime.timedelta(days=7)
+
+        # Pattern: Closed (Short|Long). PnL: (-?\d+\.\d+)
+        pnl_pattern = re.compile(r"Closed (Short|Long)\. PnL: (-?\d+\.\d+)")
+
+        for log_file in log_dir.glob("*.log"):
+            try:
+                with open(log_file, 'r', errors='ignore') as f:
+                    for line in f:
+                        # Extract timestamp
+                        # Assuming format: YYYY-MM-DD HH:MM:SS,mmm - ...
+                        # or similar. We try to be flexible.
+                        try:
+                            # Try to split by first ' - '
+                            parts = line.split(' - ')
+                            if not parts: continue
+
+                            ts_str = parts[0].split(',')[0] # remove milliseconds if present
+                            ts = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+
+                            if ts < week_ago:
+                                continue
+                        except Exception:
+                            # If date parsing fails, skip check or assume recent?
+                            # Safer to skip if we can't verify date.
+                            continue
+
+                        match = pnl_pattern.search(line)
+                        if match:
+                            pnl_val = float(match.group(2))
+                            total_pnl += pnl_val
+                            if pnl_val > 0: wins += 1
+                            else: losses += 1
+            except Exception as e:
+                logger.error(f"Error parsing {log_file}: {e}")
+
+        status = "✅ Profitable" if total_pnl >= 0 else "⚠️ Loss Making"
+        content = (
+            f"- Total Realized P&L: ₹{total_pnl:,.2f}\n"
+            f"- Trades: {wins} Wins, {losses} Losses\n"
+            f"- Status: {status}"
+        )
+        self.add_section("💰 WEEKLY P&L REPORT:", content)
+
     def run(self):
         tracked_symbols = self.analyze_portfolio_risk()
+        self.calculate_weekly_pnl() # New Step
         self.analyze_correlations(tracked_symbols)
         self.analyze_sector_distribution(tracked_symbols)
         self.check_data_quality(tracked_symbols)
