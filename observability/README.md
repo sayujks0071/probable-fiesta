@@ -1,79 +1,86 @@
-# OpenAlgo Local Observability Stack
+# OpenAlgo Local Observability
 
-This directory contains the configuration for running a local observability stack using Grafana, Loki, and Promtail.
+This directory contains the configuration for the local observability stack, powered by **Loki**, **Promtail**, and **Grafana**. It provides a lightweight, local-first solution for monitoring OpenAlgo logs, visualizing metrics, and alerting on errors.
 
-## Components
+## Prerequisites
 
-1.  **Loki**: Log aggregation system (Port 3100).
-2.  **Promtail**: Log collector that tails logs from `../logs/*.log` and ships them to Loki.
-3.  **Grafana**: Visualization dashboard (Port 3000).
+*   **Docker** & **Docker Compose**: To run the observability stack.
+*   **Python 3**: To run OpenAlgo and the health check scripts.
+*   **Make**: (Optional) For easy management commands.
 
-## Setup
+## Quick Start
 
-### Prerequisites
-- Docker and Docker Compose installed.
-- Python 3 for running OpenAlgo.
+1.  **Start the Observability Stack**:
+    ```bash
+    make obs-up
+    # OR
+    docker compose -f observability/docker-compose.yml up -d
+    ```
+    This spins up Loki (port 3100), Grafana (port 3000), and Promtail.
 
-### Quick Start
+2.  **Run OpenAlgo**:
+    ```bash
+    make run
+    # OR
+    python3 daily_startup.py
+    ```
+    OpenAlgo will write logs to `logs/openalgo.log`, which Promtail tails and pushes to Loki.
 
-Use the `Makefile` in the repo root:
+3.  **View Dashboard**:
+    *   Open [http://localhost:3000](http://localhost:3000).
+    *   Login with `admin` / `admin`.
+    *   Go to **Dashboards** > **OpenAlgo** > **OpenAlgo Local Dashboard**.
 
+## Features
+
+### Logging
+*   **Structured Logs**: All logs are written to `logs/openalgo.log`.
+*   **Rotation**: Logs rotate automatically (10MB size, 5 backups).
+*   **JSON Mode**: Set `OPENALGO_LOG_JSON=1` to emit logs in JSON format for easier parsing.
+*   **Redaction**: Sensitive patterns (API keys, tokens, passwords) are automatically redacted (replaced with `[REDACTED]`) before being written to disk or console.
+
+### Dashboard
+The default dashboard provides:
+*   **Errors (Last 5m)**: Count of log lines containing "ERROR".
+*   **Orders Placed**: Count of order placement events.
+*   **Auth Failures**: Count of authentication/token errors.
+*   **Log Stream**: Real-time view of the logs with search capabilities.
+
+### Health Checks & Alerting
+A Python-based health check script (`scripts/healthcheck.py`) runs periodically to:
+1.  **Check Services**: Verifies OpenAlgo, Loki, and Grafana are running.
+2.  **Analyze Logs**: Queries Loki for error spikes or critical failures (e.g., "Broker error").
+3.  **Alert**:
+    *   **Desktop Notification**: Native system notification.
+    *   **Telegram**: If configured.
+
+#### Enabling Scheduled Checks
+To run the health check every 5 minutes automatically:
+
+**Option 1: Systemd (Recommended for Linux)**
 ```bash
-# Start Observability Stack
-make obs-up
-
-# Check Status
-make status
-
-# View Logs (Tail)
-make obs-logs
-
-# Stop Stack
-make obs-down
+make install-obs
+# OR
+./scripts/install_systemd_user_timers.sh
 ```
 
-### Accessing Dashboards
-
-1.  Open [http://localhost:3000](http://localhost:3000).
-2.  Login with `admin` / `admin`.
-3.  Navigate to **Dashboards > Manage**.
-4.  You should see **OpenAlgo Local Dashboard**.
-
-### Logging Configuration
-
-OpenAlgo uses a custom logging module `openalgo_observability` that:
-- Writes to `logs/openalgo.log`.
-- Redacts sensitive keys (api_key, password, etc.).
-- Supports JSON logging via `OPENALGO_LOG_JSON=1`.
-
-To run OpenAlgo with logging enabled:
-
+**Option 2: Cron**
 ```bash
-# Run the daily startup script
-make run
-
-# Or manually
-python3 daily_startup.py
+./scripts/install_cron.sh
 ```
 
-### Alerts
-
-A health check script is provided in `scripts/healthcheck.py`. It runs periodically to:
-1.  Check if OpenAlgo and Observability services are up.
-2.  Query Loki for error spikes or critical failures.
-3.  Send alerts to Console/Desktop/Telegram.
-
-To enable Telegram alerts, set environment variables:
+#### Configuring Telegram Alerts
+Set the following environment variables (e.g., in your `.env` file or shell):
 ```bash
-export TELEGRAM_BOT_TOKEN="your_token"
+export TELEGRAM_BOT_TOKEN="your_bot_token"
 export TELEGRAM_CHAT_ID="your_chat_id"
 ```
 
-To install the scheduled health check:
-```bash
-# Install as Systemd User Timer (Recommended)
-./scripts/install_systemd_user_timers.sh
+## Management Commands
 
-# Or Install as Cron job
-./scripts/install_cron.sh
-```
+The `Makefile` at the repo root simplifies operations:
+
+*   `make obs-up`: Start Loki/Grafana/Promtail.
+*   `make obs-down`: Stop the stack.
+*   `make obs-logs`: Tail Promtail and App logs.
+*   `make status`: Check the status of containers and run a one-off health check.
