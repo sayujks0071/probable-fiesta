@@ -25,6 +25,11 @@ logger = logging.getLogger("AuthCheck")
 try:
     from openalgo.utils.env_check import load_and_check_env_variables
     load_and_check_env_variables()
+except ImportError as e:
+    if "dotenv" in str(e):
+        logger.error("Missing dependency: python-dotenv. Please install it: pip install python-dotenv")
+    else:
+        logger.error(f"Import Error loading environment: {e}")
 except SystemExit:
     logger.error("Environment check failed (SystemExit). Proceeding with limited functionality.")
 except Exception as e:
