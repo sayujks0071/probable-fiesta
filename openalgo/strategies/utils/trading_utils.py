@@ -10,6 +10,18 @@ import httpx
 import pandas as pd
 import numpy as np
 
+try:
+    from openalgo.strategies.utils.constants import (
+        NSE_MARKET_OPEN_TIME, NSE_MARKET_CLOSE_TIME,
+        MCX_MARKET_OPEN_TIME, MCX_MARKET_CLOSE_TIME
+    )
+except ImportError:
+    # Fallback if running outside package context or constants missing
+    NSE_MARKET_OPEN_TIME = "09:15"
+    NSE_MARKET_CLOSE_TIME = "15:30"
+    MCX_MARKET_OPEN_TIME = "09:00"
+    MCX_MARKET_CLOSE_TIME = "23:30"
+
 # Configure logging
 try:
     from openalgo_observability.logging_setup import setup_logging
@@ -47,8 +59,11 @@ def is_mcx_market_open():
     if now.weekday() >= 5: # 5=Sat, 6=Sun
         return False
 
-    market_start = dt_time(9, 0)
-    market_end = dt_time(23, 30)
+    open_h, open_m = map(int, MCX_MARKET_OPEN_TIME.split(':'))
+    close_h, close_m = map(int, MCX_MARKET_CLOSE_TIME.split(':'))
+
+    market_start = dt_time(open_h, open_m)
+    market_end = dt_time(close_h, close_m)
     current_time = now.time()
 
     return market_start <= current_time <= market_end
@@ -69,8 +84,11 @@ def is_market_open(exchange="NSE"):
     if now.weekday() >= 5: # 5=Sat, 6=Sun
         return False
 
-    market_start = dt_time(9, 15)
-    market_end = dt_time(15, 30)
+    open_h, open_m = map(int, NSE_MARKET_OPEN_TIME.split(':'))
+    close_h, close_m = map(int, NSE_MARKET_CLOSE_TIME.split(':'))
+
+    market_start = dt_time(open_h, open_m)
+    market_end = dt_time(close_h, close_m)
     current_time = now.time()
 
     return market_start <= current_time <= market_end

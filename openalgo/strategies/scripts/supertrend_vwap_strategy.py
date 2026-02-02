@@ -25,20 +25,24 @@ sys.path.insert(0, utils_dir)
 try:
     from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
     from symbol_resolver import SymbolResolver
+    from risk_manager import RiskManager
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
         from utils.symbol_resolver import SymbolResolver
+        from utils.risk_manager import RiskManager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+            from openalgo.strategies.utils.risk_manager import RiskManager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
             SymbolResolver = None
+            RiskManager = None
             normalize_symbol = lambda s: s
             is_market_open = lambda: True
             def calculate_intraday_vwap(df):
@@ -104,6 +108,25 @@ class SuperTrendVWAPStrategy:
             self.client = APIClient(api_key=self.api_key, host=self.host)
 
         self.pm = PositionManager(symbol) if PositionManager else None
+
+        # Initialize Risk Manager
+        try:
+            capital = float(os.getenv('OPENALGO_CAPITAL', 100000))
+            # Determine exchange
+            exchange = "NSE"
+            if "MCX" in str(self.host).upper() or "GOLD" in symbol or "SILVER" in symbol or "CRUDE" in symbol:
+                exchange = "MCX"
+            elif "NIFTY" in symbol or "BANK" in symbol:
+                exchange = "NSE"
+
+            self.rm = RiskManager(
+                strategy_name=f"SuperTrendVWAP_{symbol}",
+                exchange=exchange,
+                capital=capital
+            ) if RiskManager else None
+        except Exception as e:
+            self.logger.warning(f"RiskManager init failed: {e}. Using fallback.")
+            self.rm = None
 
     def generate_signal(self, df):
         """
@@ -390,16 +413,31 @@ class SuperTrendVWAPStrategy:
                     sector_bullish = self.check_sector_correlation()
 
                     if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish:
-                        adj_qty = int(self.quantity * size_multiplier)
-                        if adj_qty < 1: adj_qty = 1 # Minimum 1
-                        self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
-                        if self.pm:
-                            self.pm.update_position(adj_qty, last['close'], 'BUY')
-                            sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
-                            self.trailing_stop = last['close'] - (sl_mult * self.atr)
+                        # Risk Check
+                        can_trade = True
+                        if self.rm:
+                            can_trade, reason = self.rm.can_trade()
+                            if not can_trade:
+                                self.logger.warning(f"Risk Check Failed: {reason}")
+
+                        if can_trade:
+                            adj_qty = int(self.quantity * size_multiplier)
+                            if adj_qty < 1: adj_qty = 1 # Minimum 1
+                            self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
+
+                            if self.pm:
+                                self.pm.update_position(adj_qty, last['close'], 'BUY')
+                                sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
+                                self.trailing_stop = last['close'] - (sl_mult * self.atr)
+
+                                # Register with Risk Manager
+                                if self.rm:
+                                    self.rm.register_entry(self.symbol, adj_qty, last['close'], 'LONG', stop_loss=self.trailing_stop)
 
             except Exception as e:
                 self.logger.error(f"Error in SuperTrend VWAP strategy for {self.symbol}: {e}", exc_info=True)
+                time.sleep(5) # Short backoff for transient errors
+                continue
 
             time.sleep(60)
 
