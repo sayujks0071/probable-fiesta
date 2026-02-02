@@ -23,6 +23,18 @@ from datetime import datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable
 
+try:
+    from openalgo.strategies.utils.constants import (
+        DEFAULT_MAX_LOSS_PER_TRADE_PCT, DEFAULT_MAX_DAILY_LOSS_PCT,
+        DEFAULT_EOD_SQUARE_OFF_NSE, DEFAULT_EOD_SQUARE_OFF_MCX
+    )
+except ImportError:
+    # Fallback
+    DEFAULT_MAX_LOSS_PER_TRADE_PCT = 2.0
+    DEFAULT_MAX_DAILY_LOSS_PCT = 5.0
+    DEFAULT_EOD_SQUARE_OFF_NSE = '15:15'
+    DEFAULT_EOD_SQUARE_OFF_MCX = '23:15'
+
 logger = logging.getLogger("RiskManager")
 
 class RiskManager:
@@ -39,11 +51,11 @@ class RiskManager:
 
     # Default risk parameters (can be overridden)
     DEFAULT_CONFIG = {
-        'max_loss_per_trade_pct': 2.0,      # Max 2% loss per trade
-        'max_daily_loss_pct': 5.0,           # Max 5% daily loss - circuit breaker
+        'max_loss_per_trade_pct': DEFAULT_MAX_LOSS_PER_TRADE_PCT,
+        'max_daily_loss_pct': DEFAULT_MAX_DAILY_LOSS_PCT,
         'max_position_value': 500000,        # Max 5 lakh per position
-        'eod_square_off_time': '15:15',      # NSE: Square off by 3:15 PM
-        'mcx_eod_square_off_time': '23:25',  # MCX: Square off by 11:25 PM
+        'eod_square_off_time': DEFAULT_EOD_SQUARE_OFF_NSE,
+        'mcx_eod_square_off_time': DEFAULT_EOD_SQUARE_OFF_MCX,
         'trade_cooldown_seconds': 300,       # 5 min between trades
         'trailing_stop_enabled': True,
         'trailing_stop_pct': 1.5,            # 1.5% trailing stop

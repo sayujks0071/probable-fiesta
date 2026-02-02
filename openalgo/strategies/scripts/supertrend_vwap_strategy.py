@@ -112,9 +112,16 @@ class SuperTrendVWAPStrategy:
         # Initialize Risk Manager
         try:
             capital = float(os.getenv('OPENALGO_CAPITAL', 100000))
+            # Determine exchange
+            exchange = "NSE"
+            if "MCX" in str(self.host).upper() or "GOLD" in symbol or "SILVER" in symbol or "CRUDE" in symbol:
+                exchange = "MCX"
+            elif "NIFTY" in symbol or "BANK" in symbol:
+                exchange = "NSE"
+
             self.rm = RiskManager(
                 strategy_name=f"SuperTrendVWAP_{symbol}",
-                exchange="NSE" if "NIFTY" in symbol or "BANK" in symbol else "NSE",
+                exchange=exchange,
                 capital=capital
             ) if RiskManager else None
         except Exception as e:
