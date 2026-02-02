@@ -26,7 +26,8 @@ from typing import Optional, Dict, Any, Callable
 try:
     from openalgo.strategies.utils.constants import (
         DEFAULT_MAX_LOSS_PER_TRADE_PCT, DEFAULT_MAX_DAILY_LOSS_PCT,
-        DEFAULT_EOD_SQUARE_OFF_NSE, DEFAULT_EOD_SQUARE_OFF_MCX
+        DEFAULT_EOD_SQUARE_OFF_NSE, DEFAULT_EOD_SQUARE_OFF_MCX,
+        DEFAULT_TRADE_COOLDOWN
     )
 except ImportError:
     # Fallback
@@ -34,6 +35,7 @@ except ImportError:
     DEFAULT_MAX_DAILY_LOSS_PCT = 5.0
     DEFAULT_EOD_SQUARE_OFF_NSE = '15:15'
     DEFAULT_EOD_SQUARE_OFF_MCX = '23:15'
+    DEFAULT_TRADE_COOLDOWN = 300
 
 logger = logging.getLogger("RiskManager")
 
@@ -56,7 +58,7 @@ class RiskManager:
         'max_position_value': 500000,        # Max 5 lakh per position
         'eod_square_off_time': DEFAULT_EOD_SQUARE_OFF_NSE,
         'mcx_eod_square_off_time': DEFAULT_EOD_SQUARE_OFF_MCX,
-        'trade_cooldown_seconds': 300,       # 5 min between trades
+        'trade_cooldown_seconds': DEFAULT_TRADE_COOLDOWN,
         'trailing_stop_enabled': True,
         'trailing_stop_pct': 1.5,            # 1.5% trailing stop
     }
