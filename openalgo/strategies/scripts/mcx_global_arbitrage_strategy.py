@@ -23,13 +23,16 @@ if str(utils_path) not in sys.path:
 try:
     from trading_utils import APIClient
     from symbol_resolver import SymbolResolver
+    from risk_manager import RiskManager
 except ImportError:
     try:
         from openalgo.strategies.utils.trading_utils import APIClient
         from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+        from openalgo.strategies.utils.risk_manager import RiskManager
     except ImportError:
         APIClient = None
         SymbolResolver = None
+        RiskManager = None
 
 # Configuration
 SYMBOL = os.getenv('SYMBOL', None)
@@ -49,7 +52,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(f"MCX_Arbitrage_{SYMBOL}")
 
 class MCXGlobalArbitrageStrategy:
-    def __init__(self, symbol, global_symbol, params, api_client=None):
+    def __init__(self, symbol, global_symbol, params, api_client=None, capital=100000):
         self.symbol = symbol
         self.global_symbol = global_symbol
         self.params = params
@@ -62,6 +65,22 @@ class MCXGlobalArbitrageStrategy:
         # Session Reference Points (Opening Price of the session/day)
         self.session_ref_mcx = None
         self.session_ref_global = None
+
+        # Risk Manager
+        if RiskManager:
+            self.rm = RiskManager(
+                strategy_name=f"MCX_Arb_{symbol}",
+                exchange="MCX",
+                capital=capital,
+                config={
+                    'max_loss_per_trade_pct': 1.0,
+                    'max_daily_loss_pct': 2.0,
+                    'mcx_eod_square_off_time': '23:25'
+                }
+            )
+        else:
+            self.rm = None
+            logger.warning("RiskManager not available. Running without centralized risk controls!")
 
     def fetch_data(self):
         """Fetch live MCX and Global prices. Returns True on success."""
@@ -148,11 +167,18 @@ class MCXGlobalArbitrageStrategy:
 
         logger.info(f"MCX Chg: {mcx_change_pct:.2f}% | Global Chg: {global_change_pct:.2f}% | Divergence: {divergence_pct:.2f}%")
         
+        # Risk Checks
+        can_trade = True
+        if self.rm:
+            can_trade, reason = self.rm.can_trade()
+            if not can_trade:
+                logger.warning(f"Risk Block: {reason}")
+
         # Entry Logic
         current_time = time.time()
         time_since_last_trade = current_time - self.last_trade_time
         
-        if self.position == 0:
+        if self.position == 0 and can_trade:
             if time_since_last_trade < self.cooldown_seconds:
                 return
             
@@ -174,7 +200,16 @@ class MCXGlobalArbitrageStrategy:
     def entry(self, side, price, reason):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
         
+        # Risk Manager Check (Double check before execution)
+        if self.rm:
+            can, msg = self.rm.can_trade()
+            if not can:
+                logger.error(f"Trade Aborted by Risk Manager: {msg}")
+                return
+
         order_placed = False
+        qty = 1 # Configurable
+
         if self.api_client:
             try:
                 response = self.api_client.placesmartorder(
@@ -184,8 +219,8 @@ class MCXGlobalArbitrageStrategy:
                     exchange="MCX",
                     price_type="MARKET",
                     product="MIS",
-                    quantity=1,
-                    position_size=1
+                    quantity=qty,
+                    position_size=qty
                 )
                 logger.info(f"[ENTRY] Order placed: {side} {self.symbol} @ {price:.2f}")
                 order_placed = True
@@ -197,11 +232,15 @@ class MCXGlobalArbitrageStrategy:
         if order_placed or not self.api_client: # Assume success if no client (testing)
             self.position = 1 if side == "BUY" else -1
             self.last_trade_time = time.time()
+            if self.rm:
+                self.rm.register_entry(self.symbol, qty, price, "LONG" if side == "BUY" else "SHORT")
 
     def exit(self, side, price, reason):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
         
         order_placed = False
+        qty = abs(self.position) # Close full position (simplified)
+
         if self.api_client:
             try:
                 response = self.api_client.placesmartorder(
@@ -211,7 +250,7 @@ class MCXGlobalArbitrageStrategy:
                     exchange="MCX",
                     price_type="MARKET",
                     product="MIS",
-                    quantity=abs(self.position),
+                    quantity=qty,
                     position_size=0
                 )
                 logger.info(f"[EXIT] Order placed: {side} {self.symbol} @ {price:.2f}")
@@ -224,11 +263,25 @@ class MCXGlobalArbitrageStrategy:
         if order_placed or not self.api_client:
             self.position = 0
             self.last_trade_time = time.time()
+            if self.rm:
+                self.rm.register_exit(self.symbol, price, qty)
 
     def run(self):
         logger.info(f"Starting MCX Global Arbitrage Strategy for {self.symbol} vs {self.global_symbol}")
         
         while True:
+            # EOD Check
+            if self.rm and self.rm.should_square_off_eod():
+                if self.position != 0:
+                    logger.warning("⏰ EOD Square-off Triggered by RiskManager")
+                    side = "BUY" if self.position == -1 else "SELL"
+                    current_price = 0
+                    if not self.data.empty:
+                        current_price = self.data.iloc[-1]['mcx_price']
+                    self.exit(side, current_price, "EOD Auto Square-off")
+                else:
+                    logger.info("EOD Check: No open position.")
+
             if self.fetch_data():
                 self.check_signals()
             time.sleep(60)
@@ -239,6 +292,7 @@ if __name__ == "__main__":
     parser.add_argument('--global_symbol', type=str, default='GC=F', help='Global Symbol for comparison (e.g. GC=F)')
     parser.add_argument('--port', type=int, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key')
+    parser.add_argument('--capital', type=float, default=100000, help='Capital for Risk Manager')
 
     args = parser.parse_args()
 
@@ -281,5 +335,5 @@ if __name__ == "__main__":
     else:
         logger.warning("APIClient not available. Strategy will run in signal-only mode.")
 
-    strategy = MCXGlobalArbitrageStrategy(SYMBOL, GLOBAL_SYMBOL, PARAMS, api_client=api_client)
+    strategy = MCXGlobalArbitrageStrategy(SYMBOL, GLOBAL_SYMBOL, PARAMS, api_client=api_client, capital=args.capital)
     strategy.run()
