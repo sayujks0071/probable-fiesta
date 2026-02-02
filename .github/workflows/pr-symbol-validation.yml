@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   validate-symbols:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v3
 
@@ -24,7 +24,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install pandas httpx pytz
 
       - name: Sync Instruments
         run: python3 tools/sync_instruments.py
