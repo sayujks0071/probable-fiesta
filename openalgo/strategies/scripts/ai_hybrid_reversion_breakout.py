@@ -122,7 +122,7 @@ class AIHybridStrategy:
             if last['volume'] > avg_vol * 1.2:
                 # Reversion can trade against trend, so maybe ignore regime or be strict?
                 # Let's say Reversion is allowed in any regime if oversold enough.
-                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
 
         # Breakout Logic: RSI > 60 and Price > Upper BB
         elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
@@ -130,7 +130,7 @@ class AIHybridStrategy:
             # Breakout needs significant volume (2x avg)
             # Breakout ONLY in Bullish Regime
             if last['volume'] > avg_vol * 2.0 and is_bullish_regime:
-                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
 
         return 'HOLD', 0.0, {}
 
@@ -407,10 +407,18 @@ def generate_signal(df, client=None, symbol=None, params=None):
     global TIME_STOP_BARS
     TIME_STOP_BARS = getattr(strat, 'time_stop_bars', 12)
 
+    # Update global params if provided
+    if params and 'breakeven_trigger' in params:
+        global BREAKEVEN_TRIGGER_R
+        BREAKEVEN_TRIGGER_R = params['breakeven_trigger']
+
     return strat.calculate_signal(df)
 
 # Global default for engine check
 TIME_STOP_BARS = 12
+ATR_SL_MULTIPLIER = 2.0
+ATR_TP_MULTIPLIER = 3.0
+BREAKEVEN_TRIGGER_R = 1.5
 
 if __name__ == "__main__":
     run_strategy()
