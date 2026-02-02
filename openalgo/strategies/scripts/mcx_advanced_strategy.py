@@ -197,7 +197,7 @@ class AdvancedMCXStrategy:
                 comm['symbol'] = symbol
 
                 # Check for Expiry
-                # Parse symbol e.g. GOLDM05FEB24FUT
+                # Parse symbol e.g. GOLDM05FEB24-FUT
                 match = re.search(r'(\d{2})([A-Z]{3})(\d{2})', symbol)
                 if match:
                     day, month_str, year_str = match.groups()
