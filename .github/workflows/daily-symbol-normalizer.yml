@@ -2,7 +2,7 @@ name: Daily Symbol Normalizer
 
 on:
   schedule:
-    - cron: '30 2 * * *' # 02:30 UTC
+    - cron: '30 02 * * *' # 02:30 UTC = 08:00 IST
   workflow_dispatch:
 
 permissions:
@@ -11,97 +11,99 @@ permissions:
   issues: write
 
 jobs:
-  normalize-and-audit:
+  audit-and-normalize:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install --upgrade pip
+          pip install -r openalgo/requirements.txt
+          pip install types-requests
 
-      - name: A) Sync Instruments
-        id: sync
-        run: python3 tools/sync_instruments.py
+      - name: Sync Instruments
+        run: python tools/sync_instruments.py
 
-      - name: B) Pre-Check Strict Validation
-        id: precheck
-        continue-on-error: true
-        run: python3 tools/validate_symbols.py --strict --check
+      - name: Pre-Check (Strict Validator)
+        id: pre_check
+        run: python tools/validate_symbols.py --strict --check
+        # Hard-Gate: If this fails, we stop and do NOT proceed to normalization/PR.
+        # However, we must ensure artifacts are uploaded.
+        continue-on-error: false
 
-      - name: C) Normalize Symbols
+      - name: Normalize Symbols (Write)
         id: normalize
-        if: steps.precheck.outcome == 'success'
-        run: python3 tools/normalize_symbols_repo.py --write
+        # This only runs if pre_check succeeded (which means symbols are valid)
+        # This implies normalization might be redundant unless validate allows non-normalized?
+        # But Strict Validator fails on malformed. So this step is effectively reachable only if everything is already valid.
+        if: success()
+        run: python tools/normalize_symbols_repo.py --write
 
-      - name: D) Post-Check Strict Validation
-        id: postcheck
-        if: steps.normalize.outcome == 'success'
-        continue-on-error: true
-        run: python3 tools/validate_symbols.py --strict --check
+      - name: Post-Check (Strict Validator)
+        id: post_check
+        if: success()
+        run: python tools/validate_symbols.py --strict --check
 
-      - name: Gate Check
+      - name: Determine Gate Status
         id: gate
+        if: always()
         run: |
-          if [[ "${{ steps.precheck.outcome }}" == "success" && "${{ steps.postcheck.outcome }}" == "success" ]]; then
+          if [ "${{ steps.post_check.outcome }}" == "success" ]; then
             echo "gate_ok=true" >> $GITHUB_OUTPUT
-            echo "Gate passed."
           else
             echo "gate_ok=false" >> $GITHUB_OUTPUT
-            echo "Gate failed."
           fi
 
-      - name: Generate Reports Artifact
+      - name: Upload Audit Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: symbol-audit-reports
-          path: reports/
+          path: reports/symbol_audit.*
 
       - name: Create Pull Request
+        # Only if Gate OK (implying Post-Check passed, which implies Pre-Check passed)
         if: steps.gate.outputs.gate_ok == 'true'
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v6
         with:
+          commit-message: "chore(symbols): normalize trading symbols [strict]"
           branch: chore/symbols-daily
-          title: "chore: Daily Symbol Normalization"
+          delete-branch: true
+          title: "chore: Daily Symbol Normalization & Audit"
           body: |
-            Daily symbol normalization report.
-            See attached audit report for details.
+            ### Symbol Audit Report
+            - Strict Mode: Enabled
+            - Validation: Passed
 
-            [Audit Report](reports/symbol_audit.md)
-          commit-message: "chore: normalize symbols"
-          add-paths: |
-            openalgo/strategies/**/*.py
-            reports/symbol_audit.md
-            reports/symbol_audit.json
+            See attached audit report in workflow artifacts for details.
+          labels: |
+            maintenance
+            symbols
 
-      - name: Create Issue on Failure
-        if: steps.gate.outputs.gate_ok == 'false'
-        uses: actions/github-script@v6
+      - name: Open Issue on Failure
+        # If Gate Failed (Pre-Check or Post-Check failed)
+        if: failure() || steps.gate.outputs.gate_ok == 'false'
+        uses: dacbd/create-issue-action@v2
         with:
-          script: |
-            const fs = require('fs');
-            let body = "Daily symbol audit failed. Please check the attached artifacts.\n\n";
-            try {
-              // Read report if exists
-              if (fs.existsSync('reports/symbol_audit.md')) {
-                const report = fs.readFileSync('reports/symbol_audit.md', 'utf8');
-                body += report;
-              }
-            } catch (e) {
-              body += "Could not read audit report.";
-            }
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: "Symbol audit failed (daily) — ${{ github.event.schedule }}"
+          body: |
+            ### ❌ Symbol Audit Failed
+            The daily symbol normalization and validation process failed.
 
-            // Create Issue
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `Symbol Audit Failed (Daily) - ${new Date().toISOString().split('T')[0]}`,
-              body: body,
-              labels: ['symbols', 'audit-failed']
-            });
+            **Reason:** Strict validation failed.
+            Note: Under Hard-Gate policy, automated PRs are blocked if invalid symbols exist.
+
+            Please check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) and the attached `symbol_audit` artifacts.
+
+            **Action Required:**
+            - Check `reports/symbol_audit.md`
+            - Fix invalid symbols manually or run `tools/normalize_symbols_repo.py --write` locally.
+          labels: symbols

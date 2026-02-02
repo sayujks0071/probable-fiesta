@@ -4,6 +4,7 @@ import sys
 import argparse
 import re
 import json
+import time
 import pandas as pd
 from datetime import datetime
 from collections import defaultdict
@@ -22,6 +23,17 @@ MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORE
 
 # Valid Months
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+
+def check_instruments_freshness():
+    if not os.path.exists(INSTRUMENTS_FILE):
+        return False, "Instruments file missing"
+
+    mtime = os.path.getmtime(INSTRUMENTS_FILE)
+    file_age = time.time() - mtime
+    if file_age > 86400: # 24 hours
+        return False, f"Instruments file stale ({file_age/3600:.1f} hours old)"
+
+    return True, "Fresh"
 
 def load_instruments():
     if not os.path.exists(INSTRUMENTS_FILE):
@@ -108,17 +120,26 @@ def main():
     args = parser.parse_args()
 
     instruments = load_instruments()
+    fresh, msg = check_instruments_freshness()
+
     if instruments is None:
         if args.strict:
-            print("Error: Instrument master missing or unreadable in strict mode.")
+            print("❌ Error: Instrument master missing or unreadable in strict mode.")
             sys.exit(3)
         else:
-            print("Warning: Instrument master missing. Validation will be limited.")
+            print("⚠️ Warning: Instrument master missing. Validation will be limited.")
+    elif not fresh:
+        if args.strict:
+             print(f"❌ Error: Instrument master problem in strict mode: {msg}")
+             sys.exit(3)
+        else:
+             print(f"⚠️ Warning: {msg}")
 
     audit_report = {
         "timestamp": datetime.now().isoformat(),
         "strict_mode": args.strict,
         "instruments_loaded": instruments is not None,
+        "instrument_status": msg,
         "issues": []
     }
 
@@ -138,27 +159,33 @@ def main():
 
 
     for filepath in files_to_scan:
-        new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
-        if file_issues:
-            audit_report["issues"].extend(file_issues)
+        try:
+            new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
+            if file_issues:
+                audit_report["issues"].extend(file_issues)
 
-        if changed and args.write:
-            try:
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(new_content)
-                print(f"Fixed: {filepath}")
-            except Exception as e:
-                print(f"Error writing {filepath}: {e}")
+            if changed and args.write:
+                try:
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
+                    print(f"Fixed: {filepath}")
+                except Exception as e:
+                    print(f"Error writing {filepath}: {e}")
+        except Exception as e:
+            print(f"Error scanning {filepath}: {e}")
 
     # Generate Reports
     os.makedirs(REPORTS_DIR, exist_ok=True)
 
     # JSON Report
-    with open(os.path.join(REPORTS_DIR, 'symbol_audit.json'), 'w') as f:
+    json_path = os.path.join(REPORTS_DIR, 'symbol_audit.json')
+    with open(json_path, 'w') as f:
         json.dump(audit_report, f, indent=2)
+    print(f"Report generated: {json_path}")
 
     # Markdown Report
-    with open(os.path.join(REPORTS_DIR, 'symbol_audit.md'), 'w') as f:
+    md_path = os.path.join(REPORTS_DIR, 'symbol_audit.md')
+    with open(md_path, 'w') as f:
         f.write("# Symbol Audit Report\n\n")
         f.write(f"Date: {datetime.now()}\n")
         f.write(f"Strict Mode: {args.strict}\n")
@@ -171,20 +198,21 @@ def main():
              f.write("|---|---|---|---|\n")
              for issue in audit_report["issues"]:
                  f.write(f"| {os.path.basename(issue['file'])} | {issue['symbol']} | {issue['status']} | {issue.get('error', issue.get('normalized', ''))} |\n")
+    print(f"Report generated: {md_path}")
 
     # Check for strict failure
     invalid_symbols = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING')]
 
-    if args.strict and args.check:
-         # In strict check mode, fail if normalization is needed
-         normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
-         if normalized_count > 0:
-             print(f"❌ Found {normalized_count} symbols needing normalization.")
-             sys.exit(1)
+    if args.strict:
+        if args.check:
+             # In strict check mode, fail if normalization is needed
+             normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
+             if normalized_count > 0:
+                 print(f"❌ Strict Mode: Found {normalized_count} symbols needing normalization. Failing.")
+                 sys.exit(1)
 
-    if invalid_symbols:
-        print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols.")
-        if args.strict:
+        if invalid_symbols:
+            print(f"❌ Strict Mode: Found {len(invalid_symbols)} invalid/missing symbols. Failing.")
             sys.exit(1)
 
     if args.write:

@@ -51,7 +51,7 @@ def validate_config_symbols(resolver):
                     issues.append({
                         "source": "active_strategies.json",
                         "id": strat_id,
-                        "error": "Failed to resolve symbol",
+                        "error": "Failed to resolve symbol (missing or invalid params)",
                         "status": "INVALID"
                     })
                 elif isinstance(resolved, dict):
@@ -59,7 +59,7 @@ def validate_config_symbols(resolver):
                         issues.append({
                             "source": "active_strategies.json",
                             "id": strat_id,
-                            "error": "Invalid option configuration",
+                            "error": f"Invalid option configuration: {resolved}",
                             "status": "INVALID"
                         })
             except Exception as e:
@@ -148,7 +148,7 @@ def main():
         if args.strict:
             sys.exit(3)
         else:
-            print("Warning: proceeding with stale data.")
+            print("⚠️ Warning: proceeding with stale data.")
 
     # Load resolver
     try:
@@ -186,11 +186,13 @@ def main():
 
     # Report Generation
     os.makedirs(REPORTS_DIR, exist_ok=True)
-    with open(os.path.join(REPORTS_DIR, 'symbol_audit.json'), 'w') as f:
+    json_path = os.path.join(REPORTS_DIR, 'symbol_audit.json')
+    with open(json_path, 'w') as f:
         json.dump(audit_report, f, indent=2)
 
     # Also create Markdown
-    with open(os.path.join(REPORTS_DIR, 'symbol_audit.md'), 'w') as f:
+    md_path = os.path.join(REPORTS_DIR, 'symbol_audit.md')
+    with open(md_path, 'w') as f:
          f.write("# Symbol Validation Report\n\n")
          f.write(f"Date: {datetime.now()}\n")
          f.write(f"Strict Mode: {args.strict}\n")
