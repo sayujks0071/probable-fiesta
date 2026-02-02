@@ -4,66 +4,74 @@ import sys
 import subprocess
 import argparse
 import logging
-from openalgo_observability.logging_setup import setup_logging
+import shutil
+
+# Configure Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("DailyStartup")
 
 REPO_URL = "https://github.com/dheerajw7/OpenAlgo.git"
 TARGET_DIR = "openalgo"
 
 def check_and_clone():
+    """Ensure OpenAlgo is cloned in the expected path."""
     if not os.path.exists(TARGET_DIR):
-        logging.info(f"Directory '{TARGET_DIR}' not found. Cloning from {REPO_URL}...")
+        logger.info(f"Directory '{TARGET_DIR}' not found. Cloning from {REPO_URL}...")
         try:
             subprocess.check_call(["git", "clone", REPO_URL, TARGET_DIR])
-            logging.info("Cloning successful.")
+            logger.info("Cloning successful.")
         except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to clone repository: {e}")
+            logger.error(f"Failed to clone repository: {e}")
             sys.exit(1)
     else:
-        logging.info(f"Directory '{TARGET_DIR}' exists.")
+        logger.info(f"Directory '{TARGET_DIR}' exists. Verifying git status (optional)...")
+        # Could add git pull here if needed, but risky for local changes.
+        # For now, just assume it's there.
 
-def run_script(script_path, description):
+def run_script(script_path, description, args=None):
     if not os.path.exists(script_path):
-        logging.error(f"Error: {script_path} not found.")
+        logger.error(f"Error: {script_path} not found.")
         sys.exit(1)
 
-    logging.info(f"Executing {description} ({script_path})...")
+    logger.info(f"Executing {description} ({script_path})...")
+
+    cmd = [sys.executable, script_path]
+    if args:
+        cmd.extend(args)
+
     try:
         env = os.environ.copy()
-        env['PYTHONPATH'] = os.getcwd() + ":" + env.get('PYTHONPATH', '')
+        # Ensure root is in PYTHONPATH so 'import openalgo...' works
+        env['PYTHONPATH'] = os.getcwd() + os.pathsep + env.get('PYTHONPATH', '')
 
-        # Use venv if exists, else system python
-        venv_python = os.path.join("openalgo", "venv", "bin", "python3")
-        python_exec = venv_python if os.path.exists(venv_python) else sys.executable
-
-        subprocess.check_call([python_exec, script_path], env=env)
-        logging.info(f"✅ {description} Success.")
+        subprocess.check_call(cmd, env=env)
+        logger.info(f"✅ {description} Success.")
     except subprocess.CalledProcessError as e:
-        logging.error(f"❌ {description} Failed with exit code {e.returncode}")
+        logger.error(f"❌ {description} Failed with exit code {e.returncode}")
         sys.exit(e.returncode)
 
 def main():
-    # Initialize Observability Logging
-    setup_logging()
-
     parser = argparse.ArgumentParser(description="OpenAlgo Daily Startup Routine")
     parser.add_argument("--backtest", action="store_true", help="Run backtest and leaderboard generation after prep")
+    parser.add_argument("--skip-prep", action="store_true", help="Skip daily prep (only run backtest)")
     args = parser.parse_args()
 
-    logging.info("=== DAILY STARTUP ROUTINE ===")
+    logger.info("=== DAILY STARTUP ROUTINE ===")
 
-    # 1. Ensure Repo
+    # 1. Ensure Repo Structure
     check_and_clone()
 
-    # 2. Daily Prep
-    prep_script = os.path.join("openalgo", "scripts", "daily_prep.py")
-    run_script(prep_script, "Daily Prep")
+    # 2. Daily Prep (Purge, Login, Refresh, Validate)
+    if not args.skip_prep:
+        prep_script = os.path.join(TARGET_DIR, "scripts", "daily_prep.py")
+        run_script(prep_script, "Daily Prep (Purge, Login, Instruments, Validation)")
 
-    # 3. Backtest (Optional)
+    # 3. Backtest & Leaderboard (Optional but recommended)
     if args.backtest:
-        backtest_script = os.path.join("openalgo", "scripts", "daily_backtest_leaderboard.py")
+        backtest_script = os.path.join(TARGET_DIR, "scripts", "daily_backtest_leaderboard.py")
         run_script(backtest_script, "Daily Backtest & Leaderboard")
 
-    logging.info("=== DAILY ROUTINE COMPLETE ===")
+    logger.info("=== DAILY ROUTINE COMPLETE ===")
 
 if __name__ == "__main__":
     main()

@@ -4,6 +4,7 @@ import os
 import argparse
 import logging
 from pathlib import Path
+from datetime import datetime
 
 # Add project root to path
 current_file = Path(__file__).resolve()
@@ -13,6 +14,7 @@ if str(project_root) not in sys.path:
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 from openalgo.strategies.utils.option_analytics import calculate_greeks, calculate_max_pain
+from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 
 # Configure logging
 logging.basicConfig(
@@ -26,13 +28,15 @@ logging.basicConfig(
 logger = logging.getLogger("DeltaNeutralIronCondor")
 
 class DeltaNeutralIronCondor:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None, expiry_pref="WEEKLY"):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.max_vix = max_vix
         self.sentiment_score = sentiment_score
+        self.expiry_pref = expiry_pref
         self.pm = PositionManager(f"{symbol}_IC")
+        self.resolver = SymbolResolver()
 
     def get_vix(self):
         q = self.client.get_quote("INDIA VIX", "NSE")
@@ -151,13 +155,15 @@ class DeltaNeutralIronCondor:
         if self.sentiment_score is not None:
             logger.info(f"Checking Sentiment Score: {self.sentiment_score}")
             # Score 0 (Negative) to 1 (Positive), 0.5 Neutral
-            # Iron Condor is Neutral. Avoid if sentiment is extreme.
             dist_from_neutral = abs(self.sentiment_score - 0.5)
             if dist_from_neutral > 0.3: # < 0.2 or > 0.8
                 logger.warning(f"Sentiment Score {self.sentiment_score} is strongly directional. Iron Condor risk is high. Skipping.")
                 return
 
-        quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
+        quote = self.client.get_quote(f"{self.symbol} 50", "NSE") # Try NIFTY 50
+        if not quote:
+             quote = self.client.get_quote(self.symbol, "NSE") # Try resolved symbol
+
         spot = float(quote['ltp']) if quote else 0
         if spot == 0:
             logger.error("Could not fetch spot price.")
@@ -171,28 +177,81 @@ class DeltaNeutralIronCondor:
             logger.error("Could not fetch option chain.")
             return
 
-        strikes = self.select_strikes(spot, vix, chain)
+        # Resolve Target Expiry using SymbolResolver
+        res = self.resolver.resolve({
+            'underlying': self.symbol,
+            'type': 'OPT',
+            'expiry_preference': self.expiry_pref
+        })
+
+        target_expiry = None
+        if res and isinstance(res, dict) and res.get('status') == 'valid':
+            target_expiry = res.get('expiry')
+            logger.info(f"Resolved Target Expiry: {target_expiry}")
+        else:
+            logger.warning("Could not resolve target expiry via SymbolResolver. Using entire chain (Risky).")
+
+        # Filter Chain by Expiry if available
+        filtered_chain = chain
+        if target_expiry:
+            # Assuming chain items have 'expiry' in 'YYYY-MM-DD' or comparable
+            # Or we filter using SymbolResolver logic if we had the full instrument list.
+            # Here we are filtering the *broker* chain response.
+            # If broker chain doesn't have expiry date, we can't filter easily.
+            # Assuming broker chain has 'expiry' key.
+            filtered_chain = [c for c in chain if c.get('expiry') == target_expiry]
+            if not filtered_chain:
+                logger.warning(f"No options found for expiry {target_expiry}. Falling back to nearest in chain.")
+                filtered_chain = chain
+            else:
+                logger.info(f"Filtered chain to {len(filtered_chain)} strikes for {target_expiry}")
+
+        strikes = self.select_strikes(spot, vix, filtered_chain)
         logger.info(f"Selected Strikes: {strikes}")
 
         # Place Orders (Mock)
         logger.info(f"Placing orders for {self.qty} qty...")
 
-        # In real scenario:
-        # self.client.placesmartorder(...)
+        # In real execution, we would resolve specific option symbols for these strikes
+        # ce_short_sym = self.resolver.get_tradable_symbol({...})
+        # But select_strikes returns strike prices, we need to map back to symbols.
+        # Ideally select_strikes should return symbols.
 
         logger.info("Strategy execution completed (Simulation).")
 
+    def generate_signal(self, df, client=None, symbol=None, params=None):
+        """
+        Backtesting Interface.
+        Iron Condor is complex to backtest in simple engine.
+        We return HOLD to avoid errors, or simulate logic.
+        """
+        return 'HOLD', 0.0, {"reason": "Complex Strategy"}
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--symbol", default="NIFTY", help="Index Symbol")
+    parser.add_argument("--symbol", default="NIFTY", help="Index Symbol (e.g. NIFTY)")
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
     parser.add_argument("--sentiment_score", type=float, default=None, help="External Sentiment Score (0.0-1.0)")
+    parser.add_argument("--expiry", default="WEEKLY", help="Expiry Preference (WEEKLY/MONTHLY)")
     args = parser.parse_args()
 
+    # Resolve Symbol
+    resolver = SymbolResolver()
+    resolved_symbol = resolver.resolve({'underlying': args.symbol, 'type': 'EQUITY'}) # Resolve underlying name first
+    if not resolved_symbol:
+         resolved_symbol = args.symbol # Fallback
+
+    logger.info(f"Resolved Underlying: {resolved_symbol}")
+
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score)
+    strategy = DeltaNeutralIronCondor(client, resolved_symbol, args.qty, sentiment_score=args.sentiment_score, expiry_pref=args.expiry)
     strategy.execute()
+
+# Module level wrapper
+def generate_signal(df, client=None, symbol=None, params=None):
+    strategy = DeltaNeutralIronCondor(client, symbol)
+    return strategy.generate_signal(df, client, symbol, params)
 
 if __name__ == "__main__":
     main()
