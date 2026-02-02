@@ -77,6 +77,7 @@ class SuperTrendVWAPStrategy:
         self.stop_pct = 1.8
         self.adx_threshold = 20  # Added ADX Filter
         self.adx_period = 14
+        self.ema_period = 200 # Regime Filter
 
         # State
         self.trailing_stop = 0.0
@@ -135,7 +136,7 @@ class SuperTrendVWAPStrategy:
 
         # Logic
         # HTF Trend Filter (EMA 200)
-        df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
+        df['ema200'] = df['close'].ewm(span=self.ema_period, adjust=False).mean()
         is_uptrend = True
         if not pd.isna(last['ema200']):
             is_uptrend = last['close'] > last['ema200']
@@ -451,6 +452,9 @@ def run_strategy():
     )
     strategy.run()
 
+# Global constants for Backtest Engine
+TIME_STOP_BARS = 12
+
 # Module level wrapper for SimpleBacktestEngine
 def generate_signal(df, client=None, symbol=None, params=None):
     # Instantiate strategy with dummy params
@@ -465,6 +469,7 @@ def generate_signal(df, client=None, symbol=None, params=None):
         if 'threshold' in params: strat.threshold = params['threshold']
         if 'stop_pct' in params: strat.stop_pct = params['stop_pct']
         if 'adx_threshold' in params: strat.adx_threshold = params['adx_threshold']
+        if 'ema_period' in params: strat.ema_period = params['ema_period']
 
     # Set Breakeven Trigger
     setattr(strat, 'BREAKEVEN_TRIGGER_R', 1.5)

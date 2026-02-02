@@ -339,6 +339,38 @@ DEFAULT_PARAMS = {
     'risk_per_trade': 0.02,
 }
 
+def check_exit(df, position):
+    """
+    Custom exit logic for Trailing Stop.
+    """
+    if df.empty: return False, None, None
+
+    current_close = df.iloc[-1]['close']
+
+    # Quick ATR calc (last 14)
+    if len(df) < 15: return False, None, None
+
+    high_low = df['high'] - df['low']
+    high_close = (df['high'] - df['close'].shift()).abs()
+    low_close = (df['low'] - df['close'].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr = tr.rolling(window=14).mean().iloc[-1]
+
+    if atr <= 0: return False, None, None
+
+    sl_mult = 1.5 # Trailing distance
+
+    if position.side == 'BUY':
+        new_sl = current_close - (sl_mult * atr)
+        if new_sl > position.stop_loss:
+            position.stop_loss = new_sl
+    else:
+        new_sl = current_close + (sl_mult * atr)
+        if new_sl < position.stop_loss:
+            position.stop_loss = new_sl
+
+    return False, None, None
+
 def generate_signal(df, client=None, symbol=None, params=None):
     # Merge default params with provided params
     strat_params = DEFAULT_PARAMS.copy()

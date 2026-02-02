@@ -54,15 +54,16 @@ STRATEGIES = [
 TUNING_CONFIG = {
     "SuperTrend_VWAP": {
         "stop_pct": [1.5, 2.0],
-        "threshold": [150, 160]
+        "threshold": [150],
+        "ema_period": [200, 100]
     },
     "MCX_Momentum": {
-        "adx_threshold": [20, 30],
-        "period_rsi": [10, 14]
+        "adx_threshold": [20, 25],
+        "min_atr": [10, 15]
     },
     "AI_Hybrid": {
-        "rsi_lower": [25, 35],
-        "rsi_upper": [60, 70]
+        "rsi_lower": [30, 35],
+        "breakeven_trigger": [1.2, 1.5]
     },
     "ML_Momentum": {
         "threshold": [0.01, 0.02]
@@ -148,6 +149,14 @@ def run_leaderboard():
                 wrapper.generate_signal = wrapped_gen
                 wrapper.ATR_SL_MULTIPLIER = getattr(module, 'ATR_SL_MULTIPLIER', 1.5)
                 wrapper.ATR_TP_MULTIPLIER = getattr(module, 'ATR_TP_MULTIPLIER', 2.5)
+                # Copy new attributes
+                if hasattr(module, 'TIME_STOP_BARS'):
+                    wrapper.TIME_STOP_BARS = module.TIME_STOP_BARS
+                if hasattr(module, 'BREAKEVEN_TRIGGER_R'):
+                    wrapper.BREAKEVEN_TRIGGER_R = module.BREAKEVEN_TRIGGER_R
+                if hasattr(module, 'check_exit'):
+                    wrapper.check_exit = module.check_exit
+
                 target_module = wrapper
             else:
                 target_module = module
