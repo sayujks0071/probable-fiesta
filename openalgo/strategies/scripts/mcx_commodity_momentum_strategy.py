@@ -268,7 +268,7 @@ class MCXMomentumStrategy:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='MCX Commodity Momentum Strategy')
-    parser.add_argument('--symbol', type=str, help='MCX Symbol (e.g., GOLDM05FEB26FUT)')
+    parser.add_argument('--symbol', type=str, help='MCX Symbol (e.g., GOLDM_SAMPLE)')
     parser.add_argument('--underlying', type=str, help='Commodity Name (e.g., GOLD, SILVER, CRUDEOIL)')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key')
