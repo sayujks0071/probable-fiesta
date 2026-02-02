@@ -116,24 +116,33 @@ class SymbolResolver:
 
         # MCX MINI Logic
         if exchange == 'MCX':
-            # Priority:
-            # 1. Symbol contains 'MINI'
-            # 2. Symbol matches Name + 'M' + Date (e.g., SILVERM...) vs SILVER...
-
-            # Check for explicitly 'MINI' or 'M' suffix on underlying name
+            # Priority 1: Symbol contains 'MINI' or 'M' suffix (Regex)
             # Use non-capturing group to avoid pandas UserWarning
             mini_pattern = r'(?:{}M|{}MINI)'.format(underlying, underlying)
 
-            mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
+            mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)].copy()
 
             if not mini_matches.empty:
+                # Sort by lot_size if available to ensure smallest MINI (e.g. Micro vs Mini)
+                if 'lot_size' in mini_matches.columns:
+                    mini_matches = mini_matches.sort_values(['lot_size', 'expiry'])
+
                 logger.info(f"Found MCX MINI contract for {underlying}: {mini_matches.iloc[0]['symbol']}")
                 return mini_matches.iloc[0]['symbol']
 
-            # Also check if the symbol itself ends with 'M' before some digits (less reliable but possible)
-            # e.g. CRUDEOILM23NOV...
+            # Priority 2: Fallback to smallest available contract (Lot Size)
+            logger.info(f"No explicit MCX MINI name match for {underlying}. Checking lot sizes...")
 
-            logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
+            if 'lot_size' in matches.columns:
+                # Sort by lot_size ascending, then expiry ascending
+                # This ensures we pick the smallest contract, and the nearest one of that size.
+                matches = matches.sort_values(['lot_size', 'expiry'])
+
+                best_match = matches.iloc[0]
+                logger.info(f"Selected smallest contract for {underlying}: {best_match['symbol']} (Lot: {best_match.get('lot_size')})")
+                return best_match['symbol']
+
+            logger.info(f"No lot size info. Falling back to nearest expiry standard contract.")
 
         # Return nearest expiry
         return matches.iloc[0]['symbol']
@@ -200,6 +209,10 @@ class SymbolResolver:
         elif expiry_pref == 'MONTHLY':
             # Logic: Select the last expiry of the *current month cycle*.
             # If nearest_expiry is in Oct, find the last expiry in Oct.
+
+            # Note: unique_expiries contains only future dates.
+            # So if today > this month's expiry, unique_expiries starts next month.
+            # In that case, we return next month's monthly expiry, which is correct behavior.
 
             target_year = nearest_expiry.year
             target_month = nearest_expiry.month

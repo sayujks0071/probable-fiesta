@@ -45,9 +45,15 @@ def check_env():
     logger.info("Environment OK.")
 
 def purge_stale_state():
+    """
+    Purge stale state:
+    - Auth/Sessions
+    - Runtime Caches (Position State)
+    - Cached Instruments
+    """
     logger.info("Purging Stale State...")
 
-    # 1. Clear PositionManager state
+    # 1. Clear PositionManager state (Risk State)
     if os.path.exists(STATE_DIR):
         files = glob.glob(os.path.join(STATE_DIR, "*.json"))
         deleted_count = 0
@@ -86,7 +92,6 @@ def check_auth():
     logger.info("Running Authentication Health Check...")
     script_path = os.path.join(repo_root, 'openalgo/scripts/authentication_health_check.py')
 
-    # Check if script exists, if not, mock it for now
     if not os.path.exists(script_path):
         logger.warning(f"Auth check script not found at {script_path}. Skipping.")
         return
@@ -97,8 +102,6 @@ def check_auth():
         if result.returncode != 0:
             logger.error("Authentication check failed!")
             logger.error(result.stderr)
-            # In a strict environment, we might exit here:
-            # sys.exit(1)
         else:
             logger.info("Authentication check passed.")
     except Exception as e:
@@ -140,7 +143,6 @@ def fetch_instruments():
         next_thursday = now + timedelta(days=days_ahead)
 
         # Calculate Monthly Expiry (Last Thursday of current month)
-        # Simplified: Last day of month
         import calendar
         last_day = calendar.monthrange(now.year, now.month)[1]
         month_end = datetime(now.year, now.month, last_day)
@@ -214,6 +216,10 @@ def validate_symbols():
     print("-" * 95)
 
     for strat_id, config in configs.items():
+        # Defaults for display
+        c_type = config.get('type', 'EQUITY') or 'EQUITY'
+        c_underlying = config.get('underlying') or config.get('symbol', 'Unknown')
+
         try:
             resolved = resolver.resolve(config)
 
@@ -238,12 +244,12 @@ def validate_symbols():
                 resolved_str = str(resolved)
                 valid_count += 1
 
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {resolved_str[:30]:<30} | {status}")
+            print(f"{strat_id:<25} | {c_type:<8} | {c_underlying[:15]:<15} | {resolved_str[:30]:<30} | {status}")
 
         except Exception as e:
             logger.error(f"Error validating {strat_id}: {e}")
             invalid_count += 1
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {'ERROR':<30} | 🔴 Error")
+            print(f"{strat_id:<25} | {c_type:<8} | {c_underlying[:15]:<15} | {'ERROR':<30} | 🔴 Error")
 
     print("-" * 95)
     if invalid_count > 0:
