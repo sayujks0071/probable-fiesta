@@ -24,18 +24,22 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+    from risk_manager import create_risk_manager
 except ImportError:
     try:
         # Try absolute import
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+        from utils.risk_manager import create_risk_manager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+            from openalgo.strategies.utils.risk_manager import create_risk_manager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            create_risk_manager = None
             normalize_symbol = lambda s: s
             is_market_open = lambda: True
 
@@ -61,6 +65,13 @@ class AIHybridStrategy:
             fh.setFormatter(formatter)
             self.logger.addHandler(fh)
 
+        # Initialize Risk Manager
+        if create_risk_manager:
+            self.rm = create_risk_manager(f"AIHybrid_{symbol}", "NSE", capital=100000)
+        else:
+            self.rm = None
+
+        # Fallback Position Manager if RiskManager not available (should not happen in prod)
         self.pm = PositionManager(symbol) if PositionManager else None
 
         self.rsi_lower = rsi_lower
@@ -93,10 +104,6 @@ class AIHybridStrategy:
         last = df.iloc[-1]
 
         # Volatility Sizing (Target Risk)
-        # Robust Sizing: Risk 1% of Capital (1000) per trade
-        # Stop Loss distance is roughly 2 * ATR
-        # Risk = Qty * 2 * ATR  => Qty = Risk / (2 * ATR)
-
         atr = df['high'].diff().abs().rolling(14).mean().iloc[-1] # Simple ATR approx
 
         risk_amount = 1000.0 # 1% of 100k
@@ -106,9 +113,6 @@ class AIHybridStrategy:
             qty = max(1, min(qty, 500)) # Cap to reasonable limits
         else:
             qty = 50 # Safe default
-
-        # Note: External filters (Sector, Earnings, Breadth) are skipped in simple backtest
-        # unless mocked via client or params. Here we focus on price action.
 
         # Check Regime
         is_bullish_regime = True
@@ -120,8 +124,6 @@ class AIHybridStrategy:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             # Enhanced Volume Confirmation (Stricter than average)
             if last['volume'] > avg_vol * 1.2:
-                # Reversion can trade against trend, so maybe ignore regime or be strict?
-                # Let's say Reversion is allowed in any regime if oversold enough.
                 return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
 
         # Breakout Logic: RSI > 60 and Price > Upper BB
@@ -146,17 +148,21 @@ class AIHybridStrategy:
         except Exception as e:
             self.logger.warning(f"VIX fetch failed: {e}")
 
-        # Fetch Breadth (Placeholder for now, usually requires full market scan or index internals)
-        # We can use NIFTY Trend as a proxy for breadth health
-        breadth = 1.2
+        # Fetch Breadth
+        breadth = 1.0
         try:
+            # We use NIFTY 50 trend as a proxy if we can't get full breadth
+            # Ideally we would scan 50 stocks, but that's slow here.
+            # We assume NIFTY trend reflects breadth.
             nifty = self.client.history("NIFTY 50", exchange="NSE_INDEX", interval="day",
                                       start_date=(datetime.now()-timedelta(days=5)).strftime("%Y-%m-%d"),
                                       end_date=datetime.now().strftime("%Y-%m-%d"))
-            if not nifty.empty and nifty['close'].iloc[-1] > nifty['open'].iloc[-1]:
-                breadth = 1.5 # Bullish proxy
-            elif not nifty.empty:
-                breadth = 0.8 # Bearish proxy
+            if not nifty.empty:
+                last_nifty = nifty.iloc[-1]
+                if last_nifty['close'] > last_nifty['open']:
+                    breadth = 1.5 # Bullish
+                else:
+                    breadth = 0.5 # Bearish
         except:
             pass
 
@@ -196,7 +202,7 @@ class AIHybridStrategy:
             
             # Use NSE_INDEX for index symbols
             exchange = "NSE_INDEX" if "NIFTY" in sector_symbol.upper() else "NSE"
-            # Request 60 days to ensure we have at least 20 trading days (accounting for weekends/holidays)
+            # Request 60 days to ensure we have at least 20 trading days
             df = self.client.history(symbol=sector_symbol, interval="D", exchange=exchange,
                                 start_date=(datetime.now()-timedelta(days=60)).strftime("%Y-%m-%d"),
                                 end_date=datetime.now().strftime("%Y-%m-%d"))
@@ -226,6 +232,22 @@ class AIHybridStrategy:
                 continue
 
             try:
+                # Use RiskManager EOD check
+                if self.rm and self.rm.should_square_off_eod():
+                    self.logger.info("EOD Square-off time reached.")
+                    # In real usage, RiskManager handles square-off via callback or we do it here
+                    # For this script, we just stop trading.
+                    time.sleep(60)
+                    continue
+
+                # Use RiskManager trade permission
+                if self.rm:
+                    can_trade, reason = self.rm.can_trade()
+                    if not can_trade:
+                        self.logger.warning(f"RiskManager blocked trade: {reason}")
+                        time.sleep(60)
+                        continue
+
                 context = self.get_market_context()
 
                 # 1. Earnings Filter
@@ -277,19 +299,52 @@ class AIHybridStrategy:
                 last = df.iloc[-1]
                 current_price = last['close']
 
-                # Manage Position
-                if self.pm and self.pm.has_position():
-                    pnl = self.pm.get_pnl(current_price)
-                    entry = self.pm.entry_price
+                # Manage Position with RiskManager
+                if self.rm and self.rm.positions.get(self.symbol):
+                    pos = self.rm.positions[self.symbol]
 
-                    if (self.pm.position > 0 and current_price < entry * (1 - self.stop_pct/100)) or \
-                       (self.pm.position < 0 and current_price > entry * (1 + self.stop_pct/100)):
-                        self.logger.info(f"Stop Loss Hit. PnL: {pnl}")
-                        self.pm.update_position(abs(self.pm.position), current_price, 'SELL' if self.pm.position > 0 else 'BUY')
+                    # Check Stop Loss
+                    stop_hit, msg = self.rm.check_stop_loss(self.symbol, current_price)
+                    if stop_hit:
+                        self.logger.info(msg)
+                        self.client.placesmartorder(
+                            strategy="AIHybrid",
+                            symbol=self.symbol,
+                            action="SELL" if pos['qty'] > 0 else "BUY",
+                            exchange="NSE",
+                            price_type="MARKET",
+                            product="MIS",
+                            quantity=abs(pos['qty']),
+                            position_size=abs(pos['qty'])
+                        )
+                        self.rm.register_exit(self.symbol, current_price)
+                        time.sleep(60)
+                        continue
 
-                    elif (self.pm.position > 0 and current_price > last['sma20']):
-                        self.logger.info(f"Reversion Target Hit (SMA20). PnL: {pnl}")
-                        self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                    # Target / Trailing Stop logic
+                    # If profit > 1.5% and close > sma20 (for long), take profit or tighten
+                    entry_price = pos['entry_price']
+                    pnl_pct = ((current_price - entry_price) / entry_price) * 100
+
+                    if pos['qty'] > 0:
+                        if pnl_pct > 1.5 and current_price > last['sma20']:
+                             # Take profit or wait?
+                             # Strategy logic: Reversion Target Hit (SMA20)
+                             self.logger.info(f"Reversion Target Hit (SMA20). PnL: {pnl_pct:.2f}%")
+                             self.client.placesmartorder(
+                                strategy="AIHybrid",
+                                symbol=self.symbol,
+                                action="SELL",
+                                exchange="NSE",
+                                price_type="MARKET",
+                                product="MIS",
+                                quantity=abs(pos['qty']),
+                                position_size=abs(pos['qty'])
+                            )
+                             self.rm.register_exit(self.symbol, current_price)
+
+                        # Update trailing stop via RiskManager if supported
+                        self.rm.update_trailing_stop(self.symbol, current_price)
 
                     time.sleep(60)
                     continue
@@ -301,7 +356,21 @@ class AIHybridStrategy:
                     if last['volume'] > avg_vol * 1.2:
                         qty = int(100 * size_multiplier)
                         self.logger.info("Oversold Reversion Signal (RSI<30, <LowerBB, Vol>1.2x). BUY.")
-                        self.pm.update_position(qty, current_price, 'BUY')
+
+                        # Place Order
+                        resp = self.client.placesmartorder(
+                            strategy="AIHybrid",
+                            symbol=self.symbol,
+                            action="BUY",
+                            exchange="NSE",
+                            price_type="MARKET",
+                            product="MIS",
+                            quantity=qty,
+                            position_size=qty
+                        )
+                        if resp and resp.get('status') != 'error':
+                             if self.rm:
+                                 self.rm.register_entry(self.symbol, qty, current_price, "LONG")
 
                 # Breakout Logic: RSI > 60 and Price > Upper BB
                 elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
@@ -310,7 +379,21 @@ class AIHybridStrategy:
                     if last['volume'] > avg_vol * 2.0:
                          qty = int(100 * size_multiplier)
                          self.logger.info("Breakout Signal (RSI>60, >UpperBB, Vol>2x). BUY.")
-                         self.pm.update_position(qty, current_price, 'BUY')
+
+                         # Place Order
+                         resp = self.client.placesmartorder(
+                            strategy="AIHybrid",
+                            symbol=self.symbol,
+                            action="BUY",
+                            exchange="NSE",
+                            price_type="MARKET",
+                            product="MIS",
+                            quantity=qty,
+                            position_size=qty
+                        )
+                         if resp and resp.get('status') != 'error':
+                             if self.rm:
+                                 self.rm.register_entry(self.symbol, qty, current_price, "LONG")
 
             except Exception as e:
                 self.logger.error(f"Error in AI Hybrid strategy for {self.symbol}: {e}", exc_info=True)
@@ -379,31 +462,6 @@ def generate_signal(df, client=None, symbol=None, params=None):
     strat.logger.handlers = []
     strat.logger.addHandler(logging.NullHandler())
 
-    # Set Time Stop (if using attribute injection for engine)
-    # The class sets it in __init__ but engine might look for it on instance or module?
-    # SimpleBacktestEngine checks: if strategy_module and hasattr(strategy_module, 'TIME_STOP_BARS')
-    # It checks the MODULE (passed as strategy_module).
-    # Wait, SimpleBacktestEngine receives `strategy_module` which is the python module.
-    # So `TIME_STOP_BARS` must be module-level attribute?
-    # The wrapper generates the signal.
-    # The engine loop:
-    # check_exits(..., strategy_module)
-    # def check_exits(..., strategy_module=None):
-    #    if strategy_module and hasattr(strategy_module, 'TIME_STOP_BARS'):
-
-    # So I need to set module level attribute dynamically? That's bad for concurrency.
-    # But for this simple engine, it's fine.
-    # Or better, I set it on the module object that 'run_leaderboard' loaded.
-
-    # However, 'generate_signal' is just a function.
-    # I can't easily change the module level attribute from here for the *current* backtest
-    # unless I know which module object is being used.
-    # But since params change, the Time Stop might change.
-
-    # For now, I will set it on the function object? No.
-    # I will assume fixed Time Stop for now or set it globally in module.
-
-    # Let's set it globally for this run.
     global TIME_STOP_BARS
     TIME_STOP_BARS = getattr(strat, 'time_stop_bars', 12)
 

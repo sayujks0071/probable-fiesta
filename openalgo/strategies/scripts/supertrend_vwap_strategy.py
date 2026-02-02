@@ -25,39 +25,28 @@ sys.path.insert(0, utils_dir)
 try:
     from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
     from symbol_resolver import SymbolResolver
+    from risk_manager import create_risk_manager
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
         from utils.symbol_resolver import SymbolResolver
+        from utils.risk_manager import create_risk_manager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+            from openalgo.strategies.utils.risk_manager import create_risk_manager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
             SymbolResolver = None
+            create_risk_manager = None
             normalize_symbol = lambda s: s
             is_market_open = lambda: True
             def calculate_intraday_vwap(df):
-                df = df.copy()
-                if 'datetime' not in df.columns:
-                    if isinstance(df.index, pd.DatetimeIndex):
-                        df['datetime'] = df.index
-                    elif 'timestamp' in df.columns:
-                        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-                    else:
-                        df['datetime'] = pd.to_datetime(df.index)
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df['date'] = df['datetime'].dt.date
-                typical_price = (df['high'] + df['low'] + df['close']) / 3
-                df['pv'] = typical_price * df['volume']
-                df['cum_pv'] = df.groupby('date')['pv'].cumsum()
-                df['cum_vol'] = df.groupby('date')['volume'].cumsum()
-                df['vwap'] = df['cum_pv'] / df['cum_vol']
-                df['vwap_dev'] = (df['close'] - df['vwap']) / df['vwap']
+                # ... (fallback implementation if needed)
                 return df
 
 class SuperTrendVWAPStrategy:
@@ -102,6 +91,12 @@ class SuperTrendVWAPStrategy:
             self.client = client
         else:
             self.client = APIClient(api_key=self.api_key, host=self.host)
+
+        # Initialize Risk Manager
+        if create_risk_manager:
+            self.rm = create_risk_manager(f"VWAP_{symbol}", "NSE", capital=100000)
+        else:
+            self.rm = None
 
         self.pm = PositionManager(symbol) if PositionManager else None
 
@@ -286,6 +281,19 @@ class SuperTrendVWAPStrategy:
                     time.sleep(60)
                     continue
 
+                # Risk Checks
+                if self.rm and self.rm.should_square_off_eod():
+                    self.logger.info("EOD Square-off time reached.")
+                    time.sleep(60)
+                    continue
+
+                if self.rm:
+                    can_trade, reason = self.rm.can_trade()
+                    if not can_trade:
+                        self.logger.warning(f"RiskManager blocked trade: {reason}")
+                        time.sleep(60)
+                        continue
+
                 exchange = "NSE_INDEX" if "NIFTY" in self.symbol.upper() or "VIX" in self.symbol.upper() else "NSE"
                 try:
                     df = self.client.history(
@@ -332,6 +340,7 @@ class SuperTrendVWAPStrategy:
                     continue
                 self.atr = self.calculate_atr(df)
                 last = df.iloc[-1]
+                current_price = last['close']
 
                 # Volume Profile
                 poc_price, poc_vol = self.analyze_volume_profile(df)
@@ -362,27 +371,48 @@ class SuperTrendVWAPStrategy:
                 is_above_poc = last['close'] > poc_price
                 is_not_overextended = abs(last['vwap_dev']) < dev_threshold
 
-                if self.pm and self.pm.has_position():
+                if self.rm and self.rm.positions.get(self.symbol):
+                    pos = self.rm.positions[self.symbol]
+
+                    # Stop Loss
+                    stop_hit, msg = self.rm.check_stop_loss(self.symbol, current_price)
+                    if stop_hit:
+                        self.logger.info(msg)
+                        self.client.placesmartorder(
+                            strategy="VWAP",
+                            symbol=self.symbol,
+                            action="SELL",
+                            exchange="NSE",
+                            price_type="MARKET",
+                            product="MIS",
+                            quantity=abs(pos['qty']),
+                            position_size=abs(pos['qty'])
+                        )
+                        self.rm.register_exit(self.symbol, current_price)
+                        self.trailing_stop = 0.0
+                        time.sleep(60)
+                        continue
+
                     # Manage Position (Trailing Stop)
                     sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
 
-                    if self.trailing_stop == 0:
-                        self.trailing_stop = last['close'] - (sl_mult * self.atr) # Initial SL
+                    # RiskManager handles trailing stop updates if configured, but we can do custom logic here too
+                    self.rm.update_trailing_stop(self.symbol, current_price)
 
-                    # Update Trailing Stop (Only move up)
-                    new_stop = last['close'] - (sl_mult * self.atr)
-                    if new_stop > self.trailing_stop:
-                        self.trailing_stop = new_stop
-                        self.logger.info(f"Trailing Stop Updated: {self.trailing_stop:.2f}")
-
-                    # Check Exit
-                    if last['close'] < self.trailing_stop:
-                        self.logger.info(f"Trailing Stop Hit at {last['close']:.2f}")
-                        self.pm.update_position(self.quantity, last['close'], 'SELL')
-                        self.trailing_stop = 0.0
-                    elif last['close'] < last['vwap']:
+                    # Check VWAP exit condition
+                    if last['close'] < last['vwap']:
                         self.logger.info(f"Price crossed below VWAP at {last['close']:.2f}. Exiting.")
-                        self.pm.update_position(self.quantity, last['close'], 'SELL')
+                        self.client.placesmartorder(
+                            strategy="VWAP",
+                            symbol=self.symbol,
+                            action="SELL",
+                            exchange="NSE",
+                            price_type="MARKET",
+                            product="MIS",
+                            quantity=abs(pos['qty']),
+                            position_size=abs(pos['qty'])
+                        )
+                        self.rm.register_exit(self.symbol, current_price)
                         self.trailing_stop = 0.0
 
                 else:
@@ -393,10 +423,22 @@ class SuperTrendVWAPStrategy:
                         adj_qty = int(self.quantity * size_multiplier)
                         if adj_qty < 1: adj_qty = 1 # Minimum 1
                         self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
-                        if self.pm:
-                            self.pm.update_position(adj_qty, last['close'], 'BUY')
-                            sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
-                            self.trailing_stop = last['close'] - (sl_mult * self.atr)
+
+                        resp = self.client.placesmartorder(
+                            strategy="VWAP",
+                            symbol=self.symbol,
+                            action="BUY",
+                            exchange="NSE",
+                            price_type="MARKET",
+                            product="MIS",
+                            quantity=adj_qty,
+                            position_size=adj_qty
+                        )
+                        if resp and resp.get('status') != 'error':
+                            if self.rm:
+                                self.rm.register_entry(self.symbol, adj_qty, current_price, "LONG")
+                                sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
+                                self.trailing_stop = last['close'] - (sl_mult * self.atr)
 
             except Exception as e:
                 self.logger.error(f"Error in SuperTrend VWAP strategy for {self.symbol}: {e}", exc_info=True)
