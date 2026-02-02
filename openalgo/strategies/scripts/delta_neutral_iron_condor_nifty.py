@@ -26,12 +26,13 @@ logging.basicConfig(
 logger = logging.getLogger("DeltaNeutralIronCondor")
 
 class DeltaNeutralIronCondor:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None, gap_pct=0.0):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.max_vix = max_vix
         self.sentiment_score = sentiment_score
+        self.gap_pct = gap_pct
         self.pm = PositionManager(f"{symbol}_IC")
 
     def get_vix(self):
@@ -139,13 +140,20 @@ class DeltaNeutralIronCondor:
         logger.info(f"Current VIX: {vix}")
 
         # VIX Filters
-        if vix < 12:
-            logger.warning(f"VIX {vix} < 12. Too low for Iron Condor (Low Premium/High Gamma Risk). Skipping.")
+        # Prompt Requirement: Only sell premium when VIX > 20 (strict). But commonly > 15 is okay.
+        # We will set a stricter low bound.
+        if vix < 15:
+            logger.warning(f"VIX {vix} < 15. Too low for Premium Selling (Iron Condor). Skipping.")
             return
 
         if vix > self.max_vix:
             logger.warning(f"VIX {vix} > {self.max_vix}. Reducing Quantity by 50%.")
             self.qty = int(self.qty * 0.5)
+
+        # Gap Filter
+        if abs(self.gap_pct) > 1.0:
+            logger.warning(f"Large Gap detected ({self.gap_pct}%). Market too volatile for Iron Condor entry. Skipping.")
+            return
 
         # Sentiment Filter
         if self.sentiment_score is not None:
@@ -188,10 +196,11 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
     parser.add_argument("--sentiment_score", type=float, default=None, help="External Sentiment Score (0.0-1.0)")
+    parser.add_argument("--gap_pct", type=float, default=0.0, help="Opening Gap Percentage")
     args = parser.parse_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score)
+    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score, gap_pct=args.gap_pct)
     strategy.execute()
 
 if __name__ == "__main__":
