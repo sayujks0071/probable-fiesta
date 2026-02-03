@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import argparse
 
 # Add repo root to path
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -20,9 +21,13 @@ except ImportError:
     from scripts.daily_prep import fetch_instruments
 
 def main():
-    print("🔄 Syncing instruments...")
+    parser = argparse.ArgumentParser(description="Sync Instruments")
+    parser.add_argument("--mock", action="store_true", help="Use mock data (skip API)")
+    args = parser.parse_args()
+
+    print(f"🔄 Syncing instruments (Mock: {args.mock})...")
     try:
-        fetch_instruments()
+        fetch_instruments(mock=args.mock)
         print("✅ Instruments synced.")
     except Exception as e:
         print(f"❌ Failed to sync instruments: {e}")

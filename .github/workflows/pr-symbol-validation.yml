@@ -27,7 +27,7 @@ jobs:
           pip install pandas httpx
 
       - name: Sync Instruments
-        run: python3 tools/sync_instruments.py
+        run: python3 tools/sync_instruments.py --mock
 
       - name: Run Strict Validation
         run: python3 tools/validate_symbols.py --strict --check
