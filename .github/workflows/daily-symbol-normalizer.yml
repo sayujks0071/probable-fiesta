@@ -57,7 +57,7 @@ jobs:
           fi
 
       - name: Upload Audit Reports
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: symbol-audit-reports
           path: reports/
