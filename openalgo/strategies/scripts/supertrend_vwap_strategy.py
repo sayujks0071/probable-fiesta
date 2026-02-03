@@ -154,16 +154,29 @@ class SuperTrendVWAPStrategy:
         adx = self.calculate_adx(df, period=self.adx_period)
         is_strong_trend = adx > self.adx_threshold
 
-        # Sector check (Mocked for backtest usually, or passed via client)
-        sector_bullish = True
+        # Sector check (using current time to avoid lookahead bias)
+        sector_bullish = self.check_sector_correlation(reference_date=last.name)
 
         score = 0
+
+        # Volatility Sizing
+        risk_amount = 100000 * 0.01  # 1% of 100k
+        sl_dist = self.atr * getattr(self, 'ATR_SL_MULTIPLIER', 2.0)
+        if sl_dist > 0:
+            vol_qty = int(risk_amount / sl_dist)
+        else:
+            vol_qty = self.quantity
+
+        adj_qty = int(vol_qty * size_multiplier)
+        if adj_qty < 1: adj_qty = 1
+
         details = {
             'close': last['close'],
             'vwap': last['vwap'],
             'atr': self.atr,
             'poc': poc_price,
-            'adx': adx
+            'adx': adx,
+            'quantity': adj_qty
         }
 
         if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish and is_strong_trend and is_uptrend:
@@ -233,7 +246,7 @@ class SuperTrendVWAPStrategy:
         poc_price = bins[poc_bin] + (bins[1] - bins[0]) / 2
         return poc_price, poc_volume
 
-    def check_sector_correlation(self):
+    def check_sector_correlation(self, reference_date=None):
         """Check if sector is correlated (RSI > 50)."""
         try:
             sector_symbol = self.sector_benchmark.replace(" ", "").upper()
@@ -243,8 +256,16 @@ class SuperTrendVWAPStrategy:
                 sector_symbol = "NIFTY"
             else:
                 sector_symbol = "NIFTY"
-            end = datetime.now().strftime("%Y-%m-%d")
-            start = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+
+            if reference_date is None:
+                reference_date = datetime.now()
+
+            # Ensure reference_date is datetime
+            if isinstance(reference_date, pd.Timestamp):
+                reference_date = reference_date.to_pydatetime()
+
+            end = reference_date.strftime("%Y-%m-%d")
+            start = (reference_date - timedelta(days=20)).strftime("%Y-%m-%d") # Fetch more history for RSI
             exchange = "NSE_INDEX"
             df = self.client.history(symbol=sector_symbol, interval="D", exchange=exchange, start_date=start, end_date=end)
 
@@ -458,7 +479,10 @@ def generate_signal(df, client=None, symbol=None, params=None):
 
     # Silence logger for backtest to avoid handler explosion
     strat.logger.handlers = []
-    strat.logger.addHandler(logging.NullHandler())
+    # strat.logger.addHandler(logging.NullHandler())
+    sh = logging.StreamHandler()
+    sh.setLevel(logging.INFO)
+    strat.logger.addHandler(sh)
 
     # Apply params if provided
     if params:
@@ -466,10 +490,11 @@ def generate_signal(df, client=None, symbol=None, params=None):
         if 'stop_pct' in params: strat.stop_pct = params['stop_pct']
         if 'adx_threshold' in params: strat.adx_threshold = params['adx_threshold']
 
-    # Set Breakeven Trigger
+    # Set Breakeven Trigger & Time Stop
     setattr(strat, 'BREAKEVEN_TRIGGER_R', 1.5)
-    setattr(strat, 'ATR_SL_MULTIPLIER', 3.0)
-    setattr(strat, 'ATR_TP_MULTIPLIER', 5.0)
+    setattr(strat, 'TIME_STOP_BARS', 12)
+    setattr(strat, 'ATR_SL_MULTIPLIER', 2.0)
+    setattr(strat, 'ATR_TP_MULTIPLIER', 4.0)
 
     action, score, details = strat.generate_signal(df)
     return action, score, details

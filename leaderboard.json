@@ -1,0 +1,71 @@
+[
+    {
+        "strategy": "SuperTrend_VWAP",
+        "params": null,
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "SuperTrend_VWAP_v1",
+        "params": {
+            "stop_pct": 1.8,
+            "threshold": 150
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "MCX_Momentum",
+        "params": null,
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "MCX_Momentum_v1",
+        "params": {
+            "adx_threshold": 25,
+            "period_rsi": 14
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "AI_Hybrid",
+        "params": null,
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "AI_Hybrid_v1",
+        "params": {
+            "rsi_lower": 30,
+            "rsi_upper": 60
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    }
+]
