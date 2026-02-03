@@ -125,7 +125,7 @@ class SuperTrendVWAPStrategy:
         last = df.iloc[-1]
 
         # Volume Profile
-        poc_price, poc_vol = self.analyze_volume_profile(df)
+        poc_price, poc_vol, vah, val = self.analyze_volume_profile(df)
 
         # Dynamic Deviation
         vix = self.get_vix()
@@ -148,6 +148,7 @@ class SuperTrendVWAPStrategy:
         is_volume_spike = last['volume'] > dynamic_threshold
 
         is_above_poc = last['close'] > poc_price
+        is_above_val = last['close'] > val # Added Value Area Low filter
         is_not_overextended = abs(last['vwap_dev']) < dev_threshold
 
         # ADX Filter
@@ -166,7 +167,7 @@ class SuperTrendVWAPStrategy:
             'adx': adx
         }
 
-        if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish and is_strong_trend and is_uptrend:
+        if is_above_vwap and is_volume_spike and is_above_poc and is_above_val and is_not_overextended and sector_bullish and is_strong_trend and is_uptrend:
             return 'BUY', 1.0, details
 
         # Sell Logic (Inverse for completeness?)
@@ -176,8 +177,8 @@ class SuperTrendVWAPStrategy:
 
     def calculate_rsi(self, series, period=14):
         delta = series.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
         rs = gain / loss
         return 100 - (100 / (1 + rs))
 
@@ -213,25 +214,37 @@ class SuperTrendVWAPStrategy:
             return 0
 
     def analyze_volume_profile(self, df, n_bins=20):
-        """Find Point of Control (POC)."""
+        """Find Point of Control (POC) and Value Area (VAH, VAL)."""
         price_min = df['low'].min()
         price_max = df['high'].max()
-        if price_min == price_max: return 0, 0
+        if price_min == price_max: return 0, 0, 0, 0
         bins = np.linspace(price_min, price_max, n_bins)
         df['bin'] = pd.cut(df['close'], bins=bins, labels=False)
         volume_profile = df.groupby('bin')['volume'].sum()
 
-        if volume_profile.empty: return 0, 0
+        if volume_profile.empty: return 0, 0, 0, 0
 
         poc_bin = volume_profile.idxmax()
         poc_volume = volume_profile.max()
-        if np.isnan(poc_bin): return 0, 0
+        if np.isnan(poc_bin): return 0, 0, 0, 0
 
         poc_bin = int(poc_bin)
         if poc_bin >= len(bins)-1: poc_bin = len(bins)-2
 
-        poc_price = bins[poc_bin] + (bins[1] - bins[0]) / 2
-        return poc_price, poc_volume
+        # Calculate Value Area (70%)
+        total_vol = volume_profile.sum()
+        sorted_prof = volume_profile.sort_values(ascending=False)
+        cum_vol = sorted_prof.cumsum()
+        va_bins = cum_vol[cum_vol <= total_vol * 0.70].index.tolist()
+        if not va_bins: va_bins = [poc_bin]
+
+        # Map bins to price
+        bin_width = bins[1] - bins[0]
+        poc_price = bins[poc_bin] + bin_width / 2
+        val = bins[min(va_bins)]
+        vah = bins[max(va_bins)] + bin_width
+
+        return poc_price, poc_volume, vah, val
 
     def check_sector_correlation(self):
         """Check if sector is correlated (RSI > 50)."""
@@ -334,7 +347,7 @@ class SuperTrendVWAPStrategy:
                 last = df.iloc[-1]
 
                 # Volume Profile
-                poc_price, poc_vol = self.analyze_volume_profile(df)
+                poc_price, poc_vol, vah, val = self.analyze_volume_profile(df)
 
                 # Dynamic Deviation based on VIX
                 vix = self.get_vix()
@@ -389,10 +402,11 @@ class SuperTrendVWAPStrategy:
                     # Entry Logic
                     sector_bullish = self.check_sector_correlation()
 
-                    if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish:
+                    is_above_val = last['close'] > val
+                    if is_above_vwap and is_volume_spike and is_above_poc and is_above_val and is_not_overextended and sector_bullish:
                         adj_qty = int(self.quantity * size_multiplier)
                         if adj_qty < 1: adj_qty = 1 # Minimum 1
-                        self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
+                        self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, VAL: {val:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
                         if self.pm:
                             self.pm.update_position(adj_qty, last['close'], 'BUY')
                             sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)

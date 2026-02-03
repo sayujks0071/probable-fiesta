@@ -77,8 +77,8 @@ class AIHybridStrategy:
 
         # Indicators
         delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
         rs = gain / loss
         df['rsi'] = 100 - (100 / (1 + rs))
 
@@ -204,13 +204,24 @@ class AIHybridStrategy:
                 self.logger.warning(f"Insufficient data for sector strength check ({len(df)} rows). Defaulting to allow trades.")
                 return True
             df['sma20'] = df['close'].rolling(20).mean()
+
+            # RSI for Momentum
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+            loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+            rs = gain / loss
+            df['rsi'] = 100 - (100 / (1 + rs))
+
             last_close = df.iloc[-1]['close']
             last_sma20 = df.iloc[-1]['sma20']
-            if pd.isna(last_sma20):
-                self.logger.warning(f"SMA20 is NaN for {sector_symbol}. Defaulting to allow trades.")
+            last_rsi = df.iloc[-1]['rsi']
+
+            if pd.isna(last_sma20) or pd.isna(last_rsi):
+                self.logger.warning(f"Indicators NaN for {sector_symbol}. Defaulting to allow trades.")
                 return True
-            is_strong = last_close > last_sma20
-            self.logger.debug(f"Sector {sector_symbol} strength: Close={last_close:.2f}, SMA20={last_sma20:.2f}, Strong={is_strong}")
+
+            is_strong = (last_close > last_sma20) and (last_rsi > 50)
+            self.logger.debug(f"Sector {sector_symbol} strength: Close={last_close:.2f}, SMA20={last_sma20:.2f}, RSI={last_rsi:.2f}, Strong={is_strong}")
             return is_strong
         except Exception as e:
             self.logger.warning(f"Error checking sector strength: {e}. Defaulting to allow trades.")
