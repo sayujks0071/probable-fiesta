@@ -4,6 +4,7 @@ import sys
 import json
 import logging
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 import importlib.util
 
@@ -32,9 +33,7 @@ STRATEGIES = [
     {
         "name": "MCX_Momentum",
         "file": "openalgo/strategies/scripts/mcx_commodity_momentum_strategy.py",
-        "symbol": "SILVERMIC", # Will try to resolve if needed, but engine needs raw symbol usually?
-                               # Engine loads data. We can use a proxy symbol like 'SILVER' if using mock data,
-                               # but usually specific symbol needed.
+        "symbol": "SILVERMIC",
         "exchange": "MCX"
     },
     {
@@ -98,16 +97,65 @@ def load_strategy_module(filepath):
         logger.error(f"Failed to load strategy {filepath}: {e}")
         return None
 
+def monte_carlo_simulation(trades_pnl_pct, num_simulations=1000):
+    """
+    Run Monte Carlo Simulation on trade returns to estimate risk.
+    Returns: Avg Return, 95% VaR (Max Drawdown at 95th percentile)
+    """
+    if not trades_pnl_pct or len(trades_pnl_pct) < 5:
+        return 0.0, 0.0
+
+    returns = np.array(trades_pnl_pct) / 100.0 # Convert to decimal
+
+    sim_returns = []
+    sim_max_dds = []
+
+    for _ in range(num_simulations):
+        # Bootstrap resampling
+        sample = np.random.choice(returns, size=len(returns), replace=True)
+        # Calculate equity curve (starting at 1.0)
+        cum_returns = np.cumprod(1 + sample)
+        final_ret = cum_returns[-1] - 1
+
+        # Max Drawdown
+        peak = np.maximum.accumulate(cum_returns)
+        drawdown = (peak - cum_returns) / peak
+        max_dd = np.max(drawdown)
+
+        sim_returns.append(final_ret)
+        sim_max_dds.append(max_dd)
+
+    var_95 = np.percentile(sim_max_dds, 95) * 100 # 95th percentile Drawdown
+    avg_ret = np.mean(sim_returns) * 100
+
+    return avg_ret, var_95
+
 def run_leaderboard():
     engine = SimpleBacktestEngine(initial_capital=100000.0)
 
-    start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
-    end_date = datetime.now().strftime("%Y-%m-%d")
+    # 58 Days Lookback (Yahoo Finance 15m limit is 60 days)
+    lookback_days = 58
+    end_date_obj = datetime.now()
+    start_date_obj = end_date_obj - timedelta(days=lookback_days)
 
-    results = []
+    # Split 70/30
+    split_days = int(lookback_days * 0.7)
+    split_date_obj = start_date_obj + timedelta(days=split_days)
+
+    # Date Strings
+    start_str = start_date_obj.strftime("%Y-%m-%d")
+    split_str = split_date_obj.strftime("%Y-%m-%d")
+    end_str = end_date_obj.strftime("%Y-%m-%d")
+
+    logger.info(f"Backtest Configuration:")
+    logger.info(f"  Total Period: {start_str} to {end_str}")
+    logger.info(f"  Train Period (In-Sample): {start_str} to {split_str}")
+    logger.info(f"  Test Period (Out-of-Sample): {split_str} to {end_str}")
+
+    final_results = []
 
     for strat_config in STRATEGIES:
-        logger.info(f"Backtesting {strat_config['name']}...")
+        logger.info(f"Processing Strategy: {strat_config['name']}...")
 
         module = load_strategy_module(strat_config['file'])
         if not module:
@@ -117,86 +165,155 @@ def run_leaderboard():
             logger.warning(f"Strategy {strat_config['name']} does not have 'generate_signal' function. Skipping.")
             continue
 
-        # Determine variants to run
-        runs = [{"name": strat_config['name'], "params": None}]
+        # 1. Optimization Phase (In-Sample)
+        logger.info(f"--- Optimization Phase ({start_str} to {split_str}) ---")
 
+        runs = [{"name": strat_config['name'], "params": None}]
         if strat_config['name'] in TUNING_CONFIG:
             variants = generate_variants(strat_config['name'], TUNING_CONFIG[strat_config['name']])
-            # Limit to top 3 variants if too many? For now run all (small grid)
             runs.extend(variants)
 
+        best_sharpe = -float('inf')
+        best_run = runs[0]
+
         for run in runs:
-            logger.info(f"  > Variant: {run['name']} Params: {run['params']}")
-
-            # Monkey patch module to accept params if needed, or pass via run_backtest extension?
-            # SimpleBacktestEngine.run_backtest calls module.generate_signal(..., symbol=symbol)
-            # It doesn't pass 'params'.
-            # We need to wrap the module or monkey patch generate_signal.
-
+            # Create Wrapper
             original_gen = module.generate_signal
-
-            # Create a partial/wrapper
             params = run['params']
-            if params:
-                def wrapped_gen(df, client=None, symbol=None):
-                    return original_gen(df, client, symbol, params=params)
 
-                # Create a temporary object acting as module
+            # Helper to create bound wrapper
+            def make_wrapper(p):
+                def wrapped_gen(df, client=None, symbol=None):
+                    return original_gen(df, client, symbol, params=p)
+                return wrapped_gen
+
+            if params:
+                wrapper_func = make_wrapper(params)
+
                 class ModuleWrapper:
                     pass
                 wrapper = ModuleWrapper()
-                wrapper.generate_signal = wrapped_gen
+                wrapper.generate_signal = wrapper_func
                 wrapper.ATR_SL_MULTIPLIER = getattr(module, 'ATR_SL_MULTIPLIER', 1.5)
                 wrapper.ATR_TP_MULTIPLIER = getattr(module, 'ATR_TP_MULTIPLIER', 2.5)
+                # Propagate check_exit if exists
+                if hasattr(module, 'check_exit'):
+                    wrapper.check_exit = module.check_exit
                 target_module = wrapper
             else:
                 target_module = module
 
             try:
-                # Run Backtest
                 res = engine.run_backtest(
                     strategy_module=target_module,
                     symbol=strat_config['symbol'],
                     exchange=strat_config['exchange'],
-                    start_date=start_date,
-                    end_date=end_date,
+                    start_date=start_str,
+                    end_date=split_str, # Train
                     interval="15m"
                 )
 
                 if 'error' in res:
-                    logger.error(f"Backtest failed for {run['name']}: {res['error']}")
                     continue
 
                 metrics = res.get('metrics', {})
-                results.append({
-                    "strategy": run['name'],
-                    "params": run['params'],
-                    "total_return": metrics.get('total_return_pct', 0),
-                    "sharpe": metrics.get('sharpe_ratio', 0),
-                    "drawdown": metrics.get('max_drawdown_pct', 0),
-                    "win_rate": metrics.get('win_rate', 0),
-                    "trades": res.get('total_trades', 0),
-                    "profit_factor": metrics.get('profit_factor', 0)
-                })
+                sharpe = metrics.get('sharpe_ratio', 0)
+
+                if sharpe > best_sharpe:
+                    best_sharpe = sharpe
+                    best_run = run
 
             except Exception as e:
-                logger.error(f"Error backtesting {run['name']}: {e}", exc_info=True)
+                logger.error(f"Error optimizing {run['name']}: {e}")
 
-    # Sort by Sharpe Ratio (Primary) then Return
-    results.sort(key=lambda x: (x['sharpe'], x['total_return']), reverse=True)
+        logger.info(f"Best Variant for {strat_config['name']}: {best_run['name']} (Sharpe: {best_sharpe:.2f})")
+
+        # 2. Validation Phase (Out-of-Sample)
+        logger.info(f"--- Validation Phase ({split_str} to {end_str}) ---")
+
+        # Prepare Best Module
+        original_gen = module.generate_signal
+        params = best_run['params']
+
+        def make_wrapper_final(p):
+            def wrapped_gen(df, client=None, symbol=None):
+                return original_gen(df, client, symbol, params=p)
+            return wrapped_gen
+
+        if params:
+            wrapper_func = make_wrapper_final(params)
+            class ModuleWrapper: pass
+            wrapper = ModuleWrapper()
+            wrapper.generate_signal = wrapper_func
+            wrapper.ATR_SL_MULTIPLIER = getattr(module, 'ATR_SL_MULTIPLIER', 1.5)
+            wrapper.ATR_TP_MULTIPLIER = getattr(module, 'ATR_TP_MULTIPLIER', 2.5)
+            if hasattr(module, 'check_exit'):
+                wrapper.check_exit = module.check_exit
+            target_module = wrapper
+        else:
+            target_module = module
+
+        try:
+            res = engine.run_backtest(
+                strategy_module=target_module,
+                symbol=strat_config['symbol'],
+                exchange=strat_config['exchange'],
+                start_date=split_str,
+                end_date=end_str, # Test
+                interval="15m"
+            )
+
+            if 'error' in res:
+                logger.error(f"Validation failed for {best_run['name']}")
+                continue
+
+            metrics = res.get('metrics', {})
+            trades = res.get('closed_trades', [])
+            trades_pnl = [t['pnl_pct'] for t in trades if t['pnl_pct'] is not None]
+
+            # Monte Carlo
+            mc_ret, mc_dd_95 = monte_carlo_simulation(trades_pnl, num_simulations=1000)
+
+            final_results.append({
+                "strategy": best_run['name'],
+                "params": best_run['params'],
+                "is_optimized": True,
+                "train_period": f"{start_str} to {split_str}",
+                "test_period": f"{split_str} to {end_str}",
+                "total_return": metrics.get('total_return_pct', 0),
+                "sharpe": metrics.get('sharpe_ratio', 0),
+                "drawdown": metrics.get('max_drawdown_pct', 0),
+                "win_rate": metrics.get('win_rate', 0),
+                "trades": res.get('total_trades', 0),
+                "profit_factor": metrics.get('profit_factor', 0),
+                "mc_ret_avg": mc_ret,
+                "mc_dd_95": mc_dd_95
+            })
+
+        except Exception as e:
+            logger.error(f"Error validating {best_run['name']}: {e}", exc_info=True)
+
+    # Sort by Sharpe Ratio (Test)
+    final_results.sort(key=lambda x: (x['sharpe'], x['total_return']), reverse=True)
 
     # Save JSON
     with open("leaderboard.json", "w") as f:
-        json.dump(results, f, indent=4)
+        json.dump(final_results, f, indent=4)
 
     # Generate Markdown
-    md = "# Strategy Leaderboard\n\n"
-    md += f"**Date:** {datetime.now().strftime('%Y-%m-%d')}\n\n"
-    md += "| Rank | Strategy | Sharpe | Return % | Drawdown % | Win Rate % | Profit Factor | Trades |\n"
-    md += "|---|---|---|---|---|---|---|---|\n"
+    md = "# Strategy Leaderboard (Out-of-Sample)\n\n"
+    md += f"**Date:** {datetime.now().strftime('%Y-%m-%d')}\n"
+    md += f"**Period:** {split_str} to {end_str} (Test Set)\n"
+    md += f"**Training:** {start_str} to {split_str} (Optimization Set)\n\n"
 
-    for i, r in enumerate(results):
-        md += f"| {i+1} | {r['strategy']} | {r['sharpe']:.2f} | {r['total_return']:.2f}% | {r['drawdown']:.2f}% | {r['win_rate']:.2f}% | {r['profit_factor']:.2f} | {r['trades']} |\n"
+    md += "| Rank | Strategy | Sharpe | Return % | Drawdown % | Win Rate % | Profit Factor | Trades | MC 95% DD |\n"
+    md += "|---|---|---|---|---|---|---|---|---|\n"
+
+    for i, r in enumerate(final_results):
+        md += f"| {i+1} | {r['strategy']} | {r['sharpe']:.2f} | {r['total_return']:.2f}% | {r['drawdown']:.2f}% | {r['win_rate']:.2f}% | {r['profit_factor']:.2f} | {r['trades']} | {r['mc_dd_95']:.2f}% |\n"
+
+    md += "\n## Monte Carlo Risk Analysis\n"
+    md += "Monte Carlo simulation (1000 runs) estimates the 95th percentile Drawdown (VaR) based on the Out-of-Sample trade distribution.\n"
 
     with open("LEADERBOARD.md", "w") as f:
         f.write(md)

@@ -9,6 +9,7 @@ import sys
 import logging
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
@@ -69,6 +70,82 @@ class Position:
     take_profit: float
     atr: float
 
+class BacktestAPIClient(APIClient):
+    """
+    Extended API Client that falls back to yfinance for backtesting data
+    when the local API is unavailable.
+    """
+    def history(self, symbol, exchange="NSE", interval="15m", start_date=None, end_date=None, max_retries=3):
+        # Try parent first
+        try:
+            df = super().history(symbol, exchange, interval, start_date, end_date, max_retries=1)
+            if not df.empty:
+                return df
+        except Exception:
+            pass
+
+        # Fallback to yfinance
+        logger.info(f"Using yfinance fallback for {symbol}")
+        yf_symbol = self._map_symbol(symbol, exchange)
+        if not yf_symbol:
+            logger.warning(f"Could not map {symbol} to yfinance ticker")
+            return pd.DataFrame()
+
+        try:
+            ticker = yf.Ticker(yf_symbol)
+            # yfinance expects YYYY-MM-DD
+            df = ticker.history(start=start_date, end=end_date, interval=interval)
+
+            if df.empty:
+                logger.warning(f"yfinance returned no data for {yf_symbol}")
+                return pd.DataFrame()
+
+            # Normalize
+            df = df.reset_index()
+            # Convert columns to lowercase
+            df.columns = [c.lower() for c in df.columns]
+
+            # Rename date/datetime
+            if 'date' in df.columns:
+                df = df.rename(columns={'date': 'datetime'})
+
+            # Ensure timezone naive datetime
+            if 'datetime' in df.columns:
+                try:
+                    df['datetime'] = pd.to_datetime(df['datetime']).dt.tz_localize(None)
+                except Exception:
+                    # Already naive?
+                    pass
+                df = df.set_index('datetime')
+
+            # Ensure required columns
+            required = ['open', 'high', 'low', 'close', 'volume']
+            for col in required:
+                if col not in df.columns:
+                    df[col] = 0.0
+
+            return df[required]
+        except Exception as e:
+            logger.error(f"YFinance error for {symbol}: {e}")
+            return pd.DataFrame()
+
+    def _map_symbol(self, symbol, exchange):
+        s = symbol.upper()
+        if s == "NIFTY" or s == "NIFTY 50": return "^NSEI"
+        if s == "BANKNIFTY" or s == "NIFTY BANK": return "^NSEBANK"
+        if s == "SILVERMIC": return "SI=F" # Global Silver
+        if s == "GOLDM": return "GC=F" # Global Gold
+        if s == "CRUDEOIL": return "CL=F" # Global Crude
+
+        # Indian Stocks
+        if exchange in ["NSE", "NSE_INDEX", "EQUITY"] or True:
+             # Default to .NS for everything else if not global
+             # Avoid double .NS
+             if not s.endswith(".NS") and "=" not in s:
+                return f"{s}.NS"
+
+        return s
+
 class SimpleBacktestEngine:
     """
     Simple backtesting engine for OpenAlgo strategies.
@@ -110,7 +187,8 @@ class SimpleBacktestEngine:
         except: pass
         # #endregion
         
-        self.client = APIClient(api_key=api_key, host=host)
+        # Use BacktestAPIClient which has yfinance fallback
+        self.client = BacktestAPIClient(api_key=api_key, host=host)
         
         # State
         self.positions: List[Position] = []
