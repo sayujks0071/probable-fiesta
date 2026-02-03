@@ -22,6 +22,19 @@ utils_dir = os.path.join(strategies_dir, 'utils')
 # Add utils directory to path for imports
 sys.path.insert(0, utils_dir)
 
+# Add repo root to path for observability
+sys.path.append(os.path.abspath(os.path.join(strategies_dir, '../../')))
+
+
+# Configure Logging
+try:
+    from openalgo_observability.logging_setup import setup_logging
+    setup_logging()
+except ImportError:
+    # Fallback if module not found (e.g. backtest imports)
+    pass
+
+
 try:
     from trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
 except ImportError:
@@ -47,19 +60,6 @@ class AIHybridStrategy:
 
         # Setup Logger
         self.logger = logging.getLogger(f"AIHybrid_{symbol}")
-        self.logger.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-        # Console Handler
-        ch = logging.StreamHandler()
-        ch.setFormatter(formatter)
-        self.logger.addHandler(ch)
-
-        # File Handler
-        if logfile:
-            fh = logging.FileHandler(logfile)
-            fh.setFormatter(formatter)
-            self.logger.addHandler(fh)
 
         self.pm = PositionManager(symbol) if PositionManager else None
 
