@@ -14,6 +14,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+from openalgo.strategies.utils.risk_manager import create_risk_manager
 
 # Configure logging
 logging.basicConfig(
@@ -33,9 +34,16 @@ class GapFadeStrategy:
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
         self.pm = PositionManager(f"{symbol}_GapFade")
+        self.rm = create_risk_manager(f"{symbol}_GapFade", "NSE", 100000)
 
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
+
+        # Risk Check
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.error(f"Risk Check Failed: {reason}")
+            return
 
         # 1. Get Previous Close
         # Using history API for last 2 days
@@ -116,6 +124,10 @@ class GapFadeStrategy:
         # self.client.placesmartorder(...)
         logger.info(f"Executing {option_type} Buy for {qty} qty.")
         self.pm.update_position(qty, 100, "BUY") # Mock update
+
+        # Register with Risk Manager
+        # Using 100 as mock entry price and "LONG" as we are buying options
+        self.rm.register_entry(f"{self.symbol}_GapFade", qty, 100.0, "LONG")
 
 def main():
     parser = argparse.ArgumentParser()

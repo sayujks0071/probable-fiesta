@@ -25,22 +25,21 @@ sys.path.insert(0, utils_dir)
 try:
     from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
     from symbol_resolver import SymbolResolver
+    from risk_manager import create_risk_manager
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
         from utils.symbol_resolver import SymbolResolver
+        from utils.risk_manager import create_risk_manager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+            from openalgo.strategies.utils.risk_manager import create_risk_manager
         except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            SymbolResolver = None
-            normalize_symbol = lambda s: s
-            is_market_open = lambda: True
+            print("CRITICAL: Failed to import required modules. RiskManager is mandatory.")
+            sys.exit(1)
             def calculate_intraday_vwap(df):
                 df = df.copy()
                 if 'datetime' not in df.columns:
@@ -104,6 +103,13 @@ class SuperTrendVWAPStrategy:
             self.client = APIClient(api_key=self.api_key, host=self.host)
 
         self.pm = PositionManager(symbol) if PositionManager else None
+
+        # Initialize Risk Manager
+        if self.api_key == "test" or self.api_key == "BACKTEST":
+            self.rm = None
+        else:
+            # Disable trailing stop as this strategy manages it (ATR based)
+            self.rm = create_risk_manager(f"{symbol}_VWAP", "NSE", 100000, trailing_stop_enabled=False)
 
     def generate_signal(self, df):
         """
@@ -286,6 +292,14 @@ class SuperTrendVWAPStrategy:
                     time.sleep(60)
                     continue
 
+                # Risk Check
+                if self.rm:
+                    can_trade, reason = self.rm.can_trade()
+                    if not can_trade:
+                        self.logger.error(f"Risk Check Failed: {reason}")
+                        time.sleep(60)
+                        continue
+
                 exchange = "NSE_INDEX" if "NIFTY" in self.symbol.upper() or "VIX" in self.symbol.upper() else "NSE"
                 try:
                     df = self.client.history(
@@ -333,6 +347,29 @@ class SuperTrendVWAPStrategy:
                 self.atr = self.calculate_atr(df)
                 last = df.iloc[-1]
 
+                # Check EOD Square Off
+                if self.rm and self.rm.should_square_off_eod():
+                     self.logger.warning("EOD Square Off Triggered")
+                     if self.pm and self.pm.has_position():
+                         qty = abs(self.pm.position)
+                         action = "SELL" if self.pm.position > 0 else "BUY"
+                         self.pm.update_position(qty, last['close'], action)
+                         self.rm.register_exit(self.symbol, last['close'], qty)
+                     time.sleep(60)
+                     continue
+
+                # Check Risk Manager Stop Loss (Safety Net)
+                if self.rm and self.pm and self.pm.has_position():
+                    stop_hit, reason = self.rm.check_stop_loss(self.symbol, last['close'])
+                    if stop_hit:
+                        self.logger.warning(f"RiskManager Stop Hit: {reason}")
+                        qty = abs(self.pm.position)
+                        action = "SELL" if self.pm.position > 0 else "BUY"
+                        self.pm.update_position(qty, last['close'], action)
+                        self.rm.register_exit(self.symbol, last['close'], qty)
+                        self.trailing_stop = 0.0
+                        continue
+
                 # Volume Profile
                 poc_price, poc_vol = self.analyze_volume_profile(df)
 
@@ -376,13 +413,19 @@ class SuperTrendVWAPStrategy:
                         self.logger.info(f"Trailing Stop Updated: {self.trailing_stop:.2f}")
 
                     # Check Exit
+                    qty_to_exit = abs(self.pm.position)
+
                     if last['close'] < self.trailing_stop:
                         self.logger.info(f"Trailing Stop Hit at {last['close']:.2f}")
-                        self.pm.update_position(self.quantity, last['close'], 'SELL')
+                        self.pm.update_position(qty_to_exit, last['close'], 'SELL')
+                        if self.rm:
+                            self.rm.register_exit(self.symbol, last['close'], qty_to_exit)
                         self.trailing_stop = 0.0
                     elif last['close'] < last['vwap']:
                         self.logger.info(f"Price crossed below VWAP at {last['close']:.2f}. Exiting.")
-                        self.pm.update_position(self.quantity, last['close'], 'SELL')
+                        self.pm.update_position(qty_to_exit, last['close'], 'SELL')
+                        if self.rm:
+                            self.rm.register_exit(self.symbol, last['close'], qty_to_exit)
                         self.trailing_stop = 0.0
 
                 else:
@@ -395,6 +438,8 @@ class SuperTrendVWAPStrategy:
                         self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
                         if self.pm:
                             self.pm.update_position(adj_qty, last['close'], 'BUY')
+                            if self.rm:
+                                self.rm.register_entry(self.symbol, adj_qty, last['close'], 'LONG')
                             sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
                             self.trailing_stop = last['close'] - (sl_mult * self.atr)
 
