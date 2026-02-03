@@ -148,6 +148,11 @@ class MCXGlobalArbitrageStrategy:
 
         logger.info(f"MCX Chg: {mcx_change_pct:.2f}% | Global Chg: {global_change_pct:.2f}% | Divergence: {divergence_pct:.2f}%")
         
+        # Risk Check: Extreme Divergence
+        if abs(divergence_pct) > 5.0:
+            logger.warning(f"⚠️ EXTREME DIVERGENCE DETECTED ({divergence_pct:.2f}%). Check for market dislocation or data errors.")
+            # Optionally stop trading or require manual intervention. For now, we log prominently.
+
         # Entry Logic
         current_time = time.time()
         time_since_last_trade = current_time - self.last_trade_time

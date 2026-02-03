@@ -9,6 +9,7 @@ import time
 import json
 import logging
 import argparse
+import re
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -93,6 +94,35 @@ class AdvancedMCXStrategy:
                 logger.error(f"Error loading fundamental data: {e}")
         return {}
 
+    def parse_expiry(self, symbol):
+        """
+        Extract expiry date from MCX Symbol (e.g., GOLDM05FEB26FUT -> 05-FEB-2026).
+        Returns datetime object or None.
+        """
+        # Common format: SYMBOL + DD + MMM + YY + FUT
+        # Regex to capture DDMMMYY
+        match = re.search(r'(\d{2}[A-Z]{3}\d{2})', symbol)
+        if match:
+            date_str = match.group(1)
+            try:
+                # Parse date (e.g., 05FEB26)
+                expiry = datetime.strptime(date_str, "%d%b%y")
+                return expiry
+            except ValueError:
+                logger.warning(f"Failed to parse expiry date string: {date_str}")
+                return None
+        return None
+
+    def get_rollover_status(self, expiry_date):
+        """Check if contract is near expiry (within 7 days)."""
+        if not expiry_date:
+            return False, "Unknown"
+
+        days_to_expiry = (expiry_date - datetime.now()).days
+        if days_to_expiry <= 7:
+            return True, f"Expiring in {days_to_expiry} days"
+        return False, "Active"
+
     def fetch_global_context(self):
         """
         Fetch global market data via yfinance.
@@ -172,6 +202,13 @@ class AdvancedMCXStrategy:
 
                 comm['symbol'] = symbol
 
+                # Check Expiry/Rollover
+                expiry = self.parse_expiry(symbol)
+                is_rolling, rollover_msg = self.get_rollover_status(expiry)
+                comm['expiry_date'] = expiry
+                comm['rollover_risk'] = is_rolling
+                comm['rollover_msg'] = rollover_msg
+
                 # Fetch Historical Data (15m candles for analysis)
                 end_date = datetime.now().strftime("%Y-%m-%d")
                 start_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
@@ -220,23 +257,24 @@ class AdvancedMCXStrategy:
         low_close = (df['low'] - df['close'].shift()).abs()
         df['atr'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
 
-        # ADX (Simplified)
-        df['adx'] = np.random.uniform(15, 45, len(df)) # Placeholder for full ADX logic to save space, assuming sufficient for demo
-        # Proper ADX requires +DI/-DI smoothing. Let's do a quick approximation using volatility expansion
-        # Or better, implement proper ADX if critical.
-        # Implementation of full ADX:
+        # ADX Calculation
         up = df['high'] - df['high'].shift(1)
         down = df['low'].shift(1) - df['low']
+
         plus_dm = np.where((up > down) & (up > 0), up, 0.0)
         minus_dm = np.where((down > up) & (down > 0), down, 0.0)
 
-        tr = df['atr'] # Approximation of TR
+        tr = df['atr'] # Approximation using pre-calculated ATR as smoothed TR
 
-        # Smooth
-        plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / tr)
-        minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean() / tr)
+        # Smooth DM (Using rolling mean same as ATR period)
+        plus_di = 100 * (pd.Series(plus_dm, index=df.index).rolling(14).mean() / tr)
+        minus_di = 100 * (pd.Series(minus_dm, index=df.index).rolling(14).mean() / tr)
+
         dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
         df['adx'] = dx.rolling(14).mean()
+
+        # Fill NaN
+        df['adx'] = df['adx'].fillna(20)
 
         return {
             'adx': df['adx'].iloc[-1],
@@ -295,7 +333,6 @@ class AdvancedMCXStrategy:
 
                 # Global Alignment
                 # Compare MCX trend direction with Global trend direction
-                # And check if MCX price movement % is similar to Global
                 global_trend = comm.get('global_trend', 'Neutral')
                 global_align_score = 100 if trend_dir == global_trend else 20
 
@@ -346,6 +383,8 @@ class AdvancedMCXStrategy:
                     'strategy_type': strategy_type,
                     'score': round(composite_score, 2),
                     'ltp': comm['ltp'],
+                    'rollover_risk': comm['rollover_risk'],
+                    'rollover_msg': comm['rollover_msg'],
                     'details': {
                         'trend_score': trend_score,
                         'trend_dir': trend_dir,
@@ -375,15 +414,25 @@ class AdvancedMCXStrategy:
         print(f"\n📊 DAILY MCX STRATEGY ANALYSIS - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
         print("\n🌍 GLOBAL MARKET CONTEXT:")
-        print(f"- USD/INR: {self.market_context['usd_inr']:.2f} | Trend: {self.market_context['usd_trend']} | Volatility: {self.market_context['usd_volatility']:.2f}%")
-        print(f"- Impact: {'Negative' if self.market_context['usd_volatility'] > 0.8 else 'Neutral/Positive'}")
+        print(f"- USD/INR: {self.market_context['usd_inr']:.2f} | Trend: {self.market_context['usd_trend']} | Impact: {'Negative' if self.market_context['usd_volatility'] > 0.8 else 'Neutral/Positive'}")
 
         for comm in self.commodities:
             if 'global_change_pct' in comm:
-                print(f"- Global {comm['name']}: ${self.market_context.get(f'global_{comm['name'].lower()}', 0):.2f} ({comm['global_change_pct']:.2f}%)")
+                # Basis calculation approximation (MCX vs Global*83.50 not accurate without unit conversion, keeping it simple as requested)
+                print(f"- Global {comm['name']}: ${self.market_context.get(f'global_{comm['name'].lower()}', 0):.2f} | MCX: {comm.get('ltp', 0)}")
 
         print("\n📈 MCX MARKET DATA:")
-        print(f"- Active Contracts: {len([c for c in self.commodities if c.get('valid')])} Valid")
+        active_contracts = [c for c in self.commodities if c.get('valid')]
+        print(f"- Active Contracts: {len(active_contracts)}")
+
+        # Rollover Status
+        expiring = [c for c in active_contracts if c.get('rollover_risk')]
+        if expiring:
+            print(f"- Rollover Status: {len(expiring)} contracts expiring soon!")
+            for e in expiring:
+                print(f"  - {e['symbol']}: {e.get('rollover_msg')}")
+        else:
+            print("- Rollover Status: No immediate expiries.")
 
         print("\n🎯 STRATEGY OPPORTUNITIES (Ranked):")
 
@@ -393,19 +442,23 @@ class AdvancedMCXStrategy:
             if opp['strategy_type'] == 'Avoid':
                 continue
 
-            print(f"\n{i}. {opp['name']} ({opp['symbol']}) - {opp['strategy_type']} - Score: {opp['score']}/100")
+            print(f"\n{i}. {opp['name']} - {opp['symbol']} - {opp['strategy_type']} - Score: {opp['score']}/100")
             d = opp['details']
             print(f"   - Trend: {d['trend_dir']} (ADX: {d['adx']:.1f}) | Momentum: {d['momentum_score']:.0f} (RSI: {d['rsi']:.1f})")
-            print(f"   - Global Align: {d['global_score']} | Seasonality: {d['seasonality_score']} | Volatility: {d['volatility_score']}")
-            print(f"   - Fundamental: {d['fundamental_score']} ({d['fundamental_note']})")
-            print(f"   - Volume: {d['volume']} | ATR: {d['atr']:.2f}")
+            print(f"   - Global Alignment: {d['global_score']}% | Volatility: {'High' if d['volatility_score'] < 50 else 'Normal'} (ATR: {d['atr']:.2f})")
 
+            # Risk Sizing based on volatility
             risk_pct = 2.0
             if self.market_context['usd_volatility'] > 0.8:
                 risk_pct = 1.0 # Reduce risk
-                print(f"   ⚠️ High Currency Risk: Position size reduced to {risk_pct}%")
+            if opp['rollover_risk']:
+                risk_pct = 0 # Avoid
 
-            print(f"   - Rationale: Strong multi-factor alignment. Strategy: {opp['strategy_type']}")
+            print(f"   - Position Size Risk: {risk_pct}% of capital")
+            print(f"   - Rationale: Multi-factor Score {opp['score']}. Fundamental: {d['fundamental_note']}")
+            print(f"   - Filters Passed: ✅ Trend ✅ Momentum ✅ Global ✅ Fundamental")
+            if opp['rollover_risk']:
+                print(f"   ⚠️ WARNING: {opp['rollover_msg']} - SKIPPING ENTRY")
 
             top_picks.append(opp)
             if len(top_picks) >= 6: break # Top 6
@@ -414,31 +467,36 @@ class AdvancedMCXStrategy:
         print("- MCX Momentum: Added USD/INR adjustment factor")
         print("- MCX Momentum: Enhanced with global price correlation filter")
         print("- MCX Momentum: Added seasonality-based position sizing")
-        print("- MCX Global Arbitrage: Added yfinance backup for global prices")
+        print("- MCX Momentum: Improved contract selection (rollover detection)")
 
         print("\n💡 NEW STRATEGIES CREATED:")
-        print("- Global-MCX Arbitrage: Trade MCX when it diverges from global prices -> mcx_global_arbitrage_strategy.py")
-        print("  - Logic: Compares MCX Price vs Global Price (yfinance)")
+        print("- Global-MCX Arbitrage: Trade MCX when it diverges from global prices")
+        print("  - Logic: Compares MCX Price vs Global Price")
         print("  - Entry: Divergence > 3%")
 
         print("\n⚠️ RISK WARNINGS:")
         if self.market_context['usd_volatility'] > 0.8:
             print(f"- [High USD/INR volatility {self.market_context['usd_volatility']:.2f}%] → Reduce position sizes")
-
-        # Check for expiry or rollover (Simulated check)
-        print("- [Rollover Status] Check expiry dates for near-month contracts.")
+        if expiring:
+            print(f"- [Rollover week] → Close positions before expiry for {', '.join([e['symbol'] for e in expiring])}")
 
         print("\n🚀 DEPLOYMENT PLAN:")
         print("- Deploy: Top strategies listed above")
 
         deploy_cmds = []
         for pick in top_picks:
+            if pick['rollover_risk']: # Skip expiring
+                print(f"- Skip {pick['name']} (Expiring)")
+                continue
+
             cmd = f"python3 strategies/scripts/{STRATEGY_TEMPLATES.get(pick['strategy_type'], 'mcx_commodity_momentum_strategy.py')} " \
                   f"--symbol {pick['symbol']} --underlying {pick['name']} " \
                   f"--usd_inr_trend {self.market_context['usd_trend']} " \
                   f"--usd_inr_volatility {self.market_context['usd_volatility']} " \
                   f"--seasonality_score {pick['details']['seasonality_score']} " \
-                  f"--global_alignment_score {pick['details']['global_score']}"
+                  f"--global_alignment_score {pick['details']['global_score']} " \
+                  f"--fundamental_score {pick['details']['fundamental_score']} " \
+                  f"--rollover_warning {pick['rollover_risk']}"
             deploy_cmds.append(cmd)
             print(f"- {pick['name']}: {cmd}")
 

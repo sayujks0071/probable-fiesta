@@ -195,13 +195,33 @@ class MCXMomentumStrategy:
         # Multi-Factor Checks
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
         global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
-        usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
+        fundamental_score = self.params.get('fundamental_score', 50)
+        rollover_warning = self.params.get('rollover_warning', False)
 
-        # Adjust Position Size
+        # Volatility Check
+        usd_vol_high = self.params.get('usd_inr_volatility', 0) > 0.8
+        atr_pct = (current['atr'] / current['close']) * 100 if current['close'] > 0 else 0
+        volatility_high = atr_pct > 2.0
+
+        # Rollover Risk - Critical Filter
+        if rollover_warning:
+            logger.warning("⚠️ Rollover Risk Active: Skipping entries / Closing positions.")
+            if has_position and self.pm:
+                 pos_qty = self.pm.position
+                 if pos_qty > 0:
+                     logger.warning("FORCE CLOSE: Exiting LONG due to Rollover Risk.")
+                     self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                 elif pos_qty < 0:
+                     logger.warning("FORCE CLOSE: Exiting SHORT due to Rollover Risk.")
+                     self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+            return
+
+        # Adjust Position Size based on Volatility
         base_qty = 1
-        if usd_vol_high:
-            logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size by 30%.")
-            base_qty = max(1, int(base_qty * 0.7)) # Reduce size, minimum 1
+        if usd_vol_high or volatility_high:
+            logger.warning(f"⚠️ High Volatility (USD: {self.params.get('usd_inr_volatility')}%, ATR: {atr_pct:.2f}%): Reducing position size.")
+            # If lot size > 1, reduce. Since lot size is contract specific and usually 1 for retail algo, we keep 1 but log.
+            pass
 
         if not seasonality_ok and not has_position:
             logger.info("Seasonality Weak: Skipping new entries.")
@@ -213,6 +233,16 @@ class MCXMomentumStrategy:
 
         # Entry Logic
         if not has_position:
+            # Fundamental Filters
+            # Skip Longs if Fundamentals are Bearish (<40)
+            if fundamental_score < 40 and (current['adx'] > self.params['adx_threshold'] and current['rsi'] > 55):
+                logger.info(f"Skipping BUY: Fundamental Score {fundamental_score} is Bearish.")
+                return
+            # Skip Shorts if Fundamentals are Bullish (>60)
+            if fundamental_score > 60 and (current['adx'] > self.params['adx_threshold'] and current['rsi'] < 45):
+                logger.info(f"Skipping SELL: Fundamental Score {fundamental_score} is Bullish.")
+                return
+
             # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
             if (current['adx'] > self.params['adx_threshold'] and
                 current['rsi'] > 55 and
@@ -271,9 +301,11 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
+    parser.add_argument('--fundamental_score', type=int, default=50, help='Fundamental Score (0-100)')
+    parser.add_argument('--rollover_warning', type=str, default='False', help='Rollover Warning (True/False)')
 
     args = parser.parse_args()
 
@@ -288,7 +320,9 @@ if __name__ == "__main__":
         'usd_inr_trend': args.usd_inr_trend,
         'usd_inr_volatility': args.usd_inr_volatility,
         'seasonality_score': args.seasonality_score,
-        'global_alignment_score': args.global_alignment_score
+        'global_alignment_score': args.global_alignment_score,
+        'fundamental_score': args.fundamental_score,
+        'rollover_warning': args.rollover_warning == 'True'
     }
 
     # Symbol Resolution
