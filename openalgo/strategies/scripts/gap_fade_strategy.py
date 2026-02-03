@@ -27,38 +27,30 @@ logging.basicConfig(
 logger = logging.getLogger("GapFadeStrategy")
 
 class GapFadeStrategy:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, threshold=0.5):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
-        self.gap_threshold = gap_threshold # Percentage
+        self.gap_threshold = threshold # Percentage
         self.pm = PositionManager(f"{symbol}_GapFade")
 
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
 
         # 1. Get Previous Close
-        # Using history API for last 2 days
+        # Using history API for last 5 days to ensure we get a valid close
         today = datetime.now()
-        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d") # Go back enough to get prev day
+        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
         end_date = today.strftime("%Y-%m-%d")
 
         # Get daily candles
         df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
 
-        if df.empty or len(df) < 1:
-            logger.error("Could not fetch history for previous close.")
-            return
+        prev_close = 0
+        if not df.empty and len(df) >= 1:
+            prev_close = df.iloc[-1]['close']
 
-        # Assuming the last completed row is previous day, or if market just opened, we might have today's open
-        # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
-
-        prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
-
+        # Fallback to quote if history fails or is ambiguous
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
         if not quote:
             logger.error("Could not fetch quote.")
@@ -66,9 +58,13 @@ class GapFadeStrategy:
 
         current_price = float(quote['ltp'])
 
-        # Some APIs provide 'close' in quote which is prev_close
+        # Some brokers provide 'close' (prev_close) in the quote
         if 'close' in quote and quote['close'] > 0:
             prev_close = float(quote['close'])
+
+        if prev_close == 0:
+            logger.error("Could not determine Previous Close.")
+            return
 
         logger.info(f"Prev Close: {prev_close}, Current: {current_price}")
 
@@ -84,22 +80,19 @@ class GapFadeStrategy:
         option_type = None
 
         if gap_pct > self.gap_threshold:
-            # Gap UP -> Fade (Sell/Short or Buy Put)
-            logger.info("Gap UP detected. Looking to FADE (Short).")
-            action = "SELL" # Futures Sell or PE Buy
-            # For options: Buy PE
+            # Gap UP -> Fade (Short) -> Buy Put
+            logger.info("Gap UP detected. Looking to FADE (Short) -> Buy PE.")
+            action = "BUY"
             option_type = "PE"
 
         elif gap_pct < -self.gap_threshold:
-            # Gap DOWN -> Fade (Buy/Long or Buy Call)
-            logger.info("Gap DOWN detected. Looking to FADE (Long).")
+            # Gap DOWN -> Fade (Long) -> Buy Call
+            logger.info("Gap DOWN detected. Looking to FADE (Long) -> Buy CE.")
             action = "BUY"
             option_type = "CE"
 
         # 3. Select Option Strike (ATM)
         atm = round(current_price / 50) * 50
-        strike_symbol = f"{self.symbol}{today.strftime('%y%b').upper()}{atm}{option_type}" # Symbol format varies
-        # Simplified: Just log the intent
 
         logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade)")
 
@@ -115,7 +108,9 @@ class GapFadeStrategy:
         # 5. Place Order (Simulation)
         # self.client.placesmartorder(...)
         logger.info(f"Executing {option_type} Buy for {qty} qty.")
-        self.pm.update_position(qty, 100, "BUY") # Mock update
+        self.pm.update_position(qty, current_price, action) # Mock update
+
+        print(f"✅ Executed Gap Fade: {action} {qty} qty @ {atm} {option_type} (Gap: {gap_pct:.2f}%)")
 
 def main():
     parser = argparse.ArgumentParser()
