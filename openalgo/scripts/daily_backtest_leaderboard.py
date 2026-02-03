@@ -14,10 +14,16 @@ sys.path.append(repo_root)
 # Import Backtest Engine
 try:
     from openalgo.strategies.utils.simple_backtest_engine import SimpleBacktestEngine
+    import openalgo.strategies.utils.trading_utils as trading_utils
 except ImportError:
     # Fallback path logic
     sys.path.append(os.path.join(repo_root, 'openalgo', 'strategies', 'utils'))
     from simple_backtest_engine import SimpleBacktestEngine
+    import trading_utils
+
+# Monkey Patch Market Hours for Backtesting
+trading_utils.is_market_open = lambda exchange="NSE": True
+trading_utils.is_mcx_market_open = lambda: True
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Leaderboard")
@@ -26,15 +32,13 @@ STRATEGIES = [
     {
         "name": "SuperTrend_VWAP",
         "file": "openalgo/strategies/scripts/supertrend_vwap_strategy.py",
-        "symbol": "NIFTY", # Default test symbol
+        "symbol": "NIFTY",
         "exchange": "NSE_INDEX"
     },
     {
         "name": "MCX_Momentum",
         "file": "openalgo/strategies/scripts/mcx_commodity_momentum_strategy.py",
-        "symbol": "SILVERMIC", # Will try to resolve if needed, but engine needs raw symbol usually?
-                               # Engine loads data. We can use a proxy symbol like 'SILVER' if using mock data,
-                               # but usually specific symbol needed.
+        "symbol": "SILVERMIC",
         "exchange": "MCX"
     },
     {
@@ -42,30 +46,21 @@ STRATEGIES = [
         "file": "openalgo/strategies/scripts/ai_hybrid_reversion_breakout.py",
         "symbol": "NIFTY",
         "exchange": "NSE_INDEX"
-    },
-    {
-        "name": "ML_Momentum",
-        "file": "openalgo/strategies/scripts/advanced_ml_momentum_strategy.py",
-        "symbol": "NIFTY",
-        "exchange": "NSE_INDEX"
     }
 ]
 
 TUNING_CONFIG = {
     "SuperTrend_VWAP": {
-        "stop_pct": [1.5, 2.0],
-        "threshold": [150, 160]
+        "stop_pct": [1.8],
+        "threshold": [150]
     },
     "MCX_Momentum": {
-        "adx_threshold": [20, 30],
-        "period_rsi": [10, 14]
+        "adx_threshold": [25],
+        "period_rsi": [14]
     },
     "AI_Hybrid": {
-        "rsi_lower": [25, 35],
-        "rsi_upper": [60, 70]
-    },
-    "ML_Momentum": {
-        "threshold": [0.01, 0.02]
+        "rsi_lower": [30],
+        "rsi_upper": [60]
     }
 }
 
@@ -101,7 +96,8 @@ def load_strategy_module(filepath):
 def run_leaderboard():
     engine = SimpleBacktestEngine(initial_capital=100000.0)
 
-    start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    # Extended lookback to 20 days to ensure sufficient data but avoid timeout
+    start_date = (datetime.now() - timedelta(days=20)).strftime("%Y-%m-%d")
     end_date = datetime.now().strftime("%Y-%m-%d")
 
     results = []

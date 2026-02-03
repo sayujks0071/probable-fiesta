@@ -9,6 +9,7 @@ import sys
 import logging
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
@@ -69,6 +70,19 @@ class Position:
     take_profit: float
     atr: float
 
+class BacktestClient:
+    """Mock Client for Backtesting that uses Engine's data loader"""
+    def __init__(self, engine):
+        self.engine = engine
+        self.host = "http://mock" # Satisfy attribute checks
+
+    def history(self, symbol, exchange="NSE", interval="15m", start_date=None, end_date=None, **kwargs):
+        return self.engine.load_historical_data(symbol, exchange, start_date, end_date, interval)
+
+    def get_quote(self, symbol, exchange="NSE"):
+        # Minimal mock
+        return {'ltp': 0.0, 'depth': {'buy': [], 'sell': []}}
+
 class SimpleBacktestEngine:
     """
     Simple backtesting engine for OpenAlgo strategies.
@@ -110,7 +124,8 @@ class SimpleBacktestEngine:
         except: pass
         # #endregion
         
-        self.client = APIClient(api_key=api_key, host=host)
+        # Use BacktestClient instead of real APIClient
+        self.client = BacktestClient(self)
         
         # State
         self.positions: List[Position] = []
@@ -119,7 +134,24 @@ class SimpleBacktestEngine:
         
         # Performance metrics
         self.metrics: Dict[str, Any] = {}
+
+        # Data Cache
+        self._data_cache = {}
     
+    def map_symbol_to_yfinance(self, symbol: str) -> Optional[str]:
+        s = symbol.upper()
+        if s == 'NIFTY' or s == 'NIFTY50': return '^NSEI'
+        if s == 'BANKNIFTY': return '^NSEBANK'
+        if s == 'SILVERMIC': return 'SI=F'
+        if s == 'GOLDM': return 'GC=F'
+        if s == 'CRUDEOIL': return 'CL=F'
+        if s == 'NATURALGAS': return 'NG=F'
+        if s == 'INDIA VIX': return '^INDIAVIX'
+        # Default for stocks: APPEND .NS if not index/commodity format
+        if not s.endswith('.NS') and not s.endswith('=F') and not s.startswith('^'):
+            return f"{s}.NS"
+        return s
+
     def load_historical_data(
         self,
         symbol: str,
@@ -129,28 +161,18 @@ class SimpleBacktestEngine:
         interval: str = "15m"
     ) -> pd.DataFrame:
         """
-        Load historical data from OpenAlgo API.
-        
-        Args:
-            symbol: Trading symbol
-            exchange: Exchange name (e.g., 'MCX')
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            interval: Data interval (5m, 15m, 1h, etc.)
-        
-        Returns:
-            DataFrame with OHLCV data
+        Load historical data from OpenAlgo API with YFinance fallback.
         """
-        # #region agent log
-        import json
-        try:
-            with open('/Users/mac/dyad-apps/probable-fiesta/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"sessionId":"debug-session","runId":"load_data","hypothesisId":"D","location":"simple_backtest_engine.py:load_historical_data","message":"Before API call","data":{"symbol":symbol,"exchange":exchange,"start_date":start_date,"end_date":end_date,"interval":interval,"api_key_set":hasattr(self.client,'api_key'),"host":self.client.host if hasattr(self.client,'host') else None},"timestamp":int(__import__('time').time()*1000)})+"\n")
-        except: pass
-        # #endregion
-        
+        # Check Cache
+        cache_key = f"{symbol}|{exchange}|{start_date}|{end_date}|{interval}"
+        if cache_key in self._data_cache:
+            return self._data_cache[cache_key].copy()
+
         logger.info(f"Loading historical data: {symbol} from {start_date} to {end_date} ({interval})")
         
+        df = pd.DataFrame()
+
+        # 1. Try API First
         try:
             df = self.client.history(
                 symbol=symbol,
@@ -160,54 +182,79 @@ class SimpleBacktestEngine:
                 end_date=end_date
             )
             
-            # #region agent log
-            try:
-                with open('/Users/mac/dyad-apps/probable-fiesta/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"load_data","hypothesisId":"D","location":"simple_backtest_engine.py:load_historical_data","message":"After API call","data":{"df_type":type(df).__name__,"df_empty":df.empty if isinstance(df,pd.DataFrame) else True,"df_shape":list(df.shape) if isinstance(df,pd.DataFrame) else None,"df_columns":list(df.columns) if isinstance(df,pd.DataFrame) and hasattr(df,'columns') else None},"timestamp":int(__import__('time').time()*1000)})+"\n")
-            except: pass
-            # #endregion
-            
-            if not isinstance(df, pd.DataFrame) or df.empty:
-                logger.warning(f"No data returned for {symbol}")
-                return pd.DataFrame()
-            
-            # Ensure datetime index - handle both 'datetime' and 'timestamp' columns
-            if 'datetime' in df.columns:
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df = df.set_index('datetime')
-            elif 'timestamp' in df.columns:
-                # API returns 'timestamp' column, convert to datetime index
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-                df = df.set_index('timestamp')
-            elif not isinstance(df.index, pd.DatetimeIndex):
-                # Try to convert index to datetime if it's numeric or string
-                try:
-                    df.index = pd.to_datetime(df.index)
-                except (ValueError, TypeError):
-                    logger.warning("Could not convert index to datetime, using as-is")
-            
-            # #region agent log
-            try:
-                with open('/Users/mac/dyad-apps/probable-fiesta/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"load_data","hypothesisId":"G","location":"simple_backtest_engine.py:load_historical_data","message":"After datetime conversion","data":{"index_type":type(df.index).__name__,"is_datetime_index":isinstance(df.index,pd.DatetimeIndex),"df_shape":list(df.shape),"has_timestamp_col":"timestamp" in df.columns,"has_datetime_col":"datetime" in df.columns},"timestamp":int(__import__('time').time()*1000)})+"\n")
-            except: pass
-            # #endregion
-            
-            # Sort by datetime
-            df = df.sort_index()
-            
-            logger.info(f"Loaded {len(df)} bars for {symbol}")
-            return df
-            
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                 # Ensure datetime index
+                if 'datetime' in df.columns:
+                    df['datetime'] = pd.to_datetime(df['datetime'])
+                    df = df.set_index('datetime')
+                elif 'timestamp' in df.columns:
+                    df['timestamp'] = pd.to_datetime(df['timestamp'])
+                    df = df.set_index('timestamp')
+                elif not isinstance(df.index, pd.DatetimeIndex):
+                    try:
+                        df.index = pd.to_datetime(df.index)
+                    except:
+                        pass
+
+                df = df.sort_index()
+                logger.info(f"Loaded {len(df)} bars via API for {symbol}")
+                return df
+
         except Exception as e:
-            # #region agent log
-            try:
-                with open('/Users/mac/dyad-apps/probable-fiesta/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"sessionId":"debug-session","runId":"load_data","hypothesisId":"F","location":"simple_backtest_engine.py:load_historical_data","message":"Exception caught","data":{"error_type":type(e).__name__,"error_message":str(e),"symbol":symbol,"exchange":exchange},"timestamp":int(__import__('time').time()*1000)})+"\n")
-            except: pass
-            # #endregion
-            logger.error(f"Error loading historical data: {e}")
-            return pd.DataFrame()
+            logger.warning(f"API fetch failed: {e}. Trying YFinance...")
+
+        # 2. Fallback to YFinance
+        try:
+            yf_symbol = self.map_symbol_to_yfinance(symbol)
+            logger.info(f"Fallback: Fetching {yf_symbol} from YFinance")
+            
+            # Map interval
+            yf_interval = interval
+            if interval == "15min": yf_interval = "15m"
+            
+            data = yf.download(
+                tickers=yf_symbol,
+                start=start_date,
+                end=end_date,
+                interval=yf_interval,
+                progress=False
+            )
+            
+            if not data.empty:
+                # Handle MultiIndex columns from YFinance (Price, Ticker)
+                if isinstance(data.columns, pd.MultiIndex):
+                    data.columns = data.columns.get_level_values(0)
+
+                # Standardize columns: open, high, low, close, volume
+                data.columns = [c.lower() for c in data.columns]
+
+                # If 'adj close' exists, we might want to use it, but strategies usually expect 'close'
+                # Just ensure required columns exist
+                required = ['open', 'high', 'low', 'close', 'volume']
+                if all(c in data.columns for c in required):
+                    df = data[required]
+                    # Ensure index is datetime
+                    if not isinstance(df.index, pd.DatetimeIndex):
+                        df.index = pd.to_datetime(df.index)
+
+                    # Localize/Convert timezone if needed? YFinance usually returns localized or UTC.
+                    # SimpleBacktestEngine expects timezone-naive or consistent.
+                    # Let's keep it as is for now.
+
+                    logger.info(f"Loaded {len(df)} bars via YFinance for {yf_symbol}")
+                    return df
+                else:
+                    logger.warning(f"YFinance data missing columns: {data.columns}")
+            else:
+                logger.warning(f"YFinance returned empty data for {yf_symbol}")
+
+        except Exception as e:
+            logger.error(f"YFinance fallback failed: {e}")
+            
+        if not df.empty:
+            self._data_cache[cache_key] = df.copy()
+            
+        return df
     
     def apply_costs(self, price: float, quantity: int, side: str) -> float:
         """

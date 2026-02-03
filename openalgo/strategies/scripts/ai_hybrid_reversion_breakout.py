@@ -120,9 +120,12 @@ class AIHybridStrategy:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             # Enhanced Volume Confirmation (Stricter than average)
             if last['volume'] > avg_vol * 1.2:
-                # Reversion can trade against trend, so maybe ignore regime or be strict?
-                # Let's say Reversion is allowed in any regime if oversold enough.
-                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+                # Reversion allowed but add Regime Check: If bearish regime, require stricter RSI (<25)
+                threshold = self.rsi_lower
+                if not is_bullish_regime: threshold = 25
+
+                if last['rsi'] < threshold:
+                    return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
 
         # Breakout Logic: RSI > 60 and Price > Upper BB
         elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
@@ -404,13 +407,15 @@ def generate_signal(df, client=None, symbol=None, params=None):
     # I will assume fixed Time Stop for now or set it globally in module.
 
     # Let's set it globally for this run.
-    global TIME_STOP_BARS
+    global TIME_STOP_BARS, BREAKEVEN_TRIGGER_R
     TIME_STOP_BARS = getattr(strat, 'time_stop_bars', 12)
+    BREAKEVEN_TRIGGER_R = 1.5 # Profit Protect
 
     return strat.calculate_signal(df)
 
 # Global default for engine check
 TIME_STOP_BARS = 12
+BREAKEVEN_TRIGGER_R = 1.5
 
 if __name__ == "__main__":
     run_strategy()

@@ -52,6 +52,46 @@ class MCXMomentumStrategy:
         # Log active filters
         logger.info(f"Initialized Strategy for {symbol}")
         logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
+        self.global_trend_bias = 0 # 0=Neutral, 1=Long, -1=Short
+
+    def check_global_trend(self, reference_date):
+        """Check Global Ticker (GC=F, SI=F) Trend."""
+        if not self.client: return True
+
+        global_ticker = None
+        if "SILVER" in self.symbol.upper(): global_ticker = "SI=F"
+        elif "GOLD" in self.symbol.upper(): global_ticker = "GC=F"
+        elif "CRUDE" in self.symbol.upper(): global_ticker = "CL=F"
+        elif "NATURALGAS" in self.symbol.upper(): global_ticker = "NG=F"
+        elif "COPPER" in self.symbol.upper(): global_ticker = "HG=F"
+
+        if not global_ticker: return True
+
+        try:
+            if isinstance(reference_date, pd.Timestamp):
+                reference_date = reference_date.to_pydatetime()
+
+            end = reference_date.strftime("%Y-%m-%d")
+            start = (reference_date - timedelta(days=10)).strftime("%Y-%m-%d")
+
+            # Fetch Daily Data
+            df = self.client.history(symbol=global_ticker, exchange="Global", interval="1d", start_date=start, end_date=end)
+            if not df.empty and len(df) >= 2:
+                last = df.iloc[-1]
+                prev = df.iloc[-2]
+
+                change = (last['close'] - prev['close']) / prev['close']
+
+                # Filter Logic
+                if change > 0.005: self.global_trend_bias = 1
+                elif change < -0.005: self.global_trend_bias = -1
+                else: self.global_trend_bias = 0
+
+                return True
+        except Exception as e:
+            logger.warning(f"Global Check Failed: {e}")
+
+        return True
 
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
@@ -108,15 +148,24 @@ class MCXMomentumStrategy:
         if current.get('atr', 0) < min_atr:
              return 'HOLD', 0.0, {'reason': 'Low Volatility'}
 
+        # Global Trend Filter
+        self.check_global_trend(current.name)
+        if self.global_trend_bias == 1: # Bullish Global
+            if action == 'SELL': return 'HOLD', 0.0, {'reason': 'Global Trend Bullish'}
+        elif self.global_trend_bias == -1: # Bearish Global
+            if action == 'BUY': return 'HOLD', 0.0, {'reason': 'Global Trend Bearish'}
+
         if (current['adx'] > self.params['adx_threshold'] and
             current['rsi'] > 50 and
             current['close'] > prev['close']):
-            action = 'BUY'
+            if self.global_trend_bias >= 0: # Neutral or Bullish
+                action = 'BUY'
 
         elif (current['adx'] > self.params['adx_threshold'] and
               current['rsi'] < 50 and
               current['close'] < prev['close']):
-            action = 'SELL'
+            if self.global_trend_bias <= 0: # Neutral or Bearish
+                action = 'SELL'
 
         return action, 1.0, {'atr': current.get('atr', 0)}
 
@@ -350,7 +399,9 @@ def generate_signal(df, client=None, symbol=None, params=None):
 
     strat = MCXMomentumStrategy(symbol or "TEST", api_key, host, strat_params)
 
-    # Set Time Stop for Engine
+    # Set Time Stop & ATR Multipliers for Engine
     setattr(strat, 'TIME_STOP_BARS', 12) # 3 Hours (12 * 15m)
+    setattr(strat, 'ATR_SL_MULTIPLIER', 2.0)
+    setattr(strat, 'ATR_TP_MULTIPLIER', 4.0)
 
     return strat.generate_signal(df)
