@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+End-of-Day Trading Performance Optimization Script.
+Parses trade logs, calculates performance metrics, optimizes strategy parameters,
+and generates a daily deployment script.
+"""
 import os
 import re
 import glob
@@ -43,6 +48,7 @@ class StrategyOptimizer:
         for log_file in log_files:
             filename = os.path.basename(log_file)
             # Assuming filename format: strategy_name_SYMBOL.log
+            # NOTE: Logic assumes symbol is the last part after the last underscore.
             parts = filename.replace('.log', '').split('_')
             symbol = parts[-1]
             strategy_name = "_".join(parts[:-1])
@@ -282,8 +288,6 @@ class StrategyOptimizer:
                 f.write(f"{i+1}. {name} - Score: {score:.1f} - Action: Start/Restart\n")
 
         print(f"Report generated: {report_file}")
-        # with open(report_file, 'r') as f:
-        #     print(f.read())
 
     def generate_deployment_script(self):
         script_path = os.path.join(REPO_ROOT, 'scripts', 'deploy_daily_optimized.sh')
