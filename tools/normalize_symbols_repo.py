@@ -48,8 +48,12 @@ def scan_file(filepath, instruments, strict=False):
     normalized_content = ""
     changes_made = False
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception as e:
+        print(f"Error reading {filepath}: {e}")
+        return "", False, []
 
     def replacement_handler(match):
         nonlocal changes_made
@@ -100,6 +104,37 @@ def scan_file(filepath, instruments, strict=False):
 
     return new_content, changes_made, issues
 
+def collect_files_to_scan():
+    files_to_scan = []
+
+    # 1. Strategies
+    strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    if os.path.exists(strategies_dir):
+        for root, dirs, files in os.walk(strategies_dir):
+            if 'tests' in dirs: dirs.remove('tests')
+            if 'test' in dirs: dirs.remove('test')
+            for file in files:
+                if file.endswith('.py') or file.endswith('.json'):
+                    files_to_scan.append(os.path.join(root, file))
+
+    # 2. Configs
+    configs_dir = os.path.join(REPO_ROOT, 'openalgo', 'configs')
+    if os.path.exists(configs_dir):
+        for root, dirs, files in os.walk(configs_dir):
+            for file in files:
+                if file.endswith('.yaml') or file.endswith('.json'):
+                    files_to_scan.append(os.path.join(root, file))
+
+    # 3. Tools (scan itself and others for hardcoded stuff, excluding this file to avoid false positives if any)
+    tools_dir = os.path.join(REPO_ROOT, 'tools')
+    if os.path.exists(tools_dir):
+        for root, dirs, files in os.walk(tools_dir):
+             for file in files:
+                 if file.endswith('.py') and file != os.path.basename(__file__):
+                     files_to_scan.append(os.path.join(root, file))
+
+    return files_to_scan
+
 def main():
     parser = argparse.ArgumentParser(description="Normalize Symbols in Repo")
     parser.add_argument("--write", action="store_true", help="Write changes to files")
@@ -122,22 +157,10 @@ def main():
         "issues": []
     }
 
-    files_to_scan = []
-    # Walk openalgo/strategies
-    strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
-    for root, dirs, files in os.walk(strategies_dir):
-        # Exclude tests directories
-        if 'tests' in dirs:
-            dirs.remove('tests')
-        if 'test' in dirs:
-            dirs.remove('test')
+    files = collect_files_to_scan()
+    print(f"Scanning {len(files)} files...")
 
-        for file in files:
-            if file.endswith('.py') or file.endswith('.json'):
-                files_to_scan.append(os.path.join(root, file))
-
-
-    for filepath in files_to_scan:
+    for filepath in files:
         new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
         if file_issues:
             audit_report["issues"].extend(file_issues)
@@ -172,19 +195,23 @@ def main():
              for issue in audit_report["issues"]:
                  f.write(f"| {os.path.basename(issue['file'])} | {issue['symbol']} | {issue['status']} | {issue.get('error', issue.get('normalized', ''))} |\n")
 
-    # Check for strict failure
+    # Failure Logic
     invalid_symbols = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING')]
+    normalized_needed = [i for i in audit_report["issues"] if i['status'] == 'NORMALIZED']
 
+    # 1. Strict Check Mode: Fail if ANY normalization needed OR any invalid symbols
     if args.strict and args.check:
-         # In strict check mode, fail if normalization is needed
-         normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
-         if normalized_count > 0:
-             print(f"❌ Found {normalized_count} symbols needing normalization.")
+         if normalized_needed:
+             print(f"❌ Found {len(normalized_needed)} symbols needing normalization.")
+             sys.exit(1)
+         if invalid_symbols:
+             print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols.")
              sys.exit(1)
 
-    if invalid_symbols:
-        print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols.")
-        if args.strict:
+    # 2. Strict Write Mode: Fail if any INVALID/MISSING symbols (normalization fixed others)
+    if args.strict and args.write:
+        if invalid_symbols:
+            print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols (could not auto-fix).")
             sys.exit(1)
 
     if args.write:

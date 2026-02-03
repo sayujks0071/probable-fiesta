@@ -1,8 +1,8 @@
-name: Daily Symbol Normalizer
+name: Daily Symbol Normalizer (Strict)
 
 on:
   schedule:
-    - cron: '30 2 * * *' # 02:30 UTC
+    - cron: '30 02 * * *'
   workflow_dispatch:
 
 permissions:
@@ -14,81 +14,85 @@ jobs:
   normalize-and-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install pandas requests httpx python-dotenv
 
-      - name: A) Sync Instruments
-        id: sync
-        run: python3 tools/sync_instruments.py
+      - name: Sync Instruments
+        run: python tools/sync_instruments.py
 
-      - name: B) Pre-Check Strict Validation
+      - name: Pre-Check (Strict Validator)
         id: precheck
         continue-on-error: true
-        run: python3 tools/validate_symbols.py --strict --check
-
-      - name: C) Normalize Symbols
-        id: normalize
-        if: steps.precheck.outcome == 'success'
-        run: python3 tools/normalize_symbols_repo.py --write
-
-      - name: D) Post-Check Strict Validation
-        id: postcheck
-        if: steps.normalize.outcome == 'success'
-        continue-on-error: true
-        run: python3 tools/validate_symbols.py --strict --check
-
-      - name: Gate Check
-        id: gate
         run: |
-          if [[ "${{ steps.precheck.outcome }}" == "success" && "${{ steps.postcheck.outcome }}" == "success" ]]; then
+          if python tools/validate_symbols.py --strict --check; then
             echo "gate_ok=true" >> $GITHUB_OUTPUT
-            echo "Gate passed."
           else
             echo "gate_ok=false" >> $GITHUB_OUTPUT
-            echo "Gate failed."
+            echo "::error::Pre-check failed. Validation errors found."
           fi
 
-      - name: Generate Reports Artifact
-        if: always()
+      - name: Normalize Symbols (Write)
+        if: steps.precheck.outputs.gate_ok == 'true'
+        run: python tools/normalize_symbols_repo.py --write
+
+      - name: Post-Check (Strict Validator)
+        if: steps.precheck.outputs.gate_ok == 'true'
+        id: postcheck
+        continue-on-error: true
+        run: |
+          if python tools/validate_symbols.py --strict --check; then
+            echo "gate_final=true" >> $GITHUB_OUTPUT
+          else
+            echo "gate_final=false" >> $GITHUB_OUTPUT
+            echo "::error::Post-check failed. Normalization introduced errors or failed to fix all issues."
+          fi
+
+      - name: Upload Audit Reports
         uses: actions/upload-artifact@v4
         with:
           name: symbol-audit-reports
           path: reports/
 
+      - name: Get Date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
       - name: Create Pull Request
-        if: steps.gate.outputs.gate_ok == 'true'
+        if: steps.postcheck.outputs.gate_final == 'true'
         uses: peter-evans/create-pull-request@v5
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: normalize symbols and audit report"
           branch: chore/symbols-daily
-          title: "chore: Daily Symbol Normalization"
+          delete-branch: true
+          title: "chore: Daily Symbol Normalization & Audit - ${{ steps.date.outputs.date }}"
           body: |
-            Daily symbol normalization report.
+            Daily symbol normalization and audit report.
+
+            Strict validation passed.
+
             See attached audit report for details.
 
-            [Audit Report](reports/symbol_audit.md)
-          commit-message: "chore: normalize symbols"
-          add-paths: |
-            openalgo/strategies/**/*.py
-            reports/symbol_audit.md
-            reports/symbol_audit.json
+            Date: ${{ steps.date.outputs.date }}
+          base: main
 
       - name: Create Issue on Failure
-        if: steps.gate.outputs.gate_ok == 'false'
+        if: steps.precheck.outputs.gate_ok == 'false' || steps.postcheck.outputs.gate_final == 'false'
         uses: actions/github-script@v6
         with:
           script: |
             const fs = require('fs');
-            let body = "Daily symbol audit failed. Please check the attached artifacts.\n\n";
+            let body = "### Symbol Audit Failed\n\nThe daily symbol normalization workflow failed strict validation.\n\n";
             try {
-              // Read report if exists
               if (fs.existsSync('reports/symbol_audit.md')) {
                 const report = fs.readFileSync('reports/symbol_audit.md', 'utf8');
                 body += report;
@@ -97,7 +101,6 @@ jobs:
               body += "Could not read audit report.";
             }
 
-            // Create Issue
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
