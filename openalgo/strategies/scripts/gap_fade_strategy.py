@@ -13,7 +13,9 @@ project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open, SmartOrder
+from openalgo.strategies.utils.risk_manager import RiskManager
+from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 
 # Configure logging
 logging.basicConfig(
@@ -33,33 +35,38 @@ class GapFadeStrategy:
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
         self.pm = PositionManager(f"{symbol}_GapFade")
+        self.rm = RiskManager(f"{symbol}_GapFade", "NSE", capital=100000)
+        self.resolver = SymbolResolver()
+        self.smart_order = SmartOrder(self.client)
 
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
 
+        # Risk Check
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.warning(f"Risk Manager Block: {reason}")
+            return
+
         # 1. Get Previous Close
-        # Using history API for last 2 days
+        # Using history API for last 5 days
         today = datetime.now()
-        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d") # Go back enough to get prev day
+        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
         end_date = today.strftime("%Y-%m-%d")
 
         # Get daily candles
-        df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
+        # Note: 'symbol' here is typically NIFTY (Index), but history usually needs 'NIFTY 50' or similar
+        # Depending on backend, 'NIFTY' might work if mapped. Using "NIFTY 50" as safe default for indices if symbol is NIFTY
+        history_symbol = f"{self.symbol} 50" if self.symbol == "NIFTY" else self.symbol
 
-        if df.empty or len(df) < 1:
-            logger.error("Could not fetch history for previous close.")
-            return
+        df = self.client.history(history_symbol, interval="day", start_date=start_date, end_date=end_date)
 
-        # Assuming the last completed row is previous day, or if market just opened, we might have today's open
-        # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
+        prev_close = 0.0
+        if not df.empty and len(df) >= 1:
+             prev_close = df.iloc[-1]['close']
 
-        prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
-
-        quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
+        # Try to get better prev_close from quote
+        quote = self.client.get_quote(history_symbol, "NSE")
         if not quote:
             logger.error("Could not fetch quote.")
             return
@@ -69,6 +76,10 @@ class GapFadeStrategy:
         # Some APIs provide 'close' in quote which is prev_close
         if 'close' in quote and quote['close'] > 0:
             prev_close = float(quote['close'])
+
+        if prev_close == 0:
+             logger.error("Could not determine Previous Close")
+             return
 
         logger.info(f"Prev Close: {prev_close}, Current: {current_price}")
 
@@ -80,30 +91,37 @@ class GapFadeStrategy:
             return
 
         # 2. Determine Action
-        action = None
         option_type = None
 
         if gap_pct > self.gap_threshold:
-            # Gap UP -> Fade (Sell/Short or Buy Put)
-            logger.info("Gap UP detected. Looking to FADE (Short).")
-            action = "SELL" # Futures Sell or PE Buy
-            # For options: Buy PE
+            # Gap UP -> Fade (Buy Put)
+            logger.info("Gap UP detected. Looking to FADE (Buy PE).")
             option_type = "PE"
 
         elif gap_pct < -self.gap_threshold:
-            # Gap DOWN -> Fade (Buy/Long or Buy Call)
-            logger.info("Gap DOWN detected. Looking to FADE (Long).")
-            action = "BUY"
+            # Gap DOWN -> Fade (Buy Call)
+            logger.info("Gap DOWN detected. Looking to FADE (Buy CE).")
             option_type = "CE"
 
-        # 3. Select Option Strike (ATM)
-        atm = round(current_price / 50) * 50
-        strike_symbol = f"{self.symbol}{today.strftime('%y%b').upper()}{atm}{option_type}" # Symbol format varies
-        # Simplified: Just log the intent
+        # 3. Select Option Symbol via Resolver
+        opt_config = {
+            'type': 'OPT',
+            'underlying': self.symbol,
+            'option_type': option_type,
+            'exchange': 'NFO',
+            'strike_criteria': 'ATM',
+            'expiry_preference': 'WEEKLY'
+        }
 
-        logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade)")
+        tradable_symbol = self.resolver.get_tradable_symbol(opt_config, spot_price=current_price)
 
-        # 4. Check VIX for Sizing (inherited from general rules)
+        if not tradable_symbol:
+            logger.error(f"Could not resolve option symbol for {self.symbol} {option_type}")
+            return
+
+        logger.info(f"Signal: Buy {tradable_symbol} (Gap Fade)")
+
+        # 4. Check VIX for Sizing
         vix_quote = self.client.get_quote("INDIA VIX", "NSE")
         vix = float(vix_quote['ltp']) if vix_quote else 15
 
@@ -112,10 +130,38 @@ class GapFadeStrategy:
             qty = int(qty * 0.5)
             logger.info(f"High VIX {vix}. Reduced Qty to {qty}")
 
-        # 5. Place Order (Simulation)
-        # self.client.placesmartorder(...)
-        logger.info(f"Executing {option_type} Buy for {qty} qty.")
-        self.pm.update_position(qty, 100, "BUY") # Mock update
+        # 5. Place Order
+        if self.pm.has_position():
+             logger.info("Position already exists (managed by PositionManager). Skipping.")
+             return
+
+        # Execute
+        resp = self.smart_order.place_adaptive_order(
+            strategy="GapFade",
+            symbol=tradable_symbol,
+            action="BUY",
+            exchange="NFO",
+            quantity=qty,
+            urgency="MEDIUM"
+        )
+
+        if resp and resp.get('status') == 'success':
+            # Attempt to estimate entry price
+            avg_price = 0.0
+            if 'average_price' in resp:
+                avg_price = float(resp['average_price'])
+
+            if avg_price == 0:
+                 # Fallback check
+                 q_opt = self.client.get_quote(tradable_symbol, "NFO")
+                 avg_price = float(q_opt['ltp']) if q_opt else 0
+
+            # Register with Risk Manager and Position Manager
+            self.rm.register_entry(tradable_symbol, qty, avg_price, "LONG")
+            self.pm.update_position(qty, avg_price, "BUY")
+            logger.info(f"Trade Executed: {tradable_symbol} @ {avg_price}")
+        else:
+            logger.error(f"Order Placement Failed: {resp}")
 
 def main():
     parser = argparse.ArgumentParser()
