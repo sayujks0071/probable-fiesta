@@ -174,11 +174,41 @@ class DeltaNeutralIronCondor:
         strikes = self.select_strikes(spot, vix, chain)
         logger.info(f"Selected Strikes: {strikes}")
 
+        # Resolve Symbols
+        try:
+            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+            resolver = SymbolResolver()
+
+            symbols = {}
+            for key, strike in strikes.items():
+                # Determine type (CE for Call, PE for Put)
+                # ce_short/ce_long -> CE, pe_short/pe_long -> PE
+                otype = "CE" if "ce" in key else "PE"
+
+                config = {
+                    'type': 'OPT',
+                    'underlying': self.symbol,
+                    'option_type': otype,
+                    'expiry_preference': 'WEEKLY',
+                    'strike_criteria': 'ATM' # We use ATM logic with spot=strike to get exact strike
+                }
+                # Trick: Set spot_price to the desired strike to resolve exact symbol
+                sym = resolver.get_tradable_symbol(config, spot_price=strike)
+                symbols[key] = sym
+
+            logger.info(f"Resolved Symbols: {symbols}")
+
+        except ImportError:
+            logger.error("SymbolResolver not found.")
+            return
+
         # Place Orders (Mock)
         logger.info(f"Placing orders for {self.qty} qty...")
 
         # In real scenario:
-        # self.client.placesmartorder(...)
+        # for leg, sym in symbols.items():
+        #     action = "SELL" if "short" in leg else "BUY"
+        #     self.client.placesmartorder(sym, self.qty, action)
 
         logger.info("Strategy execution completed (Simulation).")
 

@@ -25,6 +25,10 @@ class SymbolResolver:
                 if 'expiry' in self.df.columns:
                     self.df['expiry'] = pd.to_datetime(self.df['expiry'], errors='coerce')
 
+                # Ensure lot_size is numeric
+                if 'lot_size' in self.df.columns:
+                    self.df['lot_size'] = pd.to_numeric(self.df['lot_size'], errors='coerce').fillna(0)
+
                 # Normalize columns
                 if 'instrument_type' not in self.df.columns and 'segment' in self.df.columns:
                      # Map segment to instrument_type if missing (fallback)
@@ -69,7 +73,12 @@ class SymbolResolver:
             return self._get_option_symbol(config, spot_price)
         else:
             # For Equity/Futures, resolve returns the specific symbol
-            return self.resolve(config)
+            res = self.resolve(config)
+            # If resolve returned a dict (e.g. valid status), we need to extract symbol if possible?
+            # Usually resolve returns string for EQ/FUT and dict for OPT check.
+            # But wait, `_resolve_future` returns string. `_resolve_equity` returns string.
+            # `_resolve_option` returns dict.
+            return res
 
     def _resolve_equity(self, symbol, exchange):
         if self.df.empty: return symbol
@@ -117,25 +126,50 @@ class SymbolResolver:
         # MCX MINI Logic
         if exchange == 'MCX':
             # Priority:
-            # 1. Symbol contains 'MINI'
-            # 2. Symbol matches Name + 'M' + Date (e.g., SILVERM...) vs SILVER...
+            # 1. Symbol contains 'MINI' or 'M' suffix on underlying + digits
+            # 2. Sort by lot_size ASC to prefer MINI (assuming MINI has smaller lot size)
 
             # Check for explicitly 'MINI' or 'M' suffix on underlying name
-            # Use non-capturing group to avoid pandas UserWarning
-            mini_pattern = r'(?:{}M|{}MINI)'.format(underlying, underlying)
+            # Pattern: Underlying + 'M' + Digits (e.g. SILVERM23...) or Underlying + 'MINI'
 
-            mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
+            mini_pattern = r'(?:{}M\d|{}MINI)'.format(underlying, underlying)
 
-            if not mini_matches.empty:
-                logger.info(f"Found MCX MINI contract for {underlying}: {mini_matches.iloc[0]['symbol']}")
-                return mini_matches.iloc[0]['symbol']
+            # Create a copy to avoid SettingWithCopyWarning
+            candidates = matches.copy()
 
-            # Also check if the symbol itself ends with 'M' before some digits (less reliable but possible)
-            # e.g. CRUDEOILM23NOV...
+            # Add a 'is_mini' column for sorting priority
+            candidates['is_mini'] = candidates['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)
 
-            logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
+            # Sort by:
+            # 1. Expiry (nearest first)
+            # 2. is_mini (True first -> Descending) - Actually we want MINI preference?
+            #    The requirement says "prefer MINI futures contracts by default".
+            #    If multiple expiries, we usually want nearest.
+            #    If same expiry, we want MINI.
 
-        # Return nearest expiry
+            # Let's verify if we should prioritize Expiry or Type.
+            # Usually we want the *current* month MINI. If not available, *current* month standard.
+            # So Expiry is primary sort.
+
+            # However, lot_size is the best indicator for MINI vs Standard.
+            # So for the *nearest* expiry, we check if there are multiple contracts.
+
+            # Get nearest expiry date
+            nearest_expiry = candidates.iloc[0]['expiry']
+
+            # Filter for nearest expiry
+            nearest_contracts = candidates[candidates['expiry'] == nearest_expiry].copy()
+
+            if len(nearest_contracts) > 1:
+                # Sort by lot_size ASC (smallest first)
+                nearest_contracts = nearest_contracts.sort_values('lot_size', ascending=True)
+                selected = nearest_contracts.iloc[0]
+                logger.info(f"Resolved MCX Future for {underlying} (Expiry {nearest_expiry.date()}): {selected['symbol']} (Lot: {selected['lot_size']})")
+                return selected['symbol']
+            else:
+                return nearest_contracts.iloc[0]['symbol']
+
+        # Return nearest expiry for non-MCX
         return matches.iloc[0]['symbol']
 
     def _resolve_option(self, config):

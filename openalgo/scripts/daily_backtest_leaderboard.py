@@ -22,52 +22,67 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Leaderboard")
 
-STRATEGIES = [
-    {
-        "name": "SuperTrend_VWAP",
-        "file": "openalgo/strategies/scripts/supertrend_vwap_strategy.py",
-        "symbol": "NIFTY", # Default test symbol
-        "exchange": "NSE_INDEX"
-    },
-    {
-        "name": "MCX_Momentum",
-        "file": "openalgo/strategies/scripts/mcx_commodity_momentum_strategy.py",
-        "symbol": "SILVERMIC", # Will try to resolve if needed, but engine needs raw symbol usually?
-                               # Engine loads data. We can use a proxy symbol like 'SILVER' if using mock data,
-                               # but usually specific symbol needed.
-        "exchange": "MCX"
-    },
-    {
-        "name": "AI_Hybrid",
-        "file": "openalgo/strategies/scripts/ai_hybrid_reversion_breakout.py",
-        "symbol": "NIFTY",
-        "exchange": "NSE_INDEX"
-    },
-    {
-        "name": "ML_Momentum",
-        "file": "openalgo/strategies/scripts/advanced_ml_momentum_strategy.py",
-        "symbol": "NIFTY",
-        "exchange": "NSE_INDEX"
-    }
-]
+CONFIG_FILE = os.path.join(repo_root, 'openalgo/strategies/active_strategies.json')
+STRATEGY_DIR = os.path.join(repo_root, 'openalgo/strategies/scripts')
 
 TUNING_CONFIG = {
-    "SuperTrend_VWAP": {
+    "supertrend_vwap_strategy": {
         "stop_pct": [1.5, 2.0],
         "threshold": [150, 160]
     },
-    "MCX_Momentum": {
+    "mcx_commodity_momentum_strategy": {
         "adx_threshold": [20, 30],
         "period_rsi": [10, 14]
     },
-    "AI_Hybrid": {
+    "ai_hybrid_reversion_breakout": {
         "rsi_lower": [25, 35],
         "rsi_upper": [60, 70]
     },
-    "ML_Momentum": {
+    "advanced_ml_momentum_strategy": {
         "threshold": [0.01, 0.02]
     }
 }
+
+def load_strategies_from_config():
+    if not os.path.exists(CONFIG_FILE):
+        logger.error(f"Config file not found: {CONFIG_FILE}")
+        return []
+
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+            content = f.read()
+            if not content.strip():
+                return []
+            configs = json.loads(content)
+    except Exception as e:
+        logger.error(f"Failed to load config: {e}")
+        return []
+
+    strategies = []
+    for strat_id, conf in configs.items():
+        script_name = conf.get('strategy')
+        if not script_name:
+            continue
+
+        file_path = os.path.join(STRATEGY_DIR, f"{script_name}.py")
+
+        # Check if file exists
+        if not os.path.exists(file_path):
+            logger.warning(f"Strategy script not found: {file_path} (ID: {strat_id})")
+            continue
+
+        # Determine symbol
+        symbol = conf.get('symbol') or conf.get('underlying') or 'NIFTY'
+
+        strategies.append({
+            "name": strat_id,
+            "script_name": script_name,
+            "file": file_path,
+            "symbol": symbol,
+            "exchange": conf.get('exchange', 'NSE')
+        })
+
+    return strategies
 
 def generate_variants(base_name, grid):
     import itertools
@@ -89,7 +104,7 @@ def load_strategy_module(filepath):
     """Load a strategy script as a module."""
     try:
         module_name = os.path.basename(filepath).replace('.py', '')
-        spec = importlib.util.spec_from_file_location(module_name, os.path.join(repo_root, filepath))
+        spec = importlib.util.spec_from_file_location(module_name, filepath)
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
@@ -101,13 +116,18 @@ def load_strategy_module(filepath):
 def run_leaderboard():
     engine = SimpleBacktestEngine(initial_capital=100000.0)
 
-    start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
     end_date = datetime.now().strftime("%Y-%m-%d")
+
+    strategies = load_strategies_from_config()
+    if not strategies:
+        logger.warning("No valid strategies found to backtest.")
+        return
 
     results = []
 
-    for strat_config in STRATEGIES:
-        logger.info(f"Backtesting {strat_config['name']}...")
+    for strat_config in strategies:
+        logger.info(f"Backtesting {strat_config['name']} ({strat_config['script_name']})...")
 
         module = load_strategy_module(strat_config['file'])
         if not module:
@@ -120,18 +140,13 @@ def run_leaderboard():
         # Determine variants to run
         runs = [{"name": strat_config['name'], "params": None}]
 
-        if strat_config['name'] in TUNING_CONFIG:
-            variants = generate_variants(strat_config['name'], TUNING_CONFIG[strat_config['name']])
-            # Limit to top 3 variants if too many? For now run all (small grid)
-            runs.extend(variants)
+        if strat_config['script_name'] in TUNING_CONFIG:
+            variants = generate_variants(strat_config['name'], TUNING_CONFIG[strat_config['script_name']])
+            # Limit variants to avoid timeout in this environment
+            runs.extend(variants[:3])
 
         for run in runs:
             logger.info(f"  > Variant: {run['name']} Params: {run['params']}")
-
-            # Monkey patch module to accept params if needed, or pass via run_backtest extension?
-            # SimpleBacktestEngine.run_backtest calls module.generate_signal(..., symbol=symbol)
-            # It doesn't pass 'params'.
-            # We need to wrap the module or monkey patch generate_signal.
 
             original_gen = module.generate_signal
 
@@ -146,8 +161,11 @@ def run_leaderboard():
                     pass
                 wrapper = ModuleWrapper()
                 wrapper.generate_signal = wrapped_gen
-                wrapper.ATR_SL_MULTIPLIER = getattr(module, 'ATR_SL_MULTIPLIER', 1.5)
-                wrapper.ATR_TP_MULTIPLIER = getattr(module, 'ATR_TP_MULTIPLIER', 2.5)
+                # Copy attributes
+                for attr in dir(module):
+                    if not attr.startswith('__'):
+                        setattr(wrapper, attr, getattr(module, attr))
+
                 target_module = wrapper
             else:
                 target_module = module
@@ -170,6 +188,7 @@ def run_leaderboard():
                 metrics = res.get('metrics', {})
                 results.append({
                     "strategy": run['name'],
+                    "base_strategy": strat_config['script_name'],
                     "params": run['params'],
                     "total_return": metrics.get('total_return_pct', 0),
                     "sharpe": metrics.get('sharpe_ratio', 0),

@@ -97,11 +97,28 @@ class GapFadeStrategy:
             option_type = "CE"
 
         # 3. Select Option Strike (ATM)
-        atm = round(current_price / 50) * 50
-        strike_symbol = f"{self.symbol}{today.strftime('%y%b').upper()}{atm}{option_type}" # Symbol format varies
-        # Simplified: Just log the intent
+        # Use SymbolResolver to get valid tradable symbol
+        try:
+            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+            resolver = SymbolResolver()
+            config = {
+                'type': 'OPT',
+                'underlying': self.symbol,
+                'option_type': option_type,
+                'expiry_preference': 'WEEKLY',
+                'strike_criteria': 'ATM'
+            }
+            strike_symbol = resolver.get_tradable_symbol(config, spot_price=current_price)
+            if not strike_symbol:
+                logger.error("Could not resolve option symbol. Skipping.")
+                return
+            logger.info(f"Resolved Symbol: {strike_symbol}")
+        except ImportError:
+            logger.error("SymbolResolver not found.")
+            return
 
-        logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade)")
+        # Simplified: Just log the intent
+        logger.info(f"Signal: Buy {option_type} ({strike_symbol}) (Gap Fade)")
 
         # 4. Check VIX for Sizing (inherited from general rules)
         vix_quote = self.client.get_quote("INDIA VIX", "NSE")
