@@ -36,7 +36,32 @@ except ImportError:
             PositionManager = None
             is_market_open = lambda: True
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Configure Logging
+try:
+    # Ensure repo root is in path for openalgo_observability
+    import sys
+    from pathlib import Path
+    # specific logic to find root from strategies/scripts
+    # usually it's ../../../
+    # We will let the existing path setup handle it if possible, or force it.
+
+    # Try importing directly first
+    from openalgo_observability.logging_setup import setup_logging
+    setup_logging()
+except ImportError:
+    # Fallback: Try adding root to path
+    try:
+        import sys, os
+        current = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.abspath(os.path.join(current, '../../../'))
+        if root not in sys.path: sys.path.append(root)
+        from openalgo_observability.logging_setup import setup_logging
+        setup_logging()
+    except ImportError:
+        # Final Fallback
+        import logging
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class MLMomentumStrategy:
     def __init__(self, symbol, api_key, port, threshold=0.01, stop_pct=1.0, sector='NIFTY 50', vol_multiplier=0.5):

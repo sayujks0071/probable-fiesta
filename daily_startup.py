@@ -29,6 +29,10 @@ def run_script(script_path, description):
     logging.info(f"Executing {description} ({script_path})...")
     try:
         env = os.environ.copy()
+        # Ensure child process re-initializes logging
+        if 'OPENALGO_LOGGING_SETUP_DONE' in env:
+            del env['OPENALGO_LOGGING_SETUP_DONE']
+
         env['PYTHONPATH'] = os.getcwd() + ":" + env.get('PYTHONPATH', '')
 
         # Use venv if exists, else system python
