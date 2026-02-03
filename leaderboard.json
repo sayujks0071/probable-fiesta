@@ -1,0 +1,62 @@
+[
+    {
+        "strategy": "SuperTrend_VWAP",
+        "params": null,
+        "is_optimized": true,
+        "train_period": "2025-12-07 to 2026-01-16",
+        "test_period": "2026-01-16 to 2026-02-03",
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0,
+        "mc_ret_avg": 0.0,
+        "mc_dd_95": 0.0
+    },
+    {
+        "strategy": "MCX_Momentum",
+        "params": null,
+        "is_optimized": true,
+        "train_period": "2025-12-07 to 2026-01-16",
+        "test_period": "2026-01-16 to 2026-02-03",
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0,
+        "mc_ret_avg": 0.0,
+        "mc_dd_95": 0.0
+    },
+    {
+        "strategy": "AI_Hybrid",
+        "params": null,
+        "is_optimized": true,
+        "train_period": "2025-12-07 to 2026-01-16",
+        "test_period": "2026-01-16 to 2026-02-03",
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0,
+        "mc_ret_avg": 0.0,
+        "mc_dd_95": 0.0
+    },
+    {
+        "strategy": "ML_Momentum",
+        "params": null,
+        "is_optimized": true,
+        "train_period": "2025-12-07 to 2026-01-16",
+        "test_period": "2026-01-16 to 2026-02-03",
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0,
+        "mc_ret_avg": 0.0,
+        "mc_dd_95": 0.0
+    }
+]
