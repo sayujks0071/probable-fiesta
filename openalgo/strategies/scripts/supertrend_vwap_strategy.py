@@ -193,23 +193,38 @@ class SuperTrendVWAPStrategy:
 
     def calculate_adx(self, df, period=14):
         try:
-            plus_dm = df['high'].diff()
-            minus_dm = df['low'].diff()
-            plus_dm[plus_dm < 0] = 0
-            minus_dm[minus_dm > 0] = 0
+            up = df['high'] - df['high'].shift(1)
+            down = df['low'].shift(1) - df['low']
+
+            # Wilder's Smoothing for ADX
+            plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+            minus_dm = np.where((down > up) & (down > 0), down, 0.0)
 
             tr1 = df['high'] - df['low']
             tr2 = (df['high'] - df['close'].shift(1)).abs()
             tr3 = (df['low'] - df['close'].shift(1)).abs()
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
+            # Use rolling mean for simplicity to match previous behavior (or use Wilder's if desired)
+            # Keeping rolling mean to minimize impact, but correcting DM logic.
             atr = tr.rolling(period).mean()
-            plus_di = 100 * (plus_dm.ewm(alpha=1/period).mean() / atr)
-            minus_di = 100 * (minus_dm.abs().ewm(alpha=1/period).mean() / atr)
-            dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+
+            # Note: Using Series constructor to enable rolling/ewm if numpy array returned
+            plus_dm_s = pd.Series(plus_dm, index=df.index)
+            minus_dm_s = pd.Series(minus_dm, index=df.index)
+
+            plus_di = 100 * (plus_dm_s.ewm(alpha=1/period).mean() / atr)
+            minus_di = 100 * (minus_dm_s.ewm(alpha=1/period).mean() / atr)
+
+            # Handle division by zero
+            sum_di = plus_di + minus_di
+            sum_di = sum_di.replace(0, np.nan)
+
+            dx = (abs(plus_di - minus_di) / sum_di) * 100
             adx = dx.rolling(period).mean().iloc[-1]
             return 0 if np.isnan(adx) else adx
-        except:
+        except Exception as e:
+            self.logger.error(f"ADX Calculation Error: {e}")
             return 0
 
     def analyze_volume_profile(self, df, n_bins=20):

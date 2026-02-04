@@ -284,9 +284,18 @@ class APIClient:
     """
     Fallback API Client using httpx if openalgo package is missing.
     """
-    def __init__(self, api_key, host="http://127.0.0.1:5001"):
+    def __init__(self, api_key, host=None):
         self.api_key = api_key
-        self.host = host.rstrip('/')
+        if host:
+            self.host = host.rstrip('/')
+        else:
+            # Try env var or default
+            env_host = os.getenv('OPENALGO_HOST')
+            env_port = os.getenv('OPENALGO_PORT', '5001')
+            if env_host:
+                self.host = env_host.rstrip('/')
+            else:
+                self.host = f"http://127.0.0.1:{env_port}"
 
     def history(self, symbol, exchange="NSE", interval="5m", start_date=None, end_date=None, max_retries=3):
         """Fetch historical data with retry logic and exponential backoff"""
