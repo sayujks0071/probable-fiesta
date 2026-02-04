@@ -46,7 +46,7 @@ class AdvancedOptionsRanker:
         self.script_map = {
             "Iron Condor": "delta_neutral_iron_condor_nifty.py",
             "Gap Fade": "gap_fade_strategy.py",
-            # Others not yet implemented as scripts
+            "Sentiment Reversal": "sentiment_reversal_strategy.py",
         }
 
         # Thresholds
@@ -68,11 +68,9 @@ class AdvancedOptionsRanker:
 
     def _fetch_gift_nifty_proxy(self, nifty_spot):
         try:
-            # Deterministic: Return 0 gap if no data.
-            # In production, fetch specific symbol.
-            # For now, we assume if we are running before market, we might check last close
-            # But without history, we can't do much.
-            # Returning 0.0 ensures deterministic behavior for tests.
+            # Attempt to fetch global ticker if possible, or use heuristic
+            # For now, return a placeholder or 0 gap
+            # In a real setup, we would hit an external API for GIFT Nifty or SGX Nifty
             return nifty_spot, 0.0
         except Exception as e:
             logger.warning(f"Error fetching GIFT Nifty proxy: {e}")
@@ -138,11 +136,17 @@ class AdvancedOptionsRanker:
         data['sentiment_label'] = label
 
         data['chains'] = {}
+        data['greeks'] = {}
         for index in self.indices:
             exchange = "NFO" if index != "SENSEX" else "BFO"
             chain = self.client.get_option_chain(index, exchange)
             if chain:
                 data['chains'][index] = chain
+
+            # Fetch Greeks if API supports it
+            greeks = self.client.get_option_greeks(index)
+            if greeks:
+                data['greeks'][index] = greeks
 
         return data
 
@@ -197,10 +201,22 @@ class AdvancedOptionsRanker:
         elif strategy_type in ["Debit Spread"]:
              if vix < 15: vix_score = 80
              else: vix_score = 40
+        elif strategy_type in ["Gap Fade"]:
+             # High VIX implies more volatility, good for fades if overextended?
+             # Actually fades are mean reversion. Extreme VIX makes fades risky.
+             if vix > 30: vix_score = 30
+             else: vix_score = 70
         scores['vix_regime'] = vix_score
 
         # 3. Liquidity
-        scores['liquidity'] = 90
+        # Use OI as proxy
+        max_oi = max([item.get('ce_oi', 0) + item.get('pe_oi', 0) for item in chain_data]) if chain_data else 0
+        if max_oi > self.liquidity_oi_threshold:
+            scores['liquidity'] = 100
+        elif max_oi > self.liquidity_oi_threshold / 2:
+            scores['liquidity'] = 70
+        else:
+            scores['liquidity'] = 30
 
         # 4. PCR / OI
         pcr_score = 50
@@ -208,11 +224,15 @@ class AdvancedOptionsRanker:
              dist_from_1 = abs(pcr - 1.0)
              if dist_from_1 < 0.2: pcr_score = 90
              else: pcr_score = max(0, 100 - dist_from_1 * 100)
+        elif strategy_type == "Sentiment Reversal":
+             # Extreme PCR suggests reversal
+             if pcr > 1.5 or pcr < 0.5: pcr_score = 90
+             else: pcr_score = 30
 
         scores['pcr_oi'] = pcr_score
         details['pcr'] = pcr
 
-        # 5. Greeks Alignment
+        # 5. Greeks Alignment (Placeholder logic as full greeks optimization is complex)
         greeks_score = 50
         if strategy_type in ["Iron Condor", "Credit Spread"]:
              if vix > 18: greeks_score += 20
@@ -226,6 +246,7 @@ class AdvancedOptionsRanker:
              elif abs(gap) > 0.3: gift_score = 70
              else: gift_score = 20
         elif strategy_type == "Iron Condor":
+             # Gap is bad for neutral strategies
              if abs(gap) < 0.2: gift_score = 100
              else: gift_score = max(0, 100 - abs(gap)*200)
 
@@ -235,7 +256,7 @@ class AdvancedOptionsRanker:
         sent_score = 50
         if strategy_type == "Sentiment Reversal":
              dist = abs(sentiment - 0.5)
-             if dist > 0.3: sent_score = 90
+             if dist > 0.3: sent_score = 90 # Extreme sentiment
              else: sent_score = 20
         elif strategy_type == "Iron Condor":
              dist = abs(sentiment - 0.5)

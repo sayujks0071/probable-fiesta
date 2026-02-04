@@ -4,6 +4,7 @@ import os
 import argparse
 import logging
 import time
+import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -14,6 +15,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+from openalgo.strategies.utils.risk_manager import RiskManager
 
 # Configure logging
 logging.basicConfig(
@@ -33,9 +35,16 @@ class GapFadeStrategy:
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
         self.pm = PositionManager(f"{symbol}_GapFade")
+        self.rm = RiskManager(f"{symbol}_GapFade", exchange="NSE")
 
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
+
+        # Risk Check
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.warning(f"Risk Manager Block: {reason}")
+            return
 
         # 1. Get Previous Close
         # Using history API for last 2 days
@@ -46,29 +55,20 @@ class GapFadeStrategy:
         # Get daily candles
         df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
 
-        if df.empty or len(df) < 1:
-            logger.error("Could not fetch history for previous close.")
-            return
-
-        # Assuming the last completed row is previous day, or if market just opened, we might have today's open
-        # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
-
-        prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
-
+        prev_close = 0.0
+        # Quote fallback is usually more reliable for real-time 'close' (previous close)
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
-        if not quote:
-            logger.error("Could not fetch quote.")
+
+        if quote and 'close' in quote and quote['close'] > 0:
+            prev_close = float(quote['close'])
+            current_price = float(quote['ltp'])
+        else:
+            logger.error("Could not fetch quote or previous close.")
             return
 
-        current_price = float(quote['ltp'])
-
-        # Some APIs provide 'close' in quote which is prev_close
-        if 'close' in quote and quote['close'] > 0:
-            prev_close = float(quote['close'])
+        if prev_close == 0:
+            logger.error("Could not determine Previous Close.")
+            return
 
         logger.info(f"Prev Close: {prev_close}, Current: {current_price}")
 
@@ -87,7 +87,6 @@ class GapFadeStrategy:
             # Gap UP -> Fade (Sell/Short or Buy Put)
             logger.info("Gap UP detected. Looking to FADE (Short).")
             action = "SELL" # Futures Sell or PE Buy
-            # For options: Buy PE
             option_type = "PE"
 
         elif gap_pct < -self.gap_threshold:
@@ -98,12 +97,9 @@ class GapFadeStrategy:
 
         # 3. Select Option Strike (ATM)
         atm = round(current_price / 50) * 50
-        strike_symbol = f"{self.symbol}{today.strftime('%y%b').upper()}{atm}{option_type}" # Symbol format varies
-        # Simplified: Just log the intent
-
         logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade)")
 
-        # 4. Check VIX for Sizing (inherited from general rules)
+        # 4. Check VIX for Sizing
         vix_quote = self.client.get_quote("INDIA VIX", "NSE")
         vix = float(vix_quote['ltp']) if vix_quote else 15
 
@@ -111,10 +107,17 @@ class GapFadeStrategy:
         if vix > 30:
             qty = int(qty * 0.5)
             logger.info(f"High VIX {vix}. Reduced Qty to {qty}")
+        elif vix < 10:
+            qty = int(qty * 0.5)
+            logger.info(f"Low VIX {vix}. Reduced Qty to {qty}")
 
         # 5. Place Order (Simulation)
         # self.client.placesmartorder(...)
         logger.info(f"Executing {option_type} Buy for {qty} qty.")
+
+        # Register in Risk Manager
+        self.rm.register_entry(self.symbol, qty, current_price, "LONG_OPT")
+
         self.pm.update_position(qty, 100, "BUY") # Mock update
 
 def main():
