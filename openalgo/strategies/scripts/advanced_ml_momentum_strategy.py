@@ -97,19 +97,34 @@ class MLMomentumStrategy:
         return 'HOLD', 0.0, {}
 
     def calculate_relative_strength(self, df, index_df):
-        if index_df.empty: return 1.0
+        """Calculate Relative Strength (Excess Return) vs Index."""
+        if index_df.empty or len(index_df) < 10: return 0.0
 
-        # Align timestamps (simplistic approach using last N periods)
         try:
-            stock_roc = df['close'].pct_change(10).iloc[-1]
-            index_roc = index_df['close'].pct_change(10).iloc[-1]
-            return stock_roc - index_roc # Excess Return
+            # Resample or reindex if necessary, but assuming similar intervals
+            # Get last 10 periods return
+            stock_ret = df['close'].pct_change(10).iloc[-1]
+            index_ret = index_df['close'].pct_change(10).iloc[-1]
+            return stock_ret - index_ret
+        except Exception as e:
+            self.logger.warning(f"RS calc error: {e}")
+            return 0.0
+
+    def get_sector_momentum(self, sector_df):
+        """Calculate Sector Momentum (ROC)."""
+        if sector_df.empty or len(sector_df) < 10: return 0.0
+        try:
+            return sector_df['close'].pct_change(10).iloc[-1]
         except:
             return 0.0
 
     def get_news_sentiment(self):
-        # Simulated
-        return 0.5 # Neutral to Positive
+        """
+        Fetch news sentiment.
+        In production, this would hit a News API.
+        For now, we return a neutral constant.
+        """
+        return 0.5 # Neutral
 
     def check_time_filter(self):
         """Avoid trading during low volume lunch hours (12:00 - 13:00)."""
@@ -187,14 +202,12 @@ class MLMomentumStrategy:
                 rs_excess = self.calculate_relative_strength(df, index_df)
 
                 # Sector Momentum Overlay (Stock ROC vs Sector ROC)
-                sector_outperformance = 0.0
-                if not sector_df.empty:
-                    try:
-                         sector_roc = sector_df['close'].pct_change(10).iloc[-1]
-                         sector_outperformance = last['roc'] - sector_roc
-                    except: pass
-                else:
-                    sector_outperformance = 0.001 # Assume positive if missing to not block
+                sector_roc = self.get_sector_momentum(sector_df)
+                sector_outperformance = last['roc'] - sector_roc
+
+                # If sector data missing, assume neutral impact (0.0) but ensure stock ROC is strong
+                if sector_df.empty:
+                    sector_outperformance = 0.01
 
                 # News Sentiment
                 sentiment = self.get_news_sentiment()

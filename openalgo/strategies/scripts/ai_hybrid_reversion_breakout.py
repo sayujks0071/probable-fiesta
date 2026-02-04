@@ -146,24 +146,36 @@ class AIHybridStrategy:
         except Exception as e:
             self.logger.warning(f"VIX fetch failed: {e}")
 
-        # Fetch Breadth (Placeholder for now, usually requires full market scan or index internals)
-        # We can use NIFTY Trend as a proxy for breadth health
-        breadth = 1.2
-        try:
-            nifty = self.client.history("NIFTY 50", exchange="NSE_INDEX", interval="day",
-                                      start_date=(datetime.now()-timedelta(days=5)).strftime("%Y-%m-%d"),
-                                      end_date=datetime.now().strftime("%Y-%m-%d"))
-            if not nifty.empty and nifty['close'].iloc[-1] > nifty['open'].iloc[-1]:
-                breadth = 1.5 # Bullish proxy
-            elif not nifty.empty:
-                breadth = 0.8 # Bearish proxy
-        except:
-            pass
+        # Fetch Breadth
+        breadth = self.check_market_breadth()
 
         return {
             'vix': vix,
             'breadth_ad_ratio': breadth
         }
+
+    def check_market_breadth(self):
+        """
+        Check Market Breadth (Advance/Decline Ratio).
+        Proxy: NIFTY 50 vs NIFTY 500 relative performance or simply NIFTY Trend.
+        Ideally this fetches A/D data if available.
+        """
+        breadth = 1.2 # Default Neutral/Bullish
+        try:
+            # Proxy: If NIFTY 50 > SMA20, Breadth likely positive
+            nifty = self.client.history("NIFTY 50", exchange="NSE_INDEX", interval="day",
+                                      start_date=(datetime.now()-timedelta(days=30)).strftime("%Y-%m-%d"),
+                                      end_date=datetime.now().strftime("%Y-%m-%d"))
+            if not nifty.empty:
+                sma20 = nifty['close'].rolling(20).mean().iloc[-1]
+                close = nifty['close'].iloc[-1]
+                if close > sma20:
+                    breadth = 1.5 # Bullish
+                else:
+                    breadth = 0.8 # Bearish
+        except Exception as e:
+            self.logger.warning(f"Breadth check failed: {e}")
+        return breadth
 
     def check_earnings(self):
         """Check if earnings are near (within 2 days)."""
