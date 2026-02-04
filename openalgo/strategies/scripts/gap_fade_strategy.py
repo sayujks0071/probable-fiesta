@@ -122,10 +122,18 @@ def main():
     parser.add_argument("--symbol", default="NIFTY", help="Index Symbol")
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--threshold", type=float, default=0.5, help="Gap Threshold %%")
-    parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
+    parser.add_argument("--port", type=int, help="Broker API Port (overrides env var)")
+    parser.add_argument("--host", type=str, help="Broker API Host (full URL)")
     args = parser.parse_args()
 
-    client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
+    api_key = os.getenv("OPENALGO_APIKEY") or os.getenv("OPENALGO_API_KEY")
+
+    host = args.host
+    if not host and args.port:
+        host = f"http://127.0.0.1:{args.port}"
+
+    # If host is None, APIClient will use env vars or default to 5001
+    client = APIClient(api_key=api_key, host=host)
     strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold)
     strategy.execute()
 

@@ -260,7 +260,23 @@ class MCXMomentumStrategy:
             self.fetch_data()
             self.calculate_indicators()
             self.check_signals()
-            time.sleep(900) # 15 minutes
+
+            # Align with 15-minute candles
+            now = datetime.now()
+            minutes = now.minute
+            next_interval_min = (minutes // 15 + 1) * 15
+
+            if next_interval_min >= 60:
+                # Next hour
+                target_time = now.replace(minute=0, second=5, microsecond=0) + timedelta(hours=1)
+            else:
+                target_time = now.replace(minute=next_interval_min, second=5, microsecond=0)
+
+            sleep_seconds = (target_time - now).total_seconds()
+            if sleep_seconds < 10: sleep_seconds += 900 # If we are too close, skip to next
+
+            logger.info(f"Sleeping for {sleep_seconds:.0f}s until next candle...")
+            time.sleep(sleep_seconds)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='MCX Commodity Momentum Strategy')
@@ -271,7 +287,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
