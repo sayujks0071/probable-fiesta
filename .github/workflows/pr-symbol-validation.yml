@@ -5,15 +5,17 @@ on:
     paths:
       - "openalgo/strategies/**"
       - "openalgo/configs/**"
+      - "configs/**"
       - "openalgo/data/instruments/**"
       - "tools/**"
-
-permissions:
-  contents: read
+      - "trading/**"
 
 jobs:
-  validate-symbols:
+  validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
       - uses: actions/checkout@v3
 
@@ -22,19 +24,21 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
-          pip install pandas httpx
+          pip install -r openalgo/requirements.txt
 
       - name: Sync Instruments
-        run: python3 tools/sync_instruments.py
+        # Attempt sync; if it fails (e.g. no creds), proceeding to validation which checks staleness/existence.
+        run: python tools/sync_instruments.py || true
 
-      - name: Run Strict Validation
-        run: python3 tools/validate_symbols.py --strict --check
+      - name: Strict Validation
+        run: |
+          python tools/validate_symbols.py --strict --check
 
-      - name: Upload Report
-        if: failure()
+      - name: Upload Audit Reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: symbol-validation-report
-          path: reports/
+          name: symbol-audit-reports-pr
+          path: reports/symbol_audit.*

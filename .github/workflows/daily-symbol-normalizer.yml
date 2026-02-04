@@ -5,14 +5,14 @@ on:
     - cron: '30 2 * * *' # 02:30 UTC
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-
 jobs:
-  normalize-and-audit:
+  normalize:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
     steps:
       - uses: actions/checkout@v3
 
@@ -21,87 +21,102 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
-          pip install pandas httpx
+          pip install -r openalgo/requirements.txt
 
-      - name: A) Sync Instruments
-        id: sync
-        run: python3 tools/sync_instruments.py
+      - name: Initialize Gate
+        run: echo "gate_ok=true" >> $GITHUB_ENV
 
-      - name: B) Pre-Check Strict Validation
-        id: precheck
+      - name: Get Date
+        id: date
+        run: echo "today=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Sync Instruments
+        run: python tools/sync_instruments.py
+
+      - name: Strict Validation (Pre-Check)
+        id: pre_check
         continue-on-error: true
-        run: python3 tools/validate_symbols.py --strict --check
-
-      - name: C) Normalize Symbols
-        id: normalize
-        if: steps.precheck.outcome == 'success'
-        run: python3 tools/normalize_symbols_repo.py --write
-
-      - name: D) Post-Check Strict Validation
-        id: postcheck
-        if: steps.normalize.outcome == 'success'
-        continue-on-error: true
-        run: python3 tools/validate_symbols.py --strict --check
-
-      - name: Gate Check
-        id: gate
         run: |
-          if [[ "${{ steps.precheck.outcome }}" == "success" && "${{ steps.postcheck.outcome }}" == "success" ]]; then
-            echo "gate_ok=true" >> $GITHUB_OUTPUT
-            echo "Gate passed."
+          set +e
+          python tools/validate_symbols.py --strict --check
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Pre-Check Gate
+        if: steps.pre_check.outputs.exit_code != '0'
+        run: |
+          echo "❌ Pre-check failed. Stopping normalization."
+          echo "gate_ok=false" >> $GITHUB_ENV
+
+      - name: Normalize Symbols
+        if: env.gate_ok != 'false'
+        run: |
+          python tools/normalize_symbols_repo.py --write
+
+      - name: Strict Validation (Post-Check)
+        if: env.gate_ok != 'false'
+        id: post_check
+        continue-on-error: true
+        run: |
+          set +e
+          python tools/validate_symbols.py --strict --check
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Post-Check Gate
+        if: env.gate_ok != 'false' && steps.post_check.outputs.exit_code != '0'
+        run: |
+          echo "❌ Post-check failed. Normalization introduced errors or failed to fix."
+          echo "gate_ok=false" >> $GITHUB_ENV
+
+      - name: Verify Git Changes
+        if: env.gate_ok != 'false'
+        id: git_status
+        run: |
+          if [[ -n $(git status -s) ]]; then
+            echo "changes=true" >> $GITHUB_OUTPUT
           else
-            echo "gate_ok=false" >> $GITHUB_OUTPUT
-            echo "Gate failed."
+            echo "changes=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Generate Reports Artifact
+      - name: Create Pull Request
+        if: env.gate_ok != 'false' && steps.git_status.outputs.changes == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          branch: chore/symbols-daily-${{ steps.date.outputs.today }}
+          title: "chore: Normalize Symbols (Daily) - ${{ steps.date.outputs.today }}"
+          body: |
+             Daily symbol normalization run.
+
+             See attached audit report for details.
+          commit-message: "chore: normalize symbols [skip ci]"
+          add-paths: |
+            **/*.py
+            **/*.json
+            **/*.yaml
+            reports/symbol_audit.json
+            reports/symbol_audit.md
+
+      - name: Upload Audit Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: symbol-audit-reports
-          path: reports/
-
-      - name: Create Pull Request
-        if: steps.gate.outputs.gate_ok == 'true'
-        uses: peter-evans/create-pull-request@v5
-        with:
-          branch: chore/symbols-daily
-          title: "chore: Daily Symbol Normalization"
-          body: |
-            Daily symbol normalization report.
-            See attached audit report for details.
-
-            [Audit Report](reports/symbol_audit.md)
-          commit-message: "chore: normalize symbols"
-          add-paths: |
-            openalgo/strategies/**/*.py
-            reports/symbol_audit.md
-            reports/symbol_audit.json
+          path: reports/symbol_audit.*
 
       - name: Create Issue on Failure
-        if: steps.gate.outputs.gate_ok == 'false'
-        uses: actions/github-script@v6
+        if: env.gate_ok == 'false'
+        uses: dacbd/create-issue-action@main
         with:
-          script: |
-            const fs = require('fs');
-            let body = "Daily symbol audit failed. Please check the attached artifacts.\n\n";
-            try {
-              // Read report if exists
-              if (fs.existsSync('reports/symbol_audit.md')) {
-                const report = fs.readFileSync('reports/symbol_audit.md', 'utf8');
-                body += report;
-              }
-            } catch (e) {
-              body += "Could not read audit report.";
-            }
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: "Symbol audit failed (daily) — ${{ steps.date.outputs.today }}"
+          body: |
+            ### Symbol Audit Failed
 
-            // Create Issue
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `Symbol Audit Failed (Daily) - ${new Date().toISOString().split('T')[0]}`,
-              body: body,
-              labels: ['symbols', 'audit-failed']
-            });
+            The daily symbol normalization job failed strict validation.
+
+            **Pre-Check Exit Code:** ${{ steps.pre_check.outputs.exit_code }}
+            **Post-Check Exit Code:** ${{ steps.post_check.outputs.exit_code }}
+
+            Please check the uploaded artifacts for details.
+          labels: symbols
