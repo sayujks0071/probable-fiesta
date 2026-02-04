@@ -21,6 +21,16 @@ REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
+try:
+    from openalgo.strategies.utils.mcx_utils import normalize_mcx_string
+except ImportError:
+    # Fallback if import fails (though repo root is in path)
+    def normalize_mcx_string(s):
+        match = MCX_PATTERN.match(s)
+        if match:
+             return f"{match.group(1).upper()}{int(match.group(2)):02d}{match.group(3).upper()}{match.group(4)}FUT"
+        return s
+
 def check_instruments_freshness():
     if not os.path.exists(INSTRUMENTS_FILE):
         return False, "Instruments file missing"
@@ -32,10 +42,10 @@ def check_instruments_freshness():
 
     return True, "Fresh"
 
-def validate_config_symbols(resolver):
+def validate_strategy_config(resolver):
     issues = []
     if not os.path.exists(CONFIG_FILE):
-        return issues # No config to validate
+        return issues
 
     try:
         with open(CONFIG_FILE, 'r') as f:
@@ -77,25 +87,29 @@ def validate_config_symbols(resolver):
         })
     return issues
 
-def scan_files_for_hardcoded_symbols(instruments):
+def scan_directory(directory, instruments):
     issues = []
-    strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    if not os.path.exists(directory):
+        return issues
 
-    for root, dirs, files in os.walk(strategies_dir):
+    for root, dirs, files in os.walk(directory):
         # Exclude tests
-        if 'tests' in dirs:
-            dirs.remove('tests')
-        if 'test' in dirs:
-            dirs.remove('test')
+        if 'tests' in dirs: dirs.remove('tests')
+        if 'test' in dirs: dirs.remove('test')
+        if '__pycache__' in dirs: dirs.remove('__pycache__')
 
         for file in files:
-            if file.endswith('.py'):
+            if file.endswith(('.py', '.json', '.yaml', '.yml')):
                 filepath = os.path.join(root, file)
+                rel_path = os.path.relpath(filepath, REPO_ROOT)
+
                 try:
                     with open(filepath, 'r', encoding='utf-8') as f:
                         content = f.read()
                 except UnicodeDecodeError:
                     continue # Skip binary/bad files
+                except Exception:
+                    continue
 
                 for match in MCX_PATTERN.finditer(content):
                     symbol_str = match.group(0)
@@ -104,7 +118,7 @@ def scan_files_for_hardcoded_symbols(instruments):
                     # Validate Month
                     if parts[2].upper() not in MONTHS:
                         issues.append({
-                            "source": os.path.basename(filepath),
+                            "source": rel_path,
                             "symbol": symbol_str,
                             "error": f"Invalid month: {parts[2]}",
                             "status": "INVALID"
@@ -112,11 +126,11 @@ def scan_files_for_hardcoded_symbols(instruments):
                         continue
 
                     # Normalized form:
-                    normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
+                    normalized = normalize_mcx_string(symbol_str)
 
                     if symbol_str != normalized:
                          issues.append({
-                            "source": os.path.basename(filepath),
+                            "source": rel_path,
                             "symbol": symbol_str,
                             "normalized": normalized,
                             "error": "Symbol is malformed (needs normalization)",
@@ -125,13 +139,12 @@ def scan_files_for_hardcoded_symbols(instruments):
 
                     if normalized not in instruments:
                         issues.append({
-                            "source": os.path.basename(filepath),
+                            "source": rel_path,
                             "symbol": symbol_str,
                             "normalized": normalized,
                             "error": "Symbol not found in master",
                             "status": "MISSING"
                         })
-
     return issues
 
 def main():
@@ -175,14 +188,21 @@ def main():
         "issues": []
     }
 
-    # 2. Validate Configs
+    # 2. Validate Active Strategies Config
     if resolver:
-        config_issues = validate_config_symbols(resolver)
+        config_issues = validate_strategy_config(resolver)
         audit_report["issues"].extend(config_issues)
 
-    # 3. Validate Hardcoded Symbols
-    hardcoded_issues = scan_files_for_hardcoded_symbols(instruments)
-    audit_report["issues"].extend(hardcoded_issues)
+    # 3. Validate Hardcoded Symbols in Directories
+    dirs_to_scan = [
+        os.path.join(REPO_ROOT, 'openalgo', 'strategies'),
+        os.path.join(REPO_ROOT, 'openalgo', 'configs'),
+        os.path.join(REPO_ROOT, 'configs')
+    ]
+
+    for d in dirs_to_scan:
+        issues = scan_directory(d, instruments)
+        audit_report["issues"].extend(issues)
 
     # Report Generation
     os.makedirs(REPORTS_DIR, exist_ok=True)
