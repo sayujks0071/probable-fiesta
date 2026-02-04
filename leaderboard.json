@@ -1,0 +1,222 @@
+[
+    {
+        "strategy": "SuperTrend_VWAP",
+        "params": null,
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "SuperTrend_VWAP_v1",
+        "params": {
+            "stop_pct": 1.5,
+            "threshold": 150
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "SuperTrend_VWAP_v2",
+        "params": {
+            "stop_pct": 1.5,
+            "threshold": 160
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "SuperTrend_VWAP_v3",
+        "params": {
+            "stop_pct": 2.0,
+            "threshold": 150
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "SuperTrend_VWAP_v4",
+        "params": {
+            "stop_pct": 2.0,
+            "threshold": 160
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "MCX_Momentum",
+        "params": null,
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "MCX_Momentum_v1",
+        "params": {
+            "adx_threshold": 20,
+            "period_rsi": 10
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "MCX_Momentum_v2",
+        "params": {
+            "adx_threshold": 20,
+            "period_rsi": 14
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "MCX_Momentum_v3",
+        "params": {
+            "adx_threshold": 30,
+            "period_rsi": 10
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "MCX_Momentum_v4",
+        "params": {
+            "adx_threshold": 30,
+            "period_rsi": 14
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "AI_Hybrid",
+        "params": null,
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "AI_Hybrid_v1",
+        "params": {
+            "rsi_lower": 25,
+            "rsi_upper": 60
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "AI_Hybrid_v2",
+        "params": {
+            "rsi_lower": 25,
+            "rsi_upper": 70
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "AI_Hybrid_v3",
+        "params": {
+            "rsi_lower": 35,
+            "rsi_upper": 60
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "AI_Hybrid_v4",
+        "params": {
+            "rsi_lower": 35,
+            "rsi_upper": 70
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "ML_Momentum",
+        "params": null,
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "ML_Momentum_v1",
+        "params": {
+            "threshold": 0.01
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "ML_Momentum_v2",
+        "params": {
+            "threshold": 0.02
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    }
+]
