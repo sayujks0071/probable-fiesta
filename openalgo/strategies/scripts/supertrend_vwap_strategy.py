@@ -23,8 +23,8 @@ utils_dir = os.path.join(strategies_dir, 'utils')
 sys.path.insert(0, utils_dir)
 
 try:
-    from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-    from symbol_resolver import SymbolResolver
+    from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+    from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
@@ -32,8 +32,8 @@ except ImportError:
         from utils.symbol_resolver import SymbolResolver
     except ImportError:
         try:
-            from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+            from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+            from symbol_resolver import SymbolResolver
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
@@ -421,17 +421,26 @@ def run_strategy():
     symbol = args.symbol
     if not symbol and args.underlying:
         if SymbolResolver:
+            print(f"Resolving symbol for underlying: {args.underlying}...")
             resolver = SymbolResolver()
             res = resolver.resolve({'underlying': args.underlying, 'type': args.type, 'exchange': args.exchange})
             if isinstance(res, dict):
                 symbol = res.get('sample_symbol')
             else:
                 symbol = res
-            print(f"Resolved {args.underlying} -> {symbol}")
+
+            if symbol:
+                print(f"✅ Resolved {args.underlying} -> {symbol}")
+            else:
+                print(f"❌ Could not resolve symbol for {args.underlying}")
+                sys.exit(1)
+        else:
+            print("SymbolResolver not available")
+            sys.exit(1)
 
     if not symbol:
         print("Error: Must provide --symbol or --underlying")
-        return
+        sys.exit(1)
 
     # Default logfile if not provided
     logfile = args.logfile

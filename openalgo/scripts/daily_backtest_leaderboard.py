@@ -11,13 +11,18 @@ import importlib.util
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.append(repo_root)
 
-# Import Backtest Engine
+# Import Backtest Engine (Prefer Local for Offline Support)
 try:
-    from openalgo.strategies.utils.simple_backtest_engine import SimpleBacktestEngine
+    from openalgo.strategies.utils.local_backtest_engine import LocalBacktestEngine as BacktestEngine
+    logging.info("Using LocalBacktestEngine (Offline/YFinance)")
 except ImportError:
-    # Fallback path logic
-    sys.path.append(os.path.join(repo_root, 'openalgo', 'strategies', 'utils'))
-    from simple_backtest_engine import SimpleBacktestEngine
+    try:
+        from openalgo.strategies.utils.simple_backtest_engine import SimpleBacktestEngine as BacktestEngine
+        logging.info("Using SimpleBacktestEngine (API)")
+    except ImportError:
+        # Fallback path logic
+        sys.path.append(os.path.join(repo_root, 'openalgo', 'strategies', 'utils'))
+        from simple_backtest_engine import SimpleBacktestEngine as BacktestEngine
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Leaderboard")
@@ -99,9 +104,10 @@ def load_strategy_module(filepath):
         return None
 
 def run_leaderboard():
-    engine = SimpleBacktestEngine(initial_capital=100000.0)
+    engine = BacktestEngine(initial_capital=100000.0)
 
-    start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    # Use 55 days lookback for better stats (yfinance limit ~60d for 15m)
+    start_date = (datetime.now() - timedelta(days=55)).strftime("%Y-%m-%d")
     end_date = datetime.now().strftime("%Y-%m-%d")
 
     results = []

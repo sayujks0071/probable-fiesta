@@ -23,19 +23,24 @@ utils_dir = os.path.join(strategies_dir, 'utils')
 sys.path.insert(0, utils_dir)
 
 try:
-    from trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+    from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+    from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 except ImportError:
     try:
         # Try absolute import
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+        from utils.symbol_resolver import SymbolResolver
     except ImportError:
         try:
-            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+            # Local dev fallback
+            from trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+            from symbol_resolver import SymbolResolver
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            SymbolResolver = None
             normalize_symbol = lambda s: s
             is_market_open = lambda: True
 
@@ -320,7 +325,8 @@ class AIHybridStrategy:
 
 def run_strategy():
     parser = argparse.ArgumentParser(description='AI Hybrid Strategy')
-    parser.add_argument('--symbol', type=str, required=True, help='Stock Symbol')
+    parser.add_argument('--symbol', type=str, help='Stock Symbol')
+    parser.add_argument('--underlying', type=str, help='Underlying Asset')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key (or set OPENALGO_APIKEY env var)')
     parser.add_argument('--rsi_lower', type=float, default=35.0, help='RSI Lower Threshold')
@@ -329,6 +335,28 @@ def run_strategy():
     parser.add_argument("--logfile", type=str, help="Log file path")
 
     args = parser.parse_args()
+
+    # Symbol Resolution
+    symbol = args.symbol or os.getenv('SYMBOL')
+
+    if not symbol and args.underlying:
+        if SymbolResolver:
+            logging.info(f"Resolving symbol for underlying: {args.underlying}...")
+            resolver = SymbolResolver()
+            res = resolver.resolve({'underlying': args.underlying, 'type': 'EQUITY', 'exchange': 'NSE'})
+            if res:
+                symbol = res
+                logging.info(f"✅ Resolved {args.underlying} -> {symbol}")
+            else:
+                logging.error(f"❌ Could not resolve symbol for {args.underlying}")
+                sys.exit(1)
+        else:
+             logging.error("SymbolResolver not available")
+             sys.exit(1)
+
+    if not symbol:
+        print("Error: Must provide --symbol or --underlying")
+        sys.exit(1)
 
     # Support env var fallback for API key
     api_key = args.api_key or os.getenv('OPENALGO_APIKEY')
@@ -341,10 +369,10 @@ def run_strategy():
     if not logfile:
         log_dir = os.path.join(strategies_dir, "..", "log", "strategies")
         os.makedirs(log_dir, exist_ok=True)
-        logfile = os.path.join(log_dir, f"ai_hybrid_reversion_breakout_{args.symbol}.log")
+        logfile = os.path.join(log_dir, f"ai_hybrid_reversion_breakout_{symbol}.log")
 
     strategy = AIHybridStrategy(
-        args.symbol,
+        symbol,
         api_key,
         args.port,
         rsi_lower=args.rsi_lower,

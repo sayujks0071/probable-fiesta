@@ -117,23 +117,39 @@ class SymbolResolver:
         # MCX MINI Logic
         if exchange == 'MCX':
             # Priority:
-            # 1. Symbol contains 'MINI'
-            # 2. Symbol matches Name + 'M' + Date (e.g., SILVERM...) vs SILVER...
+            # 1. Active Contract (same month/year as nearest expiry)
+            # 2. Smallest Lot Size (MINI/MICRO preference)
 
-            # Check for explicitly 'MINI' or 'M' suffix on underlying name
-            # Use non-capturing group to avoid pandas UserWarning
+            first_expiry = matches.iloc[0]['expiry']
+            target_month = first_expiry.month
+            target_year = first_expiry.year
+
+            # Filter for candidates in the same expiration cycle (month/year)
+            candidates = matches[
+                (matches['expiry'].dt.month == target_month) &
+                (matches['expiry'].dt.year == target_year)
+            ].copy()
+
+            if candidates.empty:
+                candidates = matches.head(1) # Fallback
+
+            # Check if lot_size exists and sort
+            if 'lot_size' in candidates.columns:
+                candidates = candidates.sort_values('lot_size')
+                selected = candidates.iloc[0]
+                logger.info(f"Selected smallest MCX contract: {selected['symbol']} (Lot: {selected['lot_size']})")
+                return selected['symbol']
+
+            # Fallback to Regex if lot_size missing
             mini_pattern = r'(?:{}M|{}MINI)'.format(underlying, underlying)
-
-            mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
+            mini_matches = candidates[candidates['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
 
             if not mini_matches.empty:
-                logger.info(f"Found MCX MINI contract for {underlying}: {mini_matches.iloc[0]['symbol']}")
+                logger.info(f"Found MCX MINI contract via regex: {mini_matches.iloc[0]['symbol']}")
                 return mini_matches.iloc[0]['symbol']
 
-            # Also check if the symbol itself ends with 'M' before some digits (less reliable but possible)
-            # e.g. CRUDEOILM23NOV...
-
             logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
+            return candidates.iloc[0]['symbol']
 
         # Return nearest expiry
         return matches.iloc[0]['symbol']

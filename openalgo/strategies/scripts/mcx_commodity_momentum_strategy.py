@@ -17,22 +17,22 @@ from datetime import datetime, timedelta
 script_dir = os.path.dirname(os.path.abspath(__file__))
 strategies_dir = os.path.dirname(script_dir)
 utils_dir = os.path.join(strategies_dir, 'utils')
-sys.path.insert(0, utils_dir)
+repo_root = os.path.abspath(os.path.join(strategies_dir, '..', '..'))
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
 
 try:
-    from trading_utils import APIClient, PositionManager, is_market_open
+    from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+    from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 except ImportError:
+    # Fallback for local execution where openalgo might not be installed as package
+    sys.path.insert(0, utils_dir)
     try:
-        sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from trading_utils import APIClient, PositionManager, is_market_open
+        from symbol_resolver import SymbolResolver
     except ImportError:
-        try:
-            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
-        except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            is_market_open = lambda: True
+        print("CRITICAL ERROR: Failed to import OpenAlgo utils.")
+        sys.exit(1)
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -271,7 +271,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility (Pct)')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
@@ -294,32 +294,19 @@ if __name__ == "__main__":
     # Symbol Resolution
     symbol = args.symbol or os.getenv('SYMBOL')
 
-    # Try to resolve from underlying using SymbolResolver
     if not symbol and args.underlying:
-        try:
-            from symbol_resolver import SymbolResolver
-        except ImportError:
-            try:
-                from utils.symbol_resolver import SymbolResolver
-            except ImportError:
-                try:
-                    from openalgo.strategies.utils.symbol_resolver import SymbolResolver
-                except ImportError:
-                    SymbolResolver = None
-
-        if SymbolResolver:
-            resolver = SymbolResolver()
-            res = resolver.resolve({'underlying': args.underlying, 'type': 'FUT', 'exchange': 'MCX'})
-            if res:
-                symbol = res
-                logger.info(f"Resolved {args.underlying} -> {symbol}")
-            else:
-                logger.error(f"Could not resolve symbol for {args.underlying}")
+        logger.info(f"Resolving symbol for underlying: {args.underlying}...")
+        resolver = SymbolResolver()
+        res = resolver.resolve({'underlying': args.underlying, 'type': 'FUT', 'exchange': 'MCX'})
+        if res:
+            symbol = res
+            logger.info(f"✅ Resolved {args.underlying} -> {symbol}")
         else:
-            logger.error("SymbolResolver not available")
+            logger.error(f"❌ Could not resolve symbol for {args.underlying} (MCX FUT)")
+            sys.exit(1)
 
     if not symbol:
-        logger.error("Symbol not provided. Use --symbol or --underlying argument, or set SYMBOL env var.")
+        logger.error("❌ Symbol not provided. Use --symbol or --underlying argument, or set SYMBOL env var.")
         sys.exit(1)
 
     api_key = args.api_key or os.getenv('OPENALGO_APIKEY')

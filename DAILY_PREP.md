@@ -8,19 +8,23 @@ The `daily_startup.py` script is the main entry point for the trading day. It en
 
 ### Usage
 ```bash
+# Standard Prep
 ./daily_startup.py
+
+# Prep + Backtest & Leaderboard
+./daily_startup.py --backtest
 ```
 
 ### What it does:
-1.  **Repository Check**: Checks for `openalgo/` directory. If missing, clones it from the repository.
+1.  **Repository Check**: Checks for `openalgo/` directory.
 2.  **Daily Prep**: Launches `openalgo/scripts/daily_prep.py` which:
     *   **Environment Check**: Verifies `OPENALGO_APIKEY` and repo structure.
     *   **Purge Stale State**: Deletes previous day's:
         *   Strategy state files (`openalgo/strategies/state/*.json`)
         *   Cached instruments (`openalgo/data/instruments.csv`)
-        *   Session files (if any)
-    *   **Authentication Check**: Verifies connectivity to Broker (Kite/Dhan).
-    *   **Fetch Instruments**: Downloads the latest instrument list from the broker (or generates a mock list if API is unavailable).
+        *   Session files (Aggressive purge of `openalgo/sessions/`)
+    *   **Authentication Check**: Verifies connectivity to Broker (Kite/Dhan) and API accessibility.
+    *   **Fetch Instruments**: Downloads the latest instrument list from the broker (or generates a mock list with `lot_size` info if API is unavailable).
     *   **Symbol Validation**: Resolves all strategies in `active_strategies.json` to valid, tradable symbols for *today*.
 
 ### Output
@@ -31,7 +35,7 @@ The script outputs a validation table. If any strategy has an invalid symbol (e.
 STRATEGY             | TYPE     | INPUT           | RESOLVED                  | STATUS
 ------------------------------------------------------------------------------------------
 ORB_NIFTY            | EQUITY   | NIFTY           | NIFTY                     | ✅ Valid
-ATM_OPT_NIFTY        | OPT      | NIFTY           | Expiry: 2026-01-31        | ✅ Valid
+SuperTrend_NIFTY     | EQUITY   | NIFTY           | NIFTY                     | ✅ Valid
 MCX_SILVER           | FUT      | SILVER          | SILVERMIC23NOVFUT         | ✅ Valid
 ```
 
@@ -65,27 +69,32 @@ The `SymbolResolver` (`openalgo/strategies/utils/symbol_resolver.py`) handles dy
 
 *   **Equity**: Verifies existence in master list.
 *   **Futures (NSE/MCX)**:
-    *   Selects the nearest expiry.
-    *   **MCX Specific**: Prefers **MINI** contracts (containing 'M' or 'MINI') if available. Fallback to standard if not.
+    *   Selects the nearest expiry (Active Contract).
+    *   **MCX Specific**: Prefers **MINI** contracts by checking:
+        1.  Contracts in the same expiration cycle (Month/Year).
+        2.  Sorting by `lot_size` ascending (Prefer 1 over 5 over 30).
+        3.  Regex fallback ('M' or 'MINI' in symbol).
 *   **Options**:
     *   Filters by Underlying, Type (CE/PE).
-    *   Selects expiry based on preference (WEEKLY/MONTHLY).
+    *   Selects expiry based on preference (WEEKLY/MONTHLY). Monthly picks the last expiry of the month.
     *   Validates that contracts exist for the target date.
 
 ## 4. Daily Backtest & Ranking
 
-To run a simulation backtest of all active strategies:
+To run a simulation backtest of all active strategies and generate a leaderboard:
 
 ```bash
-./openalgo/scripts/run_daily_backtest.py
+./daily_startup.py --backtest
 ```
 
-This script:
-1.  Loads `active_strategies.json`.
-2.  Resolves symbols using the fresh instrument list.
-3.  **Real Backtest**: Runs the actual strategy logic (e.g. `ORBStrategy.calculate_signals`) against generated/historical data.
-4.  **Fine-Tuning**: Automatically runs a grid search optimization for supported strategies (e.g., finding optimal `minutes` for ORB).
-5.  Generates a Leaderboard (console table + `leaderboard.json`).
+This invokes `openalgo/scripts/daily_backtest_leaderboard.py`, which:
+1.  **Offline Support**: Uses `LocalBacktestEngine` (via `yfinance`) if the API is unavailable.
+2.  **Backtest**: Runs strategies against historical data (default 55 days lookback).
+3.  **Fine-Tuning Loop**:
+    *   Identifies top strategies.
+    *   Generates variants (small parameter tweaks).
+    *   Backtests variants to find robust parameters.
+4.  **Leaderboard**: Outputs `LEADERBOARD.md` and `leaderboard.json` with metrics (Sharpe, Return, Drawdown).
 
 ## 5. Troubleshooting
 
@@ -94,4 +103,6 @@ This script:
     *   Check `instruments.csv` in `openalgo/data`.
     *   Verify the contract exists (e.g., is today a holiday? did expiry happen yesterday?).
     *   Update `active_strategies.json` if the underlying name changed.
-*   **Login Issues**: Run `openalgo/scripts/authentication_health_check.py` manually for details.
+*   **Login Issues**:
+    *   The `daily_prep` script purges session state to force a fresh login check.
+    *   If login fails, check environment variables `OPENALGO_APIKEY`.

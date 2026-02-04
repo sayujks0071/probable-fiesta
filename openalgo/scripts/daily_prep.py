@@ -70,7 +70,7 @@ def purge_stale_state():
         except Exception as e:
             logger.error(f"Failed to delete instruments.csv: {e}")
 
-    # 3. Clear Auth/Sessions
+    # 3. Clear Auth/Sessions (Aggressive)
     if os.path.exists(SESSION_DIR):
         try:
             shutil.rmtree(SESSION_DIR)
@@ -82,27 +82,56 @@ def purge_stale_state():
         os.makedirs(SESSION_DIR, exist_ok=True)
         logger.info(f"Created session directory: {SESSION_DIR}")
 
+    # 4. Clear Instruments Cache explicitly if not covered
+    # (Already covered above in Step 2, but ensuring lot_size aware purge)
+    # The step 2 in original code deleted instruments.csv.
+
 def check_auth():
     logger.info("Running Authentication Health Check...")
-    script_path = os.path.join(repo_root, 'openalgo/scripts/authentication_health_check.py')
 
-    # Check if script exists, if not, mock it for now
-    if not os.path.exists(script_path):
-        logger.warning(f"Auth check script not found at {script_path}. Skipping.")
-        return
+    # 1. API Connectivity Check
+    api_key = os.getenv('OPENALGO_APIKEY')
+    host = os.getenv('OPENALGO_HOST', 'http://127.0.0.1:5001')
 
     try:
-        # Run the health check script
-        result = subprocess.run([sys.executable, script_path], capture_output=True, text=True)
-        if result.returncode != 0:
-            logger.error("Authentication check failed!")
-            logger.error(result.stderr)
-            # In a strict environment, we might exit here:
-            # sys.exit(1)
-        else:
-            logger.info("Authentication check passed.")
+        # Try a simple protected endpoint or public status endpoint
+        url = f"{host}/api/v1/system/status"
+        # Note: If /system/status doesn't exist, try /api/v1/instruments (head) or similar
+
+        logger.info(f"Checking API connectivity at {host}...")
+        with httpx.Client(timeout=5.0) as client:
+            # First check if server is up
+            try:
+                resp = client.get(f"{host}/")
+                if resp.status_code < 500:
+                    logger.info("Server is reachable.")
+                else:
+                    logger.error(f"Server returned {resp.status_code}")
+                    sys.exit(1)
+            except Exception:
+                logger.error("Server not reachable. Please start the OpenAlgo server.")
+                sys.exit(1)
+
     except Exception as e:
-        logger.error(f"Failed to run auth check: {e}")
+        logger.error(f"Auth Check Error: {e}")
+        sys.exit(1)
+
+    except Exception as e:
+        logger.error(f"Auth Check Error: {e}")
+
+    # 2. Run detailed auth script if exists
+    script_path = os.path.join(repo_root, 'openalgo/scripts/authentication_health_check.py')
+    if os.path.exists(script_path):
+        try:
+            result = subprocess.run([sys.executable, script_path], capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error("Authentication check script failed!")
+                logger.error(result.stderr)
+                sys.exit(1)
+            else:
+                logger.info("Authentication check script passed.")
+        except Exception as e:
+            logger.error(f"Failed to run auth check script: {e}")
 
 def fetch_instruments():
     logger.info("Fetching Instruments...")
@@ -238,12 +267,19 @@ def validate_symbols():
                 resolved_str = str(resolved)
                 valid_count += 1
 
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {resolved_str[:30]:<30} | {status}")
+            # Use underlying or symbol for display
+            display_sym = config.get('underlying') or config.get('symbol') or 'Unknown'
+            # Use default type if None
+            display_type = config.get('type') or 'EQUITY'
+
+            print(f"{strat_id:<25} | {display_type:<8} | {display_sym:<15} | {resolved_str[:30]:<30} | {status}")
 
         except Exception as e:
             logger.error(f"Error validating {strat_id}: {e}")
             invalid_count += 1
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {'ERROR':<30} | 🔴 Error")
+            display_sym = config.get('underlying') or config.get('symbol') or 'Unknown'
+            display_type = config.get('type') or 'Unknown'
+            print(f"{strat_id:<25} | {display_type:<8} | {display_sym:<15} | {'ERROR':<30} | 🔴 Error")
 
     print("-" * 95)
     if invalid_count > 0:

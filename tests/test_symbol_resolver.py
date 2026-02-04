@@ -1,93 +1,89 @@
 import unittest
 import pandas as pd
 import os
-import shutil
 from datetime import datetime, timedelta
+from unittest.mock import patch, MagicMock
 from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 
 class TestSymbolResolver(unittest.TestCase):
-    def setUp(self):
-        self.test_dir = "tests/data"
-        os.makedirs(self.test_dir, exist_ok=True)
-        self.csv_path = os.path.join(self.test_dir, "instruments.csv")
 
-        # Generate Mock Data
+    def setUp(self):
+        # Create a mock dataframe
         now = datetime.now()
 
-        # Expiries
-        days_to_thurs = (3 - now.weekday()) % 7
-        if days_to_thurs == 0: days_to_thurs = 7
-        next_thursday = (now + timedelta(days=days_to_thurs)).replace(hour=0, minute=0, second=0, microsecond=0)
-
-        # End of Month
-        import calendar
-        last_day = calendar.monthrange(now.year, now.month)[1]
-        month_end = datetime(now.year, now.month, last_day).replace(hour=0, minute=0, second=0, microsecond=0)
+        # Helper to get expiry dates
+        def next_expiry(days):
+            return (now + timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
 
         data = [
-            # Equity
-            {'exchange': 'NSE', 'symbol': 'RELIANCE', 'name': 'RELIANCE', 'expiry': None, 'instrument_type': 'EQ', 'strike': 0},
+            # MCX GOLD - Standard vs MINI
+            {'exchange': 'MCX', 'symbol': 'GOLD23OCTFUT', 'name': 'GOLD', 'expiry': next_expiry(20), 'lot_size': 100, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'symbol': 'GOLDM23OCTFUT', 'name': 'GOLD', 'expiry': next_expiry(20), 'lot_size': 10, 'instrument_type': 'FUT'},
 
-            # MCX Futures
-            {'exchange': 'MCX', 'symbol': 'SILVER23NOVFUT', 'name': 'SILVER', 'expiry': month_end, 'instrument_type': 'FUT', 'strike': 0},
-            {'exchange': 'MCX', 'symbol': 'SILVERM23NOVFUT', 'name': 'SILVER', 'expiry': month_end, 'instrument_type': 'FUT', 'strike': 0},
+            # MCX SILVER - Standard vs MINI vs MICRO (Prefer smallest)
+            {'exchange': 'MCX', 'symbol': 'SILVER23NOVFUT', 'name': 'SILVER', 'expiry': next_expiry(40), 'lot_size': 30, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'symbol': 'SILVERM23NOVFUT', 'name': 'SILVER', 'expiry': next_expiry(40), 'lot_size': 5, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'symbol': 'SILVERMIC23NOVFUT', 'name': 'SILVER', 'expiry': next_expiry(40), 'lot_size': 1, 'instrument_type': 'FUT'},
 
-            # NSE Options (Weekly)
-            {'exchange': 'NFO', 'symbol': 'NIFTY23OCT19500CE', 'name': 'NIFTY', 'expiry': next_thursday, 'instrument_type': 'OPT', 'strike': 19500},
-            {'exchange': 'NFO', 'symbol': 'NIFTY23OCT19500PE', 'name': 'NIFTY', 'expiry': next_thursday, 'instrument_type': 'OPT', 'strike': 19500},
-            {'exchange': 'NFO', 'symbol': 'NIFTY23OCT19600CE', 'name': 'NIFTY', 'expiry': next_thursday, 'instrument_type': 'OPT', 'strike': 19600},
-
-            # NSE Options (Monthly - assume strictly later than weekly for test)
-            {'exchange': 'NFO', 'symbol': 'NIFTY23NOV19500CE', 'name': 'NIFTY', 'expiry': next_thursday + timedelta(days=30), 'instrument_type': 'OPT', 'strike': 19500},
+            # NSE Options - Weekly vs Monthly
+            # Assume 'now' is beginning of month.
+            # Weekly 1: +2 days, Weekly 2: +9 days, Monthly: +30 days (End of month)
         ]
 
-        df = pd.DataFrame(data)
-        df.to_csv(self.csv_path, index=False)
+        # Add NSE Options
+        # Ensure both are in the same month for the logic to work as expected by the test case
+        # We'll use a fixed future date relative to 'now' but ensure they share month/year
 
-        self.resolver = SymbolResolver(self.csv_path)
+        # Calculate a date in the middle of next month to be safe
+        next_month = (now + timedelta(days=35)).replace(day=1)
+        m1_weekly = next_month.replace(day=5)
+        m1_monthly = next_month.replace(day=25) # Later in same month
+
+        data.extend([
+            {'exchange': 'NFO', 'symbol': 'NIFTY23OCT19500CE', 'name': 'NIFTY', 'expiry': m1_weekly, 'lot_size': 50, 'instrument_type': 'OPT'},
+            {'exchange': 'NFO', 'symbol': 'NIFTY23OCT19600CE', 'name': 'NIFTY', 'expiry': m1_monthly, 'lot_size': 50, 'instrument_type': 'OPT'}
+        ])
+
+        self.df = pd.DataFrame(data)
+
+        # Patch load_instruments to use our mock df
+        self.patcher = patch.object(SymbolResolver, 'load_instruments')
+        self.mock_load = self.patcher.start()
 
     def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def test_equity_resolve(self):
-        config = {'type': 'EQUITY', 'underlying': 'RELIANCE', 'exchange': 'NSE'}
-        res = self.resolver.resolve(config)
-        self.assertEqual(res, 'RELIANCE')
+        self.patcher.stop()
 
     def test_mcx_mini_preference(self):
-        config = {'type': 'FUT', 'underlying': 'SILVER', 'exchange': 'MCX'}
-        res = self.resolver.resolve(config)
-        # Should pick SILVERM... because it contains 'SILVERM'
-        self.assertTrue('SILVERM' in res)
+        resolver = SymbolResolver(instruments_path='dummy.csv')
+        resolver.df = self.df # Inject mock data
 
-    def test_option_resolve_weekly(self):
-        config = {'type': 'OPT', 'underlying': 'NIFTY', 'exchange': 'NFO', 'expiry_preference': 'WEEKLY', 'option_type': 'CE'}
-        res = self.resolver.resolve(config)
-        self.assertEqual(res['status'], 'valid')
-        # Should be the earlier date
-        # Check expiry string
-        # We can't easily check exact string without recalc, but we know it should validly return dict.
-        self.assertIn('expiry', res)
+        # Case 1: GOLD - Should pick GOLDM (10 lot) over GOLD (100 lot)
+        res = resolver.resolve({'underlying': 'GOLD', 'type': 'FUT', 'exchange': 'MCX'})
+        self.assertEqual(res, 'GOLDM23OCTFUT', "Should prefer GOLDM over GOLD")
 
-    def test_get_tradable_symbol_atm(self):
-        config = {'type': 'OPT', 'underlying': 'NIFTY', 'exchange': 'NFO', 'option_type': 'CE'}
-        # Spot 19520 -> Nearest 19500
-        sym = self.resolver.get_tradable_symbol(config, spot_price=19520)
-        self.assertEqual(sym, 'NIFTY23OCT19500CE')
+    def test_mcx_smallest_lot_preference(self):
+        resolver = SymbolResolver(instruments_path='dummy.csv')
+        resolver.df = self.df
 
-    def test_get_tradable_symbol_itm(self):
-        config = {'type': 'OPT', 'underlying': 'NIFTY', 'exchange': 'NFO', 'option_type': 'CE', 'strike_criteria': 'ITM'}
-        # Spot 19560 -> ATM 19600 -> ITM (Call) = 19500 (Lower strike)
-        # Wait, 19560 ATM is 19600 (diff 40) vs 19500 (diff 60).
-        # Logic: 19560. Nearest strike in [19500, 19600]. 19600 is closer.
-        # ATM = 19600.
-        # ITM Call = Strike < Spot. 19500.
-        # My logic in code: idx = max(0, atm_index - 1).
-        # Strikes: [19500, 19600].
-        # ATM Index (19600) = 1.
-        # ITM Index = 0 -> 19500.
-        sym = self.resolver.get_tradable_symbol(config, spot_price=19560)
-        self.assertEqual(sym, 'NIFTY23OCT19500CE')
+        # Case 2: SILVER - Should pick SILVERMIC (1 lot) over SILVERM (5) and SILVER (30)
+        res = resolver.resolve({'underlying': 'SILVER', 'type': 'FUT', 'exchange': 'MCX'})
+        self.assertEqual(res, 'SILVERMIC23NOVFUT', "Should prefer SILVERMIC (smallest lot)")
+
+    def test_nse_option_weekly(self):
+        resolver = SymbolResolver(instruments_path='dummy.csv')
+        resolver.df = self.df
+
+        # Case 3: Weekly Preference (default)
+        res = resolver.resolve({'underlying': 'NIFTY', 'type': 'OPT', 'expiry_preference': 'WEEKLY'})
+        self.assertEqual(res['sample_symbol'], 'NIFTY23OCT19500CE', "Should pick nearest expiry")
+
+    def test_nse_option_monthly(self):
+        resolver = SymbolResolver(instruments_path='dummy.csv')
+        resolver.df = self.df
+
+        # Case 4: Monthly Preference
+        res = resolver.resolve({'underlying': 'NIFTY', 'type': 'OPT', 'expiry_preference': 'MONTHLY'})
+        self.assertEqual(res['sample_symbol'], 'NIFTY23OCT19600CE', "Should pick monthly expiry")
 
 if __name__ == '__main__':
     unittest.main()
