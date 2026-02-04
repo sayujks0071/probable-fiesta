@@ -68,7 +68,7 @@ class StrategyOptimizer:
                     signals += 1
 
                 # Entry Detection
-                if "BUY" in line or "SELL" in line:
+                if "BUY" in line.upper() or "SELL" in line.upper():
                     if "Signal" in line or "Crossover" in line: # Avoid double counting updates
                         entries += 1
 
