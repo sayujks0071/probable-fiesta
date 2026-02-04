@@ -25,19 +25,23 @@ sys.path.insert(0, utils_dir)
 try:
     from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
     from symbol_resolver import SymbolResolver
+    from risk_manager import RiskManager
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
         from utils.symbol_resolver import SymbolResolver
+        from utils.risk_manager import RiskManager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+            from openalgo.strategies.utils.risk_manager import RiskManager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            RiskManager = None
             SymbolResolver = None
             normalize_symbol = lambda s: s
             is_market_open = lambda: True
@@ -75,7 +79,7 @@ class SuperTrendVWAPStrategy:
         # Optimization Parameters
         self.threshold = 150
         self.stop_pct = 1.8
-        self.adx_threshold = 20  # Added ADX Filter
+        self.adx_threshold = 25  # Tuned: Increased ADX Filter to 25
         self.adx_period = 14
 
         # State
@@ -103,7 +107,17 @@ class SuperTrendVWAPStrategy:
         else:
             self.client = APIClient(api_key=self.api_key, host=self.host)
 
-        self.pm = PositionManager(symbol) if PositionManager else None
+        # Initialize Risk Manager
+        self.rm = None
+        if RiskManager:
+            self.rm = RiskManager(
+                strategy_name=f"SuperTrendVWAP_{symbol}",
+                exchange="NSE",  # Defaulting to NSE, logic in run() handles VIX/Indices
+                capital=100000,
+                config={'max_loss_per_trade_pct': 2.0}
+            )
+        else:
+            self.logger.warning("RiskManager not available. Strategy running without risk controls.")
 
     def generate_signal(self, df):
         """
@@ -362,41 +376,106 @@ class SuperTrendVWAPStrategy:
                 is_above_poc = last['close'] > poc_price
                 is_not_overextended = abs(last['vwap_dev']) < dev_threshold
 
-                if self.pm and self.pm.has_position():
-                    # Manage Position (Trailing Stop)
+                # Check for existing position via RiskManager
+                in_position = False
+                if self.rm:
+                    positions = self.rm.get_open_positions()
+                    if self.symbol in positions:
+                        in_position = True
+
+                if in_position:
+                    # Manage Position (Trailing Stop & Exit)
                     sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
 
-                    if self.trailing_stop == 0:
-                        self.trailing_stop = last['close'] - (sl_mult * self.atr) # Initial SL
+                    # Update Trailing Stop via RiskManager
+                    new_stop = self.rm.update_trailing_stop(self.symbol, last['close'])
+                    if new_stop:
+                         self.trailing_stop = new_stop
 
-                    # Update Trailing Stop (Only move up)
-                    new_stop = last['close'] - (sl_mult * self.atr)
-                    if new_stop > self.trailing_stop:
-                        self.trailing_stop = new_stop
-                        self.logger.info(f"Trailing Stop Updated: {self.trailing_stop:.2f}")
+                    # Check Stop Loss
+                    stop_hit, reason = self.rm.check_stop_loss(self.symbol, last['close'])
 
-                    # Check Exit
-                    if last['close'] < self.trailing_stop:
-                        self.logger.info(f"Trailing Stop Hit at {last['close']:.2f}")
-                        self.pm.update_position(self.quantity, last['close'], 'SELL')
-                        self.trailing_stop = 0.0
+                    exit_signal = False
+                    exit_reason = ""
+
+                    if stop_hit:
+                        exit_signal = True
+                        exit_reason = reason
                     elif last['close'] < last['vwap']:
-                        self.logger.info(f"Price crossed below VWAP at {last['close']:.2f}. Exiting.")
-                        self.pm.update_position(self.quantity, last['close'], 'SELL')
-                        self.trailing_stop = 0.0
+                        exit_signal = True
+                        exit_reason = f"Price crossed below VWAP at {last['close']:.2f}"
+
+                    if exit_signal:
+                        self.logger.info(f"Exit Signal: {exit_reason}")
+                        # Place Sell Order
+                        if hasattr(self.client, 'placesmartorder'):
+                            order = self.client.placesmartorder(
+                                strategy="SuperTrendVWAP",
+                                symbol=self.symbol,
+                                action="SELL",
+                                exchange=exchange,
+                                price_type="MARKET",
+                                product="MIS",
+                                quantity=self.quantity, # Simplified: Exiting full qty logic needs refinement if partial
+                                position_size=0
+                            )
+                            if order and order.get('status') == 'success':
+                                self.rm.register_exit(self.symbol, last['close'])
+                                self.logger.info(f"Position Closed: {self.symbol} @ {last['close']}")
+                            else:
+                                self.logger.error(f"Failed to place exit order: {order}")
+                        else:
+                            # Fallback/Simulation
+                            self.rm.register_exit(self.symbol, last['close'])
 
                 else:
-                    # Entry Logic
-                    sector_bullish = self.check_sector_correlation()
+                    # Risk Check: Can we trade?
+                    can_trade, reason = True, "OK"
+                    if self.rm:
+                        can_trade, reason = self.rm.can_trade()
 
-                    if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish:
-                        adj_qty = int(self.quantity * size_multiplier)
-                        if adj_qty < 1: adj_qty = 1 # Minimum 1
-                        self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
-                        if self.pm:
-                            self.pm.update_position(adj_qty, last['close'], 'BUY')
-                            sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
-                            self.trailing_stop = last['close'] - (sl_mult * self.atr)
+                    if not can_trade:
+                        if "CIRCUIT BREAKER" in reason:
+                            self.logger.error(f"Trading Halted: {reason}")
+                            time.sleep(300) # Sleep longer
+                            continue
+                        self.logger.warning(f"Skipping Entry: {reason}")
+
+                    else:
+                        # Entry Logic
+                        sector_bullish = self.check_sector_correlation()
+
+                        if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish:
+                            adj_qty = int(self.quantity * size_multiplier)
+                            if adj_qty < 1: adj_qty = 1 # Minimum 1
+
+                            self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
+
+                            if self.rm:
+                                # Place Order
+                                if hasattr(self.client, 'placesmartorder'):
+                                    order = self.client.placesmartorder(
+                                        strategy="SuperTrendVWAP",
+                                        symbol=self.symbol,
+                                        action="BUY",
+                                        exchange=exchange,
+                                        price_type="MARKET",
+                                        product="MIS",
+                                        quantity=adj_qty,
+                                        position_size=adj_qty
+                                    )
+                                    if order and order.get('status') == 'success':
+                                        sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
+                                        stop_loss = last['close'] - (sl_mult * self.atr)
+                                        self.rm.register_entry(self.symbol, adj_qty, last['close'], "LONG", stop_loss=stop_loss)
+                                        self.logger.info(f"Entry Registered: {self.symbol} Long @ {last['close']} SL: {stop_loss}")
+                                    else:
+                                        self.logger.error(f"Failed to place entry order: {order}")
+                                else:
+                                     # Fallback/Simulation
+                                    sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
+                                    stop_loss = last['close'] - (sl_mult * self.atr)
+                                    self.rm.register_entry(self.symbol, adj_qty, last['close'], "LONG", stop_loss=stop_loss)
 
             except Exception as e:
                 self.logger.error(f"Error in SuperTrend VWAP strategy for {self.symbol}: {e}", exc_info=True)
