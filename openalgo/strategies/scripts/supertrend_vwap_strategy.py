@@ -212,8 +212,8 @@ class SuperTrendVWAPStrategy:
         except:
             return 0
 
-    def analyze_volume_profile(self, df, n_bins=20):
-        """Find Point of Control (POC)."""
+    def analyze_volume_profile(self, df, n_bins=30):
+        """Find Point of Control (POC) with enhanced granularity."""
         price_min = df['low'].min()
         price_max = df['high'].max()
         if price_min == price_max: return 0, 0
