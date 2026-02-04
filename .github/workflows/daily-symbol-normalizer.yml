@@ -99,7 +99,7 @@ jobs:
 
       - name: Upload Audit Reports
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: symbol-audit-reports
           path: reports/symbol_audit.*
@@ -109,7 +109,7 @@ jobs:
         uses: dacbd/create-issue-action@main
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          title: "Symbol audit failed (daily) — $(date +'%Y-%m-%d')"
+          title: "Symbol audit failed (daily) — ${{ steps.date.outputs.today }}"
           body: |
             ### Symbol Audit Failed
 

@@ -6,27 +6,21 @@ import re
 import json
 import pandas as pd
 from datetime import datetime
+from collections import defaultdict
 
 # Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if REPO_ROOT not in sys.path:
-    sys.path.insert(0, REPO_ROOT)
-
 DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
-# Import normalization logic
-try:
-    from openalgo.strategies.utils.mcx_utils import normalize_mcx_string
-except ImportError as e:
-    print(f"Error importing mcx_utils: {e}")
-    sys.exit(1)
-
-# Regex for MCX Symbols (used for finding candidates)
+# Regex for MCX Symbols
+# Pattern: SYMBOL + 1-2 digits (Day) + 3 letters (Month) + 2 digits (Year) + FUT
+# e.g. GOLDM05FEB26FUT
+# Capture groups: 1=Symbol, 2=Day, 3=Month, 4=Year
 MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
 
-# Valid Months for validation
+# Valid Months
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
 def load_instruments():
@@ -39,32 +33,36 @@ def load_instruments():
         print(f"Warning: Failed to load instruments: {e}")
         return None
 
+def normalize_mcx_symbol(match):
+    symbol = match.group(1).upper()
+    day = int(match.group(2))
+    month = match.group(3).upper()
+    year = match.group(4)
+
+    # Normalize: Pad day with 0 if needed
+    normalized = f"{symbol}{day:02d}{month}{year}FUT"
+    return normalized
+
 def scan_file(filepath, instruments, strict=False):
     issues = []
+    normalized_content = ""
     changes_made = False
 
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
-    except Exception as e:
-        print(f"Warning: Could not read {filepath}: {e}")
-        return "", False, []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
 
     def replacement_handler(match):
         nonlocal changes_made
         original = match.group(0)
+        normalized = normalize_mcx_symbol(match)
 
-        # Use centralized normalization logic
-        normalized = normalize_mcx_string(original)
-
-        # Validation of components
-        # Extract month from original to check validity before normalizing
-        month_match = match.group(3).upper()
-        if month_match not in MONTHS:
+        # Validation
+        month = match.group(3).upper()
+        if month not in MONTHS:
             issues.append({
                 "file": filepath,
                 "symbol": original,
-                "error": f"Invalid month: {month_match}",
+                "error": f"Invalid month: {month}",
                 "status": "INVALID"
             })
             return original
@@ -102,19 +100,6 @@ def scan_file(filepath, instruments, strict=False):
 
     return new_content, changes_made, issues
 
-def collect_files(root_dir):
-    files_to_scan = []
-    for root, dirs, files in os.walk(root_dir):
-        # Exclude tests/hidden directories
-        if 'tests' in dirs: dirs.remove('tests')
-        if 'test' in dirs: dirs.remove('test')
-        if '__pycache__' in dirs: dirs.remove('__pycache__')
-
-        for file in files:
-            if file.endswith(('.py', '.json', '.yaml', '.yml')):
-                files_to_scan.append(os.path.join(root, file))
-    return files_to_scan
-
 def main():
     parser = argparse.ArgumentParser(description="Normalize Symbols in Repo")
     parser.add_argument("--write", action="store_true", help="Write changes to files")
@@ -138,19 +123,19 @@ def main():
     }
 
     files_to_scan = []
+    # Walk openalgo/strategies
+    strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    for root, dirs, files in os.walk(strategies_dir):
+        # Exclude tests directories
+        if 'tests' in dirs:
+            dirs.remove('tests')
+        if 'test' in dirs:
+            dirs.remove('test')
 
-    # 1. Strategies
-    files_to_scan.extend(collect_files(os.path.join(REPO_ROOT, 'openalgo', 'strategies')))
+        for file in files:
+            if file.endswith('.py') or file.endswith('.json'):
+                files_to_scan.append(os.path.join(root, file))
 
-    # 2. Configs (Repo root)
-    configs_root = os.path.join(REPO_ROOT, 'configs')
-    if os.path.exists(configs_root):
-        files_to_scan.extend(collect_files(configs_root))
-
-    # 3. OpenAlgo Configs
-    oa_configs = os.path.join(REPO_ROOT, 'openalgo', 'configs')
-    if os.path.exists(oa_configs):
-         files_to_scan.extend(collect_files(oa_configs))
 
     for filepath in files_to_scan:
         new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
