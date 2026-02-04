@@ -41,7 +41,7 @@ console = logging.StreamHandler()
 console.setFormatter(formatter)
 logger.addHandler(console)
 
-def check_service(name, url, timeout=2):
+def check_service(name, url, timeout=3):
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             code = resp.getcode()

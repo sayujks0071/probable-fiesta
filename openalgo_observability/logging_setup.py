@@ -40,16 +40,36 @@ class SensitiveDataFilter(logging.Filter):
 
         # 2. Filter args if present
         if hasattr(record, 'args') and record.args:
-            filtered_args = []
-            for arg in record.args:
-                if isinstance(arg, str):
-                    filtered_arg = arg
-                    for pattern, replacement in SENSITIVE_PATTERNS:
-                        filtered_arg = re.sub(pattern, replacement, filtered_arg, flags=re.IGNORECASE)
-                    filtered_args.append(filtered_arg)
+            # Handle Dict args (mapping for %(key)s formatting)
+            if isinstance(record.args, dict):
+                new_args = {}
+                for k, v in record.args.items():
+                    if isinstance(v, (str, dict, list, tuple)):
+                        val_str = str(v)
+                        for pattern, replacement in SENSITIVE_PATTERNS:
+                            val_str = re.sub(pattern, replacement, val_str, flags=re.IGNORECASE)
+                        new_args[k] = val_str
+                    else:
+                        new_args[k] = v
+                record.args = new_args
+
+            # Handle Tuple/List args (standard %s formatting)
+            elif isinstance(record.args, (list, tuple)):
+                filtered_args = []
+                for arg in record.args:
+                    if isinstance(arg, (str, dict, list, tuple)):
+                        val_str = str(arg)
+                        for pattern, replacement in SENSITIVE_PATTERNS:
+                            val_str = re.sub(pattern, replacement, val_str, flags=re.IGNORECASE)
+                        filtered_args.append(val_str)
+                    else:
+                        filtered_args.append(arg)
+
+                # Maintain original type
+                if isinstance(record.args, tuple):
+                    record.args = tuple(filtered_args)
                 else:
-                    filtered_args.append(arg)
-            record.args = tuple(filtered_args)
+                    record.args = list(filtered_args)
 
         return True
 
