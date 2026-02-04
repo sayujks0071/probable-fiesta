@@ -13,6 +13,7 @@ if str(project_root) not in sys.path:
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 from openalgo.strategies.utils.option_analytics import calculate_greeks, calculate_max_pain
+from openalgo.strategies.utils.risk_manager import RiskManager
 
 # Configure logging
 logging.basicConfig(
@@ -26,13 +27,15 @@ logging.basicConfig(
 logger = logging.getLogger("DeltaNeutralIronCondor")
 
 class DeltaNeutralIronCondor:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None, gap_pct=0.0):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.max_vix = max_vix
         self.sentiment_score = sentiment_score
+        self.gap_pct = gap_pct
         self.pm = PositionManager(f"{symbol}_IC")
+        self.rm = RiskManager(f"{symbol}_IC", exchange="NSE")
 
     def get_vix(self):
         q = self.client.get_quote("INDIA VIX", "NSE")
@@ -40,16 +43,29 @@ class DeltaNeutralIronCondor:
 
     def select_strikes(self, spot, vix, chain_data):
         """
-        Select strikes based on Delta and VIX.
+        Select strikes based on Delta, VIX, and Gap.
         """
         # Calculate Max Pain
         max_pain = calculate_max_pain(chain_data)
         logger.info(f"Max Pain Strike: {max_pain}")
 
-        # Use Max Pain as center if close to Spot (within 1%)
+        # Determine Center Price
+        # Start with Spot
         center_price = spot
-        if max_pain and abs(spot - max_pain) < (spot * 0.01):
-            logger.info("Using Max Pain as Center Price for Strike Selection")
+
+        # Adjust for Gap if significant (> 0.5%)
+        # If Gap Up, maybe market is bullish, so center slightly higher?
+        # Or if Gap is large, we might want to center around the gap opening?
+        # Standard Iron Condor is neutral. If gap is huge, maybe we skew.
+        # Implementation: Skew center by half the gap
+        if abs(self.gap_pct) > 0.5:
+             skew = spot * (self.gap_pct / 100) * 0.5
+             center_price += skew
+             logger.info(f"Adjusting Center Price by {skew:.2f} due to Gap {self.gap_pct}%")
+
+        # Use Max Pain if close to our adjusted center (within 0.5%)
+        if max_pain and abs(center_price - max_pain) < (center_price * 0.005):
+            logger.info("Using Max Pain as Center Price (alignment with Spot/Gap)")
             center_price = max_pain
 
         # Target Delta for Shorts
@@ -94,7 +110,7 @@ class DeltaNeutralIronCondor:
                 ce_greeks = calculate_greeks(spot, strike, T, r, iv_ce, 'ce')
                 ce_delta = ce_greeks.get('delta', 0.5)
 
-                if strike > spot and abs(ce_delta - target_delta) < best_ce_diff:
+                if strike > center_price and abs(ce_delta - target_delta) < best_ce_diff:
                     best_ce_diff = abs(ce_delta - target_delta)
                     ce_short = strike
 
@@ -102,7 +118,7 @@ class DeltaNeutralIronCondor:
                 pe_greeks = calculate_greeks(spot, strike, T, r, iv_pe, 'pe')
                 pe_delta = abs(pe_greeks.get('delta', -0.5))
 
-                if strike < spot and abs(pe_delta - target_delta) < best_pe_diff:
+                if strike < center_price and abs(pe_delta - target_delta) < best_pe_diff:
                     best_pe_diff = abs(pe_delta - target_delta)
                     pe_short = strike
 
@@ -135,12 +151,18 @@ class DeltaNeutralIronCondor:
     def execute(self):
         logger.info(f"Starting execution for {self.symbol}")
 
+        # Risk Check
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.warning(f"Risk Manager Block: {reason}")
+            return
+
         vix = self.get_vix()
         logger.info(f"Current VIX: {vix}")
 
-        # VIX Filters
-        if vix < 12:
-            logger.warning(f"VIX {vix} < 12. Too low for Iron Condor (Low Premium/High Gamma Risk). Skipping.")
+        # Strict VIX Filters
+        if vix < 20:
+            logger.warning(f"VIX {vix} < 20. Strategy requires High VIX for selling premium. Skipping.")
             return
 
         if vix > self.max_vix:
@@ -180,6 +202,9 @@ class DeltaNeutralIronCondor:
         # In real scenario:
         # self.client.placesmartorder(...)
 
+        # Register risk
+        self.rm.register_entry(self.symbol, self.qty, spot, "SHORT_IC") # Simplified registration
+
         logger.info("Strategy execution completed (Simulation).")
 
 def main():
@@ -188,10 +213,11 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
     parser.add_argument("--sentiment_score", type=float, default=None, help="External Sentiment Score (0.0-1.0)")
+    parser.add_argument("--gap_pct", type=float, default=0.0, help="Overnight Gap %%")
     args = parser.parse_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score)
+    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score, gap_pct=args.gap_pct)
     strategy.execute()
 
 if __name__ == "__main__":
