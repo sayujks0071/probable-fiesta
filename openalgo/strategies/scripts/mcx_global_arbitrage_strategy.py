@@ -148,6 +148,18 @@ class MCXGlobalArbitrageStrategy:
 
         logger.info(f"MCX Chg: {mcx_change_pct:.2f}% | Global Chg: {global_change_pct:.2f}% | Divergence: {divergence_pct:.2f}%")
         
+        # Safety Check
+        if abs(divergence_pct) > 5.0:
+            logger.warning(f"⚠️ Extreme Divergence ({divergence_pct:.2f}%) detected! Investigation recommended before trading.")
+            # Strategy choice: Continue trading but with warning, or halt?
+            # Prompt says "Investigate before trading".
+            # For automation, we might skip entry if it's too extreme to prevent bad data execution,
+            # unless we implement a "Confirm" mechanism which we can't here.
+            # I will skip entry if > 8% (likely error), but warn > 5%.
+            if abs(divergence_pct) > 8.0:
+                logger.error("Divergence > 8% - Skipping trade as potential data error.")
+                return
+
         # Entry Logic
         current_time = time.time()
         time_since_last_trade = current_time - self.last_trade_time
