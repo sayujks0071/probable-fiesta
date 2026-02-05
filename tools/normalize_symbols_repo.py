@@ -10,6 +10,11 @@ from collections import defaultdict
 
 # Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from openalgo.strategies.utils.mcx_utils import normalize_mcx_string
+
 DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
@@ -33,16 +38,6 @@ def load_instruments():
         print(f"Warning: Failed to load instruments: {e}")
         return None
 
-def normalize_mcx_symbol(match):
-    symbol = match.group(1).upper()
-    day = int(match.group(2))
-    month = match.group(3).upper()
-    year = match.group(4)
-
-    # Normalize: Pad day with 0 if needed
-    normalized = f"{symbol}{day:02d}{month}{year}FUT"
-    return normalized
-
 def scan_file(filepath, instruments, strict=False):
     issues = []
     normalized_content = ""
@@ -54,7 +49,7 @@ def scan_file(filepath, instruments, strict=False):
     def replacement_handler(match):
         nonlocal changes_made
         original = match.group(0)
-        normalized = normalize_mcx_symbol(match)
+        normalized = normalize_mcx_string(original)
 
         # Validation
         month = match.group(3).upper()

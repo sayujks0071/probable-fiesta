@@ -21,6 +21,8 @@ REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
+from openalgo.strategies.utils.mcx_utils import normalize_mcx_string
+
 def check_instruments_freshness():
     if not os.path.exists(INSTRUMENTS_FILE):
         return False, "Instruments file missing"
@@ -112,7 +114,7 @@ def scan_files_for_hardcoded_symbols(instruments):
                         continue
 
                     # Normalized form:
-                    normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
+                    normalized = normalize_mcx_string(symbol_str)
 
                     if symbol_str != normalized:
                          issues.append({
