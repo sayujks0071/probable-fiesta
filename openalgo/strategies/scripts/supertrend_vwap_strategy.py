@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """
 
+# [Optimization 2026-02-05] Changes: threshold: 130.0 -> 125 (Lowered due to Rejection 95.0%)
+
+# [Optimization 2026-02-05] Changes: threshold: 135.0 -> 130 (Lowered due to Rejection 100.0%)
+
+# [Optimization 2026-02-05] Changes: threshold: 140.0 -> 135 (Lowered due to Rejection 100.0%)
+
+# [Optimization 2026-02-05] Changes: threshold: 145.0 -> 140 (Lowered due to Rejection 100.0%)
+
+# [Optimization 2026-02-05] Changes: threshold: 150.0 -> 145 (Lowered due to Rejection 100.0%)
+
 # [Optimization 2026-01-31] Changes: threshold: 155 -> 150 (Lowered due to Rejection 100.0%)
 SuperTrend VWAP Strategy
 VWAP mean reversion with volume profile analysis, Enhanced Sector RSI Filter, and Dynamic Risk.
@@ -73,7 +83,7 @@ class SuperTrendVWAPStrategy:
         self.sector_benchmark = sector_benchmark
 
         # Optimization Parameters
-        self.threshold = 150
+        self.threshold = 125
         self.stop_pct = 1.8
         self.adx_threshold = 20  # Added ADX Filter
         self.adx_period = 14

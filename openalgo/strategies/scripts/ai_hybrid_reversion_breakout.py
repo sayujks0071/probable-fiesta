@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """
 
+# [Optimization 2026-02-05] Changes: rsi_lower: 25.0 -> 20.0 (Tightened due to WR 40.0%), stop_pct: 0.6000000000000001 -> 0.5 (Optimized due to R:R 2.00)
+
+# [Optimization 2026-02-05] Changes: rsi_lower: 30.0 -> 25.0 (Tightened due to WR 40.0%), stop_pct: 0.8 -> 0.6000000000000001 (Optimized due to R:R 2.00)
+
+# [Optimization 2026-02-05] Changes: rsi_lower: 35.0 -> 30.0 (Tightened due to WR 40.0%), stop_pct: 1.0 -> 0.8 (Optimized due to R:R 2.00)
+
 # [Optimization 2026-01-31] Changes: rsi_lower: 30.0 -> 35.0 (Relaxed due to WR 100.0%)
 AI Hybrid Reversion Breakout Strategy
 Enhanced with Sector Rotation, Market Breadth, Earnings Filter, and VIX Sizing.
@@ -323,7 +329,7 @@ def run_strategy():
     parser.add_argument('--symbol', type=str, required=True, help='Stock Symbol')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key (or set OPENALGO_APIKEY env var)')
-    parser.add_argument('--rsi_lower', type=float, default=35.0, help='RSI Lower Threshold')
+    parser.add_argument('--rsi_lower', type=float, default=20.0, help='RSI Lower Threshold')
     parser.add_argument('--sector', type=str, default='NIFTY 50', help='Sector Benchmark')
     parser.add_argument('--earnings_date', type=str, help='Earnings Date YYYY-MM-DD')
     parser.add_argument("--logfile", type=str, help="Log file path")
@@ -359,7 +365,7 @@ def generate_signal(df, client=None, symbol=None, params=None):
     strat_params = {
         'rsi_lower': 30.0,
         'rsi_upper': 60.0,
-        'stop_pct': 1.0,
+        'stop_pct': 0.5,
         'sector': 'NIFTY 50'
     }
     if params:

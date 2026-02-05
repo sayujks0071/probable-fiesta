@@ -27,6 +27,8 @@ TUNABLE_PARAMS = {
     'supertrend_vwap': ['threshold', 'stop_pct'],
     'ai_hybrid': ['rsi_lower', 'rsi_upper', 'stop_pct'],
     'orb': ['range_minutes', 'stop_loss_pct'],
+    'gap_fade': ['threshold'],
+    'mcx_commodity_momentum': ['adx_threshold', 'min_atr'],
     'default': ['threshold', 'stop_pct', 'stop_loss_pct', 'target_pct']
 }
 
@@ -43,7 +45,9 @@ class StrategyOptimizer:
         for log_file in log_files:
             filename = os.path.basename(log_file)
             # Assuming filename format: strategy_name_SYMBOL.log
+            # Handle cases where strategy name has underscores
             parts = filename.replace('.log', '').split('_')
+            # Heuristic: Symbol is usually the last part, usually uppercase
             symbol = parts[-1]
             strategy_name = "_".join(parts[:-1])
 
@@ -69,8 +73,13 @@ class StrategyOptimizer:
 
                 # Entry Detection
                 if "BUY" in line or "SELL" in line:
-                    if "Signal" in line or "Crossover" in line: # Avoid double counting updates
+                    # Count as entry if it looks like an execution or update,
+                    # but try to avoid counting just 'Signal: BUY' if that's counted as signal
+                    if "Order" in line or "Executed" in line or "Filled" in line or "Position" in line:
                         entries += 1
+                    elif "Signal" in line or "Crossover" in line:
+                         # Legacy support: if the log only has "Signal: BUY" to denote entry
+                         entries += 1
 
                 # Exit / PnL Detection
                 if "PnL:" in line:
@@ -85,10 +94,8 @@ class StrategyOptimizer:
                             gross_loss += abs(val)
                     except: pass
                 elif "Trailing Stop Hit" in line:
-                    # Fallback if PnL not logged explicitly, assume small win or track entry
-                    # specific to supertrend mock
-                    wins += 1 # Assumption for this specific log format
-                    gross_win += 100 # Dummy value
+                    wins += 1
+                    gross_win += 100
 
             total_trades = wins + losses
             win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
@@ -105,10 +112,7 @@ class StrategyOptimizer:
                 error_free_rate = max(0, 1 - (errors / (len(lines) if len(lines) > 0 else 1)))
 
             # Score Calculation
-            # Score = (Win Rate × 0.3) + (Profit Factor × 0.3) + (Sharpe × 0.2) + (Entry Rate × 0.1) + (Error-Free Rate × 0.1)
-            # Sharpe is hard to calc from daily summary, use R:R as proxy or set to 1.0
             sharpe_proxy = min(rr_ratio, 3.0) # Cap at 3
-
             score = (win_rate * 0.3) + (min(profit_factor, 10) * 10 * 0.3) + (sharpe_proxy * 20 * 0.2) + ((entries/signals if signals else 0) * 100 * 0.1) + (error_free_rate * 100 * 0.1)
 
             self.metrics[strategy_name] = {
@@ -125,12 +129,68 @@ class StrategyOptimizer:
                 'score': score
             }
 
+    def _update_param_in_content(self, content, param, change_func):
+        """
+        Helper to find and update a parameter in content using regex.
+        Supports: self.param = X, parser default=X, dict key: X
+        """
+        new_content = content
+        change_desc = None
+
+        # 1. Try 'self.param = val'
+        pattern_self = fr"(self\.{param}\s*=\s*)(\d+\.?\d*)"
+        match = re.search(pattern_self, content)
+        if match:
+            current_val = float(match.group(2))
+            new_val = change_func(current_val)
+            # Preserve int if original was int
+            if '.' not in match.group(2):
+                new_val = int(new_val)
+
+            new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
+            change_desc = f"{param}: {current_val} -> {new_val}"
+            return new_content, change_desc
+
+        # 2. Try 'parser.add_argument... --param ... default=val'
+        # Note: arg name might match param name exactly or be related
+        pattern_arg = fr"(parser\.add_argument\(['\"]--{param}['\"].*default=)(\d+\.?\d*)"
+        match = re.search(pattern_arg, content)
+        if match:
+            current_val = float(match.group(2))
+            new_val = change_func(current_val)
+            if '.' not in match.group(2):
+                new_val = int(new_val)
+
+            new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
+            change_desc = f"{param}: {current_val} -> {new_val}"
+            return new_content, change_desc
+
+        # 3. Try dict key 'param': val (common in PARAMS = { ... })
+        pattern_dict = fr"('{param}'\s*:\s*)(\d+\.?\d*)"
+        match = re.search(pattern_dict, content)
+        if match:
+            current_val = float(match.group(2))
+            new_val = change_func(current_val)
+            if '.' not in match.group(2):
+                new_val = int(new_val)
+
+            new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
+            change_desc = f"{param}: {current_val} -> {new_val}"
+            return new_content, change_desc
+
+        return new_content, None
+
     def optimize_strategies(self):
         for strategy, data in self.metrics.items():
             filepath = os.path.join(STRATEGIES_DIR, f"{strategy}.py")
             if not os.path.exists(filepath):
-                logger.warning(f"Strategy file not found: {filepath}")
-                continue
+                # Try adding _strategy suffix if missing
+                filepath_suffix = os.path.join(STRATEGIES_DIR, f"{strategy}_strategy.py")
+                if os.path.exists(filepath_suffix):
+                    filepath = filepath_suffix
+                else:
+                    logger.warning(f"Strategy file not found: {filepath}")
+                    continue
 
             with open(filepath, 'r') as f:
                 content = f.read()
@@ -141,6 +201,7 @@ class StrategyOptimizer:
 
             # Determine tunable params for this strategy
             target_params = TUNABLE_PARAMS.get('default', [])
+            # Find best match key in TUNABLE_PARAMS
             for key in TUNABLE_PARAMS:
                 if key in strategy:
                     target_params = TUNABLE_PARAMS[key]
@@ -148,80 +209,83 @@ class StrategyOptimizer:
 
             # 1. High Rejection Rate (> 70%) -> Lower Threshold
             if data['rejection'] > 70:
-                param = 'threshold'
-                if param in target_params:
-                    # Look for self.threshold = X or default=X
-                    match = re.search(r"(self\.threshold\s*=\s*)(\d+)", content)
-                    if match:
-                        current_val = int(match.group(2))
-                        new_val = max(0, current_val - 5)
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
-                        changes.append(f"threshold: {current_val} -> {new_val} (Lowered due to Rejection {data['rejection']:.1f}%)")
+                param_to_tune = 'threshold' # Default
+                if 'gap_fade' in strategy: param_to_tune = 'threshold'
+
+                if param_to_tune in target_params:
+                    # Decrease by 5 (or 2 if small)
+                    def decrease_func(val):
+                        if val < 5: return max(0.1, val - 0.2) # Small float vals
+                        return max(0, val - 5)
+
+                    new_content, desc = self._update_param_in_content(new_content, param_to_tune, decrease_func)
+                    if desc:
+                        changes.append(f"{desc} (Lowered due to Rejection {data['rejection']:.1f}%)")
                         modified = True
 
             # 2. Low Win Rate (< 60%) -> Tighten Filters
             if data['wr'] < 60:
-                # Tighten RSI Lower (make it lower)
-                if 'rsi_lower' in target_params:
-                     match = re.search(r"(parser\.add_argument\('--rsi_lower'.*default=)(\d+\.?\d*)", content)
-                     if match:
-                        current_val = float(match.group(2))
-                        new_val = max(10, current_val - 5)
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
-                        changes.append(f"rsi_lower: {current_val} -> {new_val} (Tightened due to WR {data['wr']:.1f}%)")
-                        modified = True
+                # Prioritize specific params
+                params_to_tighten = []
+                if 'rsi_lower' in target_params: params_to_tighten.append('rsi_lower')
+                if 'threshold' in target_params: params_to_tighten.append('threshold')
 
-                # Tighten Threshold (make it higher)
-                if 'threshold' in target_params and not modified: # Don't double adjust if handled by rejection
-                     match = re.search(r"(self\.threshold\s*=\s*)(\d+)", content)
-                     if match:
-                        current_val = int(match.group(2))
-                        new_val = current_val + 5
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
-                        changes.append(f"threshold: {current_val} -> {new_val} (Tightened due to WR {data['wr']:.1f}%)")
-                        modified = True
+                for param in params_to_tighten:
+                    if modified: break # One change per run usually enough? Let's do multiple if needed.
 
-            # 3. High Win Rate (> 80%) -> Relax Filters
+                    def tighten_func(val):
+                        # Context dependent.
+                        # RSI Lower: Lowering it is tightening (harder to hit < 25 than < 30)
+                        if 'rsi_lower' in param: return max(10, val - 5)
+                        # Threshold: Increasing it is tightening (usually)
+                        if 'threshold' in param: return val + 5
+                        return val
+
+                    new_content, desc = self._update_param_in_content(new_content, param, tighten_func)
+                    if desc:
+                         changes.append(f"{desc} (Tightened due to WR {data['wr']:.1f}%)")
+                         modified = True
+
+            # 3. High Win Rate (> 80%) -> Relax Filters (e.g. Gap Fade)
             elif data['wr'] > 80:
-                if 'rsi_lower' in target_params:
-                     match = re.search(r"(parser\.add_argument\('--rsi_lower'.*default=)(\d+\.?\d*)", content)
-                     if match:
-                        current_val = float(match.group(2))
-                        new_val = min(40, current_val + 5)
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
-                        changes.append(f"rsi_lower: {current_val} -> {new_val} (Relaxed due to WR {data['wr']:.1f}%)")
+                params_to_relax = []
+                if 'rsi_lower' in target_params: params_to_relax.append('rsi_lower')
+                if 'threshold' in target_params: params_to_relax.append('threshold') # e.g. Gap Fade threshold: Lower = stricter?
+                # Wait, Gap Fade: Threshold is min gap size. If gap > threshold, we trade.
+                # So decreasing threshold means we trade smaller gaps -> More trades -> Relaxing entry.
+                # Correct.
+
+                for param in params_to_relax:
+                     def relax_func(val):
+                        if 'rsi_lower' in param: return min(40, val + 5)
+                        if 'threshold' in param:
+                            if val < 5: return max(0.1, val - 0.1) # Gap Fade small float
+                            return max(0, val - 5)
+                        return val
+
+                     new_content, desc = self._update_param_in_content(new_content, param, relax_func)
+                     if desc:
+                         changes.append(f"{desc} (Relaxed due to WR {data['wr']:.1f}%)")
+                         modified = True
+
+            # 4. Low R:R (< 1.5) or Low Profit Factor -> Tighten Risk or Filters
+            if (data['rr'] < 1.0 or data['pf'] < 1.5) and data['wr'] < 80:
+                # Tune ADX (Momentum) or Stop Loss
+                params_to_tune = []
+                if 'adx_threshold' in target_params: params_to_tune.append('adx_threshold')
+                if 'stop_pct' in target_params: params_to_tune.append('stop_pct')
+
+                for param in params_to_tune:
+                    def optimize_risk(val):
+                        if 'adx_threshold' in param: return val + 2 # Higher ADX = Stronger trend requirement
+                        if 'stop_pct' in param: return max(0.5, val - 0.2) # Tighter stop
+                        return val
+
+                    new_content, desc = self._update_param_in_content(new_content, param, optimize_risk)
+                    if desc:
+                        changes.append(f"{desc} (Optimized due to R:R {data['rr']:.2f})")
                         modified = True
 
-                if 'threshold' in target_params:
-                     match = re.search(r"(self\.threshold\s*=\s*)(\d+)", content)
-                     if match:
-                        current_val = int(match.group(2))
-                        new_val = max(0, current_val - 5)
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
-                        changes.append(f"threshold: {current_val} -> {new_val} (Relaxed due to WR {data['wr']:.1f}%)")
-                        modified = True
-
-            # 4. Low R:R (< 1.5) -> Tighten Stop (reduce stop_pct)
-            if data['rr'] < 1.5 and data['wr'] < 80: # If WR is super high, maybe low RR is fine (scalping)
-                if 'stop_pct' in target_params:
-                    # Regex for self.stop_pct = X or default=X
-                    # Check class attr
-                    match = re.search(r"(self\.stop_pct\s*=\s*)(\d+\.?\d*)", content)
-                    if match:
-                        current_val = float(match.group(2))
-                        new_val = max(0.5, current_val - 0.2)
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val:.1f}")
-                        changes.append(f"stop_pct: {current_val} -> {new_val:.1f} (Tightened due to R:R {data['rr']:.2f})")
-                        modified = True
-                    else:
-                        # Check argparse
-                        match = re.search(r"(parser\.add_argument\('--stop_pct'.*default=)(\d+\.?\d*)", content)
-                        if match:
-                             current_val = float(match.group(2))
-                             new_val = max(0.5, current_val - 0.2)
-                             new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val:.1f}")
-                             changes.append(f"stop_pct: {current_val} -> {new_val:.1f} (Tightened due to R:R {data['rr']:.2f})")
-                             modified = True
 
             if modified:
                 # Add comment with date
@@ -282,8 +346,6 @@ class StrategyOptimizer:
                 f.write(f"{i+1}. {name} - Score: {score:.1f} - Action: Start/Restart\n")
 
         print(f"Report generated: {report_file}")
-        # with open(report_file, 'r') as f:
-        #     print(f.read())
 
     def generate_deployment_script(self):
         script_path = os.path.join(REPO_ROOT, 'scripts', 'deploy_daily_optimized.sh')
@@ -296,8 +358,6 @@ class StrategyOptimizer:
             f.write("echo 'Starting optimized strategies...'\n")
             for strategy in self.strategies_to_deploy:
                 symbol = self.metrics.get(strategy, {}).get('symbol', 'NIFTY')
-                # Check if we have specific port requirements or other args
-                # For now, default args
                 f.write(f"nohup python3 openalgo/strategies/scripts/{strategy}.py --symbol {symbol} --api_key $OPENALGO_APIKEY > openalgo/log/strategies/{strategy}_{symbol}.log 2>&1 &\n")
 
             f.write("\necho 'Deployment complete.'\n")
