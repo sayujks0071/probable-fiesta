@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
 """
+
+# [Optimization 2026-02-05] Changes: adx_threshold: 33.0 -> 35 (Optimized due to R:R 0.80)
+
+# [Optimization 2026-02-05] Changes: adx_threshold: 31.0 -> 33 (Optimized due to R:R 0.80)
+
+# [Optimization 2026-02-05] Changes: adx_threshold: 29.0 -> 31 (Optimized due to R:R 0.80)
+
+# [Optimization 2026-02-05] Changes: adx_threshold: 27.0 -> 29 (Optimized due to R:R 0.80)
+
+# [Optimization 2026-02-05] Changes: adx_threshold: 25.0 -> 27 (Optimized due to R:R 0.80)
 MCX Commodity Momentum Strategy
 Momentum strategy using ADX and RSI with proper API integration.
 Enhanced with Multi-Factor inputs (USD/INR, Seasonality).
@@ -282,7 +292,7 @@ if __name__ == "__main__":
         'period_adx': 14,
         'period_rsi': 14,
         'period_atr': 14,
-        'adx_threshold': 25,
+        'adx_threshold': 35,
         'min_atr': 10,
         'risk_per_trade': 0.02,
         'usd_inr_trend': args.usd_inr_trend,
@@ -334,7 +344,7 @@ DEFAULT_PARAMS = {
     'period_adx': 14,
     'period_rsi': 14,
     'period_atr': 14,
-    'adx_threshold': 25,
+    'adx_threshold': 35,
     'min_atr': 10,
     'risk_per_trade': 0.02,
 }
