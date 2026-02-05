@@ -209,7 +209,8 @@ class SuperTrendVWAPStrategy:
             dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
             adx = dx.rolling(period).mean().iloc[-1]
             return 0 if np.isnan(adx) else adx
-        except:
+        except Exception as e:
+            self.logger.error(f"Error calculating ADX: {e}")
             return 0
 
     def analyze_volume_profile(self, df, n_bins=20):

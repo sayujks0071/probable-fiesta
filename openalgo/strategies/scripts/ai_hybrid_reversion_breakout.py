@@ -274,6 +274,20 @@ class AIHybridStrategy:
                 df['upper'] = df['sma20'] + (2 * df['std'])
                 df['lower'] = df['sma20'] - (2 * df['std'])
 
+                # Calculate ATR for Sizing
+                tr1 = df['high'] - df['low']
+                tr2 = (df['high'] - df['close'].shift(1)).abs()
+                tr3 = (df['low'] - df['close'].shift(1)).abs()
+                tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+                atr = tr.rolling(14).mean().iloc[-1]
+
+                risk_amount = 1000.0
+                if atr > 0:
+                    base_qty = int(risk_amount / (2.0 * atr))
+                    base_qty = max(1, min(base_qty, 500))
+                else:
+                    base_qty = 50
+
                 last = df.iloc[-1]
                 current_price = last['close']
 
@@ -299,8 +313,8 @@ class AIHybridStrategy:
                     avg_vol = df['volume'].rolling(20).mean().iloc[-1]
                     # Enhanced Volume Confirmation (Stricter than average)
                     if last['volume'] > avg_vol * 1.2:
-                        qty = int(100 * size_multiplier)
-                        self.logger.info("Oversold Reversion Signal (RSI<30, <LowerBB, Vol>1.2x). BUY.")
+                        qty = int(base_qty * size_multiplier)
+                        self.logger.info(f"Oversold Reversion Signal (RSI<30, <LowerBB, Vol>1.2x). BUY {qty} (ATR: {atr:.2f})")
                         self.pm.update_position(qty, current_price, 'BUY')
 
                 # Breakout Logic: RSI > 60 and Price > Upper BB
@@ -308,8 +322,8 @@ class AIHybridStrategy:
                     avg_vol = df['volume'].rolling(20).mean().iloc[-1]
                     # Breakout needs significant volume (2x avg)
                     if last['volume'] > avg_vol * 2.0:
-                         qty = int(100 * size_multiplier)
-                         self.logger.info("Breakout Signal (RSI>60, >UpperBB, Vol>2x). BUY.")
+                         qty = int(base_qty * size_multiplier)
+                         self.logger.info(f"Breakout Signal (RSI>60, >UpperBB, Vol>2x). BUY {qty} (ATR: {atr:.2f})")
                          self.pm.update_position(qty, current_price, 'BUY')
 
             except Exception as e:
