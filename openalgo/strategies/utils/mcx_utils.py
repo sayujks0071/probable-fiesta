@@ -33,4 +33,7 @@ def normalize_mcx_string(symbol_str):
     month = match.group(3).upper()
     year = match.group(4)
 
+    if month not in ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]:
+        return symbol_str
+
     return f"{sym}{day:02d}{month}{year}FUT"
