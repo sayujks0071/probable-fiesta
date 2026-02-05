@@ -9,6 +9,7 @@ import time
 import json
 import logging
 import argparse
+import re
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -46,7 +47,7 @@ STRATEGY_TEMPLATES = {
     'Momentum': 'mcx_commodity_momentum_strategy.py',
     'Arbitrage': 'mcx_global_arbitrage_strategy.py',
     'Spread': 'mcx_inter_commodity_spread_strategy.py',
-    'MeanReversion': 'mcx_commodity_momentum_strategy.py', # Fallback
+    'MeanReversion': 'mcx_seasonal_mean_reversion.py',
 }
 
 # Setup Logging
@@ -155,6 +156,30 @@ class AdvancedMCXStrategy:
             self.market_context[f"global_{comm['name'].lower()}"] = 100.0 # Dummy
             comm['global_trend'] = 'Neutral'
             comm['global_change_pct'] = 0.0
+
+    def check_rollover(self, symbol):
+        """
+        Check if the symbol is expiring within 5 days.
+        Format: GOLDM05FEB26FUT
+        """
+        try:
+            # Parse Date from Symbol using regex
+            # Assuming format: {SYMBOL}{DD}{MMM}{YY}FUT
+            # e.g. GOLDM05FEB26FUT -> 05 FEB 26
+            match = re.search(r'(\d{2})([A-Z]{3})(\d{2})', symbol)
+            if match:
+                day = int(match.group(1))
+                month_str = match.group(2)
+                year = int("20" + match.group(3))
+
+                expiry_date = datetime.strptime(f"{day} {month_str} {year}", "%d %b %Y")
+                days_to_expiry = (expiry_date - datetime.now()).days
+
+                return days_to_expiry < 5, days_to_expiry
+        except Exception as e:
+            logger.warning(f"Could not parse expiry for {symbol}: {e}")
+
+        return False, 99
 
     def fetch_mcx_data(self):
         """
@@ -329,6 +354,12 @@ class AdvancedMCXStrategy:
                     seasonality_score * 0.05
                 )
 
+                # Rollover Check
+                is_rollover, days_left = self.check_rollover(comm['symbol'])
+                if is_rollover:
+                    logger.warning(f"{comm['symbol']} is in rollover period ({days_left} days left). Penalty applied.")
+                    composite_score *= 0.7 # Penalty
+
                 # Determine Strategy
                 strategy_type = 'Momentum'
                 if composite_score < 50:
@@ -337,8 +368,11 @@ class AdvancedMCXStrategy:
                     strategy_type = 'Arbitrage' # Divergence detected
                     # Boost score for Arbitrage view
                     composite_score = (composite_score + 100) / 2
-                elif momentum_score < 40 and seasonality_score > 80:
-                    strategy_type = 'MeanReversion' # Seasonal Buy
+                elif (momentum_score < 30 and seasonality_score > 70) or (momentum_score > 70 and seasonality_score < 30):
+                    strategy_type = 'MeanReversion' # Seasonal Counter-Trend
+
+                if is_rollover and days_left < 2:
+                    strategy_type = 'Avoid' # Too close to expiry
 
                 self.opportunities.append({
                     'symbol': comm['symbol'],
@@ -355,6 +389,7 @@ class AdvancedMCXStrategy:
                         'seasonality_score': seasonality_score,
                         'fundamental_score': fundamental_score,
                         'fundamental_note': fundamental_note,
+                        'rollover_days': days_left,
                         'adx': trend_val,
                         'rsi': rsi,
                         'atr': atr,
@@ -406,6 +441,8 @@ class AdvancedMCXStrategy:
                 print(f"   ⚠️ High Currency Risk: Position size reduced to {risk_pct}%")
 
             print(f"   - Rationale: Strong multi-factor alignment. Strategy: {opp['strategy_type']}")
+            if d['rollover_days'] < 5:
+                print(f"   ⚠️ Rollover Warning: Expiry in {d['rollover_days']} days")
 
             top_picks.append(opp)
             if len(top_picks) >= 6: break # Top 6

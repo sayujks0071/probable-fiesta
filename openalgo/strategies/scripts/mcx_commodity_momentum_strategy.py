@@ -193,8 +193,8 @@ class MCXMomentumStrategy:
             has_position = self.pm.has_position()
 
         # Multi-Factor Checks
-        seasonality_ok = self.params.get('seasonality_score', 50) > 40
-        global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
+        seasonality_ok = self.params.get('seasonality_score', 50) >= 40
+        global_alignment_ok = self.params.get('global_alignment_score', 50) >= 50
         usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
 
         # Adjust Position Size
@@ -271,7 +271,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
