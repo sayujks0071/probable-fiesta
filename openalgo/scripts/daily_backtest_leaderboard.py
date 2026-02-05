@@ -19,7 +19,14 @@ except ImportError:
     sys.path.append(os.path.join(repo_root, 'openalgo', 'strategies', 'utils'))
     from simple_backtest_engine import SimpleBacktestEngine
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Configure Logging
+try:
+    from openalgo_observability.logging_setup import setup_logging
+    setup_logging()
+except ImportError:
+    # Fallback if module not found
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 logger = logging.getLogger("Leaderboard")
 
 STRATEGIES = [

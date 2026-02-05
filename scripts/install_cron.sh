@@ -1,20 +1,22 @@
 #!/bin/bash
-# Install Crontab entry (fallback)
+set -e
 
-SCRIPT_DIR=$(cd $(dirname $0) && pwd)
-SCRIPT_PATH="$SCRIPT_DIR/healthcheck.py"
-PYTHON_EXEC=$(which python3)
+# Resolve repo root relative to this script
+REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SCRIPT_PATH="$REPO_ROOT/scripts/healthcheck.py"
+LOG_FILE="$REPO_ROOT/logs/cron_health.log"
+CRON_CMD="*/5 * * * * cd $REPO_ROOT && /usr/bin/python3 scripts/healthcheck.py >> $LOG_FILE 2>&1"
 
-echo "Installing Cron job..."
+if [ ! -f "$SCRIPT_PATH" ]; then
+    echo "Error: healthcheck.py not found at $SCRIPT_PATH"
+    exit 1
+fi
 
-# Remove existing entry to avoid duplicates
-crontab -l 2>/dev/null | grep -v "healthcheck.py" > /tmp/cron_backup
+# Check if job already exists
+(crontab -l 2>/dev/null | grep -F "$SCRIPT_PATH") && echo "Cron job already exists." && exit 0
 
-# Add new entry
-echo "*/5 * * * * $PYTHON_EXEC $SCRIPT_PATH >> /tmp/openalgo_cron.log 2>&1" >> /tmp/cron_backup
-
-crontab /tmp/cron_backup
-rm /tmp/cron_backup
+echo "Adding cron job..."
+(crontab -l 2>/dev/null; echo "$CRON_CMD") | crontab -
 
 echo "✅ Cron job installed."
 crontab -l | grep healthcheck.py

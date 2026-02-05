@@ -30,6 +30,9 @@ def run_script(script_path, description):
     try:
         env = os.environ.copy()
         env['PYTHONPATH'] = os.getcwd() + ":" + env.get('PYTHONPATH', '')
+        # Ensure subprocesses re-initialize logging
+        if 'OPENALGO_LOGGING_SETUP_DONE' in env:
+            del env['OPENALGO_LOGGING_SETUP_DONE']
 
         # Use venv if exists, else system python
         venv_python = os.path.join("openalgo", "venv", "bin", "python3")
