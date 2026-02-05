@@ -68,9 +68,7 @@ def generate_auth_url(broker, api_key=None):
     if broker == 'zerodha':
         return f"https://kite.zerodha.com/connect/login?v=3&api_key={api_key}"
     elif broker == 'dhan':
-        # Dhan usually uses a client ID based login or web flow
-        client_id = os.getenv("BROKER_API_KEY", "").split(":::")[0] if ":::" in os.getenv("BROKER_API_KEY", "") else "YOUR_CLIENT_ID"
-        return f"https://auth.dhan.co/login"  # Generic login page as specific OAuth requires client setup
+        return f"https://auth.dhan.co/login"
     return "https://openalgo.in/brokers" # Fallback
 
 def get_db_token_status(broker_name):
@@ -149,6 +147,12 @@ def get_strategy_auth_status():
     except:
         return 0, 0, ["Config Read Error"]
 
+def get_config_status(key, default_marker="YOUR_"):
+    val = os.getenv(key, "")
+    if not val or default_marker in val:
+        return "⚠️ Not Configured"
+    return "✅ Configured"
+
 def main():
     now = datetime.datetime.now()
     date_str = now.strftime("%Y-%m-%d")
@@ -157,16 +161,18 @@ def main():
     print(f"🔐 DAILY LOGIN HEALTH CHECK - [{date_str}] [{time_str}]\n")
 
     # KITE (5001)
-    # Check 'zerodha' as broker name for Kite
     kite_port_up = check_port(5001)
     kite_api_up = check_url("http://127.0.0.1:5001/api/v1/user/profile") if kite_port_up else False
     kite_token_status, kite_expiry = get_db_token_status('zerodha')
+
+    redirect_status = get_config_status("REDIRECT_URL")
 
     print(f"✅ KITE CONNECT (Port 5001):")
     print(f"- Server Status: {'✅ Running' if kite_port_up else '🔴 Down'}")
     print(f"- Auth Token: {kite_token_status}")
     print(f"- Token Expiry: {kite_expiry}")
     print(f"- API Test: {'✅ Connected' if kite_api_up else ('⚠️ Failed' if kite_port_up else '🔴 Failed')}")
+    print(f"- Redirect URL: {redirect_status}")
     print(f"- Last Refresh: Unknown")
     print("")
 
@@ -174,11 +180,12 @@ def main():
     dhan_port_up = check_port(5002)
     dhan_api_up = check_url("http://127.0.0.1:5002/api/v1/user/profile") if dhan_port_up else False
     dhan_token_status, dhan_expiry = get_db_token_status('dhan')
+    client_id_status = get_config_status("BROKER_API_KEY")
 
     print(f"✅ DHAN API (Port 5002):")
     print(f"- Server Status: {'✅ Running' if dhan_port_up else '🔴 Down'}")
     print(f"- Access Token: {dhan_token_status}")
-    print(f"- Client ID: ✅ Configured")
+    print(f"- Client ID: {client_id_status}")
     print(f"- API Test: {'✅ Connected' if dhan_api_up else ('⚠️ Failed' if dhan_port_up else '🔴 Failed')}")
     print(f"- Last Refresh: Unknown")
     print("")
@@ -186,10 +193,12 @@ def main():
     # OPENALGO AUTH
     oa_auth_status = check_openalgo_auth()
     strat_total, strat_valid, strat_errors = get_strategy_auth_status()
+    pepper_status = "✅ Set" if os.getenv("API_KEY_PEPPER") else "🔴 Missing"
 
     print(f"✅ OPENALGO AUTH:")
     print(f"- Login Status: {oa_auth_status}")
     print(f"- API Keys: {strat_valid}/{strat_total} strategies configured")
+    print(f"- API Pepper: {pepper_status}")
     print(f"- CSRF Handling: ✅ Working")
     print("")
 
@@ -218,6 +227,14 @@ def main():
     if "Unknown (DB Error)" in kite_token_status or "Unknown (DB Error)" in dhan_token_status:
          issues.append("DB Connectivity Error")
          manual_actions.append("Check Database configuration in .env")
+
+    if "Not Configured" in redirect_status:
+        issues.append("Redirect URL not configured in .env")
+        manual_actions.append("Set REDIRECT_URL in .env")
+
+    if "Not Configured" in client_id_status:
+        issues.append("Broker API Key / Client ID not configured in .env")
+        manual_actions.append("Set BROKER_API_KEY in .env")
 
     print(f"⚠️ ISSUES DETECTED:")
     if issues:
