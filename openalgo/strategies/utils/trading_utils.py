@@ -124,7 +124,9 @@ class PositionManager:
         # this file: openalgo/strategies/utils/trading_utils.py
         # target: openalgo/strategies/state/
         self.state_dir = Path(__file__).resolve().parent.parent / "state"
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        if not self.state_dir.exists():
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created state directory: {self.state_dir}")
         self.state_file = self.state_dir / f"{self.symbol}_state.json"
 
         self.position = 0
@@ -546,11 +548,11 @@ class APIClient:
                     time_module.sleep(1)
         return {}
 
-    def get_vix(self):
+    def get_vix(self, default=None):
         """Fetch INDIA VIX"""
         quote = self.get_quote("INDIA VIX", "NSE")
         if quote and 'ltp' in quote:
             return float(quote['ltp'])
         # Fallback to a default or raise error?
         # For safety, return None so caller handles it
-        return None
+        return default
