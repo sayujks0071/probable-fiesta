@@ -1,31 +1,36 @@
 #!/bin/bash
-# Install Systemd User Timer for OpenAlgo Healthcheck
+set -e
 
-mkdir -p ~/.config/systemd/user
-SCRIPT_DIR=$(cd $(dirname $0) && pwd)
-SCRIPT_PATH="$SCRIPT_DIR/healthcheck.py"
-PYTHON_EXEC=$(which python3)
+# Resolve repo root relative to this script
+REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SCRIPT_PATH="$REPO_ROOT/scripts/healthcheck.py"
+SERVICE_DIR="$HOME/.config/systemd/user"
+SERVICE_FILE="$SERVICE_DIR/openalgo-health.service"
+TIMER_FILE="$SERVICE_DIR/openalgo-health.timer"
 
-SERVICE_FILE=~/.config/systemd/user/openalgo-health.service
-TIMER_FILE=~/.config/systemd/user/openalgo-health.timer
+if [ ! -f "$SCRIPT_PATH" ]; then
+    echo "Error: healthcheck.py not found at $SCRIPT_PATH"
+    exit 1
+fi
 
-echo "Installing Systemd User Service..."
+mkdir -p "$SERVICE_DIR"
 
-cat <<EOF > $SERVICE_FILE
+echo "Creating Service File at $SERVICE_FILE..."
+cat <<EOF > "$SERVICE_FILE"
 [Unit]
 Description=OpenAlgo Health Check
+After=network.target
 
 [Service]
-ExecStart=$PYTHON_EXEC $SCRIPT_PATH
-WorkingDirectory=$SCRIPT_DIR
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target
+Type=oneshot
+ExecStart=/usr/bin/env python3 $SCRIPT_PATH
+WorkingDirectory=$REPO_ROOT
+StandardOutput=append:$REPO_ROOT/logs/healthcheck_service.log
+StandardError=append:$REPO_ROOT/logs/healthcheck_service.log
 EOF
 
-cat <<EOF > $TIMER_FILE
+echo "Creating Timer File at $TIMER_FILE..."
+cat <<EOF > "$TIMER_FILE"
 [Unit]
 Description=Run OpenAlgo Health Check every 5 minutes
 
@@ -38,9 +43,12 @@ Unit=openalgo-health.service
 WantedBy=timers.target
 EOF
 
+echo "Reloading systemd user daemon..."
 systemctl --user daemon-reload
+
+echo "Enabling and starting timer..."
 systemctl --user enable openalgo-health.timer
 systemctl --user start openalgo-health.timer
 
-echo "✅ Systemd user timer installed and started."
+echo "✅ Systemd timer installed and started."
 systemctl --user list-timers --all | grep openalgo
