@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 import re
 import math
 import subprocess
+import yfinance as yf
 
 # Add project root to path
 current_file = Path(__file__).resolve()
@@ -46,7 +47,7 @@ class AdvancedOptionsRanker:
         self.script_map = {
             "Iron Condor": "delta_neutral_iron_condor_nifty.py",
             "Gap Fade": "gap_fade_strategy.py",
-            # Others not yet implemented as scripts
+            "Sentiment Reversal": "sentiment_reversal_strategy.py"
         }
 
         # Thresholds
@@ -67,13 +68,44 @@ class AdvancedOptionsRanker:
         }
 
     def _fetch_gift_nifty_proxy(self, nifty_spot):
+        """
+        Estimate Gap using Nifty 50 vs Previous Close via yfinance.
+        LIMITATION: Uses ^NSEI (Spot). Pre-market, this will show 0 gap unless
+        fast_info has pre-market data (unreliable).
+        For accurate pre-market gaps, integration with a paid GIFT Nifty feed is required.
+        """
         try:
-            # Deterministic: Return 0 gap if no data.
-            # In production, fetch specific symbol.
-            # For now, we assume if we are running before market, we might check last close
-            # But without history, we can't do much.
-            # Returning 0.0 ensures deterministic behavior for tests.
-            return nifty_spot, 0.0
+            # Fetch Nifty 50 History from yfinance
+            nifty = yf.Ticker("^NSEI")
+            hist = nifty.history(period="5d")
+
+            if hist.empty:
+                logger.warning("Could not fetch Nifty history from yfinance.")
+                return nifty_spot, 0.0
+
+            last_close = float(hist['Close'].iloc[-1])
+
+            # Determine Current Price
+            current_price = nifty_spot
+
+            # If broker spot is 0 or invalid, try to get live price from yfinance
+            # Note: yfinance data is delayed 15m and may not reflect pre-market
+            if current_price <= 0:
+                 try:
+                     # fast_info might have more recent data than history
+                     current_price = float(nifty.fast_info['last_price'])
+                     logger.info(f"Using yfinance fast_info price: {current_price}")
+                 except:
+                     current_price = last_close
+                     logger.warning("Using last close as current price (No live data available).")
+
+            gap_pct = 0.0
+            if last_close > 0:
+                gap_pct = ((current_price - last_close) / last_close) * 100
+
+            logger.info(f"Gap Calc: Current={current_price}, PrevClose={last_close}, Gap={gap_pct:.2f}%")
+            return current_price, gap_pct
+
         except Exception as e:
             logger.warning(f"Error fetching GIFT Nifty proxy: {e}")
             return nifty_spot, 0.0
@@ -83,30 +115,41 @@ class AdvancedOptionsRanker:
             url = "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"
             try:
                 response = requests.get(url, timeout=5)
-            except:
+            except Exception as req_err:
+                logger.warning(f"Sentiment RSS request failed: {req_err}")
                 return 0.5, "Neutral"
 
             if response.status_code != 200:
+                logger.warning(f"Sentiment RSS status code: {response.status_code}")
                 return 0.5, "Neutral"
 
-            soup = BeautifulSoup(response.content, 'xml')
-            items = soup.find_all('item')
+            try:
+                soup = BeautifulSoup(response.content, 'xml')
+                items = soup.find_all('item')
+            except Exception as parse_err:
+                logger.warning(f"Sentiment RSS parse failed: {parse_err}")
+                return 0.5, "Neutral"
 
-            positive_words = ['surge', 'jump', 'gain', 'rally', 'bull', 'high', 'profit', 'growth', 'buy', 'positive']
-            negative_words = ['fall', 'drop', 'crash', 'bear', 'low', 'loss', 'decline', 'sell', 'negative', 'fear', 'inflation']
+            positive_words = ['surge', 'jump', 'gain', 'rally', 'bull', 'high', 'profit', 'growth', 'buy', 'positive', 'up']
+            negative_words = ['fall', 'drop', 'crash', 'bear', 'low', 'loss', 'decline', 'sell', 'negative', 'fear', 'inflation', 'down']
 
             score = 0
             count = 0
-            for item in items[:10]:
+            for item in items[:15]: # Analyze top 15
+                if not item.title: continue
                 title = item.title.text.lower()
+
                 p_count = sum(1 for w in positive_words if w in title)
                 n_count = sum(1 for w in negative_words if w in title)
+
                 if p_count > n_count: score += 1
                 elif n_count > p_count: score -= 1
                 count += 1
 
             if count == 0: return 0.5, "Neutral"
 
+            # Normalize to 0.0 - 1.0 range
+            # Range of raw score is roughly -count to +count
             normalized_score = 0.5 + (score / (2 * count))
             normalized_score = max(0.0, min(1.0, normalized_score))
 
@@ -114,6 +157,7 @@ class AdvancedOptionsRanker:
             if normalized_score > 0.6: label = "Positive"
             elif normalized_score < 0.4: label = "Negative"
 
+            logger.info(f"Sentiment Analysis: Score={normalized_score:.2f} ({label}) based on {count} headlines.")
             return normalized_score, label
 
         except Exception as e:
@@ -123,26 +167,34 @@ class AdvancedOptionsRanker:
     def fetch_market_data(self):
         logger.info("Fetching market data...")
         data = {}
+
+        # VIX
         vix_quote = self.client.get_quote("INDIA VIX", "NSE")
-        data['vix'] = float(vix_quote['ltp']) if vix_quote else 15.0
+        data['vix'] = float(vix_quote['ltp']) if vix_quote and 'ltp' in vix_quote else 15.0
 
+        # Nifty Spot
         nifty_quote = self.client.get_quote("NIFTY 50", "NSE")
-        data['nifty_spot'] = float(nifty_quote['ltp']) if nifty_quote else 0.0
+        data['nifty_spot'] = float(nifty_quote['ltp']) if nifty_quote and 'ltp' in nifty_quote else 0.0
 
+        # Gap
         gift_price, gap_pct = self._fetch_gift_nifty_proxy(data['nifty_spot'])
         data['gift_nifty'] = gift_price
         data['gap_pct'] = gap_pct
 
+        # Sentiment
         score, label = self._fetch_news_sentiment()
         data['sentiment_score'] = score
         data['sentiment_label'] = label
 
+        # Option Chains
         data['chains'] = {}
         for index in self.indices:
             exchange = "NFO" if index != "SENSEX" else "BFO"
             chain = self.client.get_option_chain(index, exchange)
             if chain:
                 data['chains'][index] = chain
+            else:
+                logger.warning(f"No option chain for {index}")
 
         return data
 
@@ -167,7 +219,6 @@ class AdvancedOptionsRanker:
         Score a specific strategy for an index using multi-factor analysis.
         """
         vix = market_data.get('vix', 15)
-        spot = market_data.get('nifty_spot', 0) if index == "NIFTY" else 0
 
         pcr = calculate_pcr(chain_data)
         sentiment = market_data.get('sentiment_score', 0.5)
@@ -234,10 +285,13 @@ class AdvancedOptionsRanker:
         # 7. Sentiment
         sent_score = 50
         if strategy_type == "Sentiment Reversal":
+             # Extreme sentiment is good for Reversal
              dist = abs(sentiment - 0.5)
              if dist > 0.3: sent_score = 90
+             elif dist > 0.2: sent_score = 70
              else: sent_score = 20
         elif strategy_type == "Iron Condor":
+             # Neutral sentiment is good for IC
              dist = abs(sentiment - 0.5)
              if dist < 0.1: sent_score = 100
              else: sent_score = max(0, 100 - dist * 200)
@@ -338,13 +392,13 @@ class AdvancedOptionsRanker:
             # Pass extra args
             if strategy_name == "Iron Condor":
                 cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
+            elif strategy_name == "Sentiment Reversal":
+                cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
 
             logger.info(f"Executing: {' '.join(cmd)}")
 
             try:
-                # Run in background or wait? Usually deployment triggers and returns.
-                # Here we use Popen to run detached or run and wait.
-                # We'll run and log output
+                # Run detached
                 subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 print(f"✅ Deployed: {strategy_name} on {strat['index']}")
             except Exception as e:
