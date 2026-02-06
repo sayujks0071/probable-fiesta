@@ -24,7 +24,8 @@ def normalize_mcx_string(symbol_str):
     Normalize an existing MCX symbol string.
     e.g. GOLDM 5 FEB 26 FUT -> GOLDM05FEB26FUT
     """
-    match = re.match(r'^([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT$', symbol_str, re.IGNORECASE)
+    # Allow optional spaces between parts
+    match = re.match(r'^([A-Z]+)\s*(\d{1,2})\s*([A-Z]{3})\s*(\d{2})\s*FUT$', symbol_str, re.IGNORECASE)
     if not match:
         return symbol_str
 
