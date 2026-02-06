@@ -220,26 +220,34 @@ class AdvancedMCXStrategy:
         low_close = (df['low'] - df['close'].shift()).abs()
         df['atr'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
 
-        # ADX (Simplified)
-        df['adx'] = np.random.uniform(15, 45, len(df)) # Placeholder for full ADX logic to save space, assuming sufficient for demo
-        # Proper ADX requires +DI/-DI smoothing. Let's do a quick approximation using volatility expansion
-        # Or better, implement proper ADX if critical.
-        # Implementation of full ADX:
-        up = df['high'] - df['high'].shift(1)
-        down = df['low'].shift(1) - df['low']
-        plus_dm = np.where((up > down) & (up > 0), up, 0.0)
-        minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+        # ADX Calculation
+        try:
+            up = df['high'] - df['high'].shift(1)
+            down = df['low'].shift(1) - df['low']
 
-        tr = df['atr'] # Approximation of TR
+            # +DM and -DM
+            plus_dm = pd.Series(np.where((up > down) & (up > 0), up, 0.0), index=df.index)
+            minus_dm = pd.Series(np.where((down > up) & (down > 0), down, 0.0), index=df.index)
 
-        # Smooth
-        plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / tr)
-        minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean() / tr)
-        dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
-        df['adx'] = dx.rolling(14).mean()
+            # True Range (TR) - already calculated as 'atr' * 1 which is incorrect usage above, re-calculating proper TR
+            tr1 = df['high'] - df['low']
+            tr2 = (df['high'] - df['close'].shift(1)).abs()
+            tr3 = (df['low'] - df['close'].shift(1)).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+            # Smoothed TR, +DM, -DM (Wilder's Smoothing)
+            atr_smooth = tr.rolling(14).mean() # Simple rolling for robustness in this script
+            plus_di = 100 * (plus_dm.rolling(14).mean() / atr_smooth)
+            minus_di = 100 * (minus_dm.rolling(14).mean() / atr_smooth)
+
+            dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
+            df['adx'] = dx.rolling(14).mean()
+        except Exception as e:
+            logger.error(f"Error calculating ADX: {e}")
+            df['adx'] = 20.0 # Default fallback
 
         return {
-            'adx': df['adx'].iloc[-1],
+            'adx': df['adx'].iloc[-1] if not pd.isna(df['adx'].iloc[-1]) else 20.0,
             'rsi': df['rsi'].iloc[-1],
             'atr': df['atr'].iloc[-1],
             'close': df['close'].iloc[-1],

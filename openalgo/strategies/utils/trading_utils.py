@@ -423,6 +423,32 @@ class APIClient:
         
         return None  # Failed to fetch quote
 
+    def check_connection(self):
+        """Check if broker API is reachable"""
+        try:
+            logger.info(f"Checking connection to {self.host}...")
+            # Try to fetch a quote for a standard symbol as a health check
+            # We use 'NIFTY 50' or similar
+            q = self.get_quote("NIFTY 50", "NSE", max_retries=1)
+            if q is not None:
+                logger.info("Connection check: Broker API is UP")
+                return True
+
+            # If quote failed, maybe it's just that symbol, try instruments head?
+            # Or just fail. Let's try instruments as backup check
+            logger.warning("Connection check: Quote failed, trying instruments...")
+            url = f"{self.host}/instruments/NSE"
+            response = httpx.get(url, timeout=5)
+            if response.status_code == 200:
+                logger.info("Connection check: Broker API is UP (via Instruments)")
+                return True
+
+        except Exception as e:
+            logger.error(f"Connection check failed: {e}")
+
+        logger.error("Connection check: Broker API is DOWN or Unreachable")
+        return False
+
     def get_instruments(self, exchange="NSE", max_retries=3):
         """Fetch instruments list"""
         url = f"{self.host}/instruments/{exchange}"
