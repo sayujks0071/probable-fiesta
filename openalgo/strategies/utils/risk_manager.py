@@ -73,7 +73,12 @@ class RiskManager:
         self.is_circuit_breaker_active = False
 
         # State persistence
-        self.state_dir = Path(__file__).resolve().parent.parent / "state"
+        env_state_dir = os.getenv("OPENALGO_STATE_DIR")
+        if env_state_dir:
+            self.state_dir = Path(env_state_dir)
+        else:
+            self.state_dir = Path(__file__).resolve().parent.parent / "state"
+
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.state_file = self.state_dir / f"{strategy_name}_risk_state.json"
 
