@@ -7,16 +7,20 @@ import pandas as pd
 from datetime import datetime, timedelta
 import importlib.util
 
-# Add repo root to path
-repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.append(repo_root)
+# Add paths
+script_dir = os.path.dirname(__file__)
+vendor_dir = os.path.abspath(os.path.join(script_dir, '../..')) # vendor
+project_root = os.path.abspath(os.path.join(vendor_dir, '..')) # Project root
+
+sys.path.append(project_root)
+sys.path.append(vendor_dir)
 
 # Import Backtest Engine
 try:
     from openalgo.strategies.utils.simple_backtest_engine import SimpleBacktestEngine
 except ImportError:
     # Fallback path logic
-    sys.path.append(os.path.join(repo_root, 'openalgo', 'strategies', 'utils'))
+    sys.path.append(os.path.join(vendor_dir, 'openalgo', 'strategies', 'utils'))
     from simple_backtest_engine import SimpleBacktestEngine
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -89,7 +93,8 @@ def load_strategy_module(filepath):
     """Load a strategy script as a module."""
     try:
         module_name = os.path.basename(filepath).replace('.py', '')
-        spec = importlib.util.spec_from_file_location(module_name, os.path.join(repo_root, filepath))
+        vendor_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+        spec = importlib.util.spec_from_file_location(module_name, os.path.join(vendor_dir, filepath))
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)

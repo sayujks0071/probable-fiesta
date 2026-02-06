@@ -12,9 +12,9 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
+DATA_DIR = os.path.join(REPO_ROOT, 'vendor', 'openalgo', 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
-CONFIG_FILE = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategies.json')
+CONFIG_FILE = os.path.join(REPO_ROOT, 'vendor', 'openalgo', 'strategies', 'active_strategies.json')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
 # Regex for MCX Symbols
@@ -79,7 +79,7 @@ def validate_config_symbols(resolver):
 
 def scan_files_for_hardcoded_symbols(instruments):
     issues = []
-    strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    strategies_dir = os.path.join(REPO_ROOT, 'vendor', 'openalgo', 'strategies')
 
     for root, dirs, files in os.walk(strategies_dir):
         # Exclude tests
@@ -154,9 +154,13 @@ def main():
     try:
         # Check if openalgo package is importable
         try:
+            # Try importing with vendor path already set or assume environment
+            vendor_dir = os.path.join(REPO_ROOT, 'vendor')
+            if vendor_dir not in sys.path:
+                sys.path.insert(0, vendor_dir)
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
         except ImportError:
-            sys.path.insert(0, os.path.join(REPO_ROOT, 'openalgo'))
+            sys.path.insert(0, os.path.join(REPO_ROOT, 'vendor', 'openalgo'))
             from strategies.utils.symbol_resolver import SymbolResolver
 
         resolver = SymbolResolver(INSTRUMENTS_FILE)
