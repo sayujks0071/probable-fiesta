@@ -27,11 +27,12 @@ logging.basicConfig(
 logger = logging.getLogger("GapFadeStrategy")
 
 class GapFadeStrategy:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5, live_mode=False):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
+        self.live_mode = live_mode
         self.pm = PositionManager(f"{symbol}_GapFade")
 
     def execute(self):
@@ -98,10 +99,12 @@ class GapFadeStrategy:
 
         # 3. Select Option Strike (ATM)
         atm = round(current_price / 50) * 50
-        strike_symbol = f"{self.symbol}{today.strftime('%y%b').upper()}{atm}{option_type}" # Symbol format varies
-        # Simplified: Just log the intent
+        # Symbol format varies, this is a placeholder. In real live mode, use SymbolResolver or explicit format
+        # For NIFTY Options: NIFTY24FEB22000CE
+        expiry_str = today.strftime('%y%b').upper()
+        strike_symbol = f"{self.symbol}{expiry_str}{atm}{option_type}"
 
-        logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade)")
+        logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade). Symbol: {strike_symbol}")
 
         # 4. Check VIX for Sizing (inherited from general rules)
         vix_quote = self.client.get_quote("INDIA VIX", "NSE")
@@ -112,21 +115,41 @@ class GapFadeStrategy:
             qty = int(qty * 0.5)
             logger.info(f"High VIX {vix}. Reduced Qty to {qty}")
 
-        # 5. Place Order (Simulation)
-        # self.client.placesmartorder(...)
-        logger.info(f"Executing {option_type} Buy for {qty} qty.")
-        self.pm.update_position(qty, 100, "BUY") # Mock update
+        # 5. Place Order
+        if self.live_mode:
+            logger.info(f"LIVE MODE: Placing Smart Order for {strike_symbol} qty {qty}")
+            response = self.client.placesmartorder(
+                strategy="GapFade",
+                symbol=strike_symbol,
+                action="BUY",
+                exchange="NFO",
+                price_type="MARKET",
+                product="MIS",
+                quantity=qty,
+                position_size=qty
+            )
+            logger.info(f"Order Response: {response}")
+
+            if response and response.get("status") == "success":
+                self.pm.update_position(qty, current_price, "BUY") # Using underlying price as proxy for entry tracking if option price unknown
+        else:
+            logger.info(f"SIMULATION: Executing {option_type} Buy for {qty} qty.")
+            self.pm.update_position(qty, current_price, "BUY")
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", default="NIFTY", help="Index Symbol")
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--threshold", type=float, default=0.5, help="Gap Threshold %%")
-    parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
+    parser.add_argument("--port", type=int, help="Broker API Port (default: env OPENALGO_PORT or 5002)")
+    parser.add_argument("--live", action="store_true", help="Enable Live Trading")
     args = parser.parse_args()
 
-    client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold)
+    port = args.port or int(os.getenv("OPENALGO_PORT", "5002"))
+    api_key = os.getenv("OPENALGO_API_KEY", "demo_key")
+
+    client = APIClient(api_key=api_key, host=f"http://127.0.0.1:{port}")
+    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold, live_mode=args.live)
     strategy.execute()
 
 if __name__ == "__main__":

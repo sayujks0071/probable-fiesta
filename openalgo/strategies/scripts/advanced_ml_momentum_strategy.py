@@ -12,29 +12,15 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
+from pathlib import Path
+
 # Add project root to path
-script_dir = os.path.dirname(os.path.abspath(__file__))
-strategies_dir = os.path.dirname(script_dir)
-utils_dir = os.path.join(strategies_dir, 'utils')
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent.parent.parent
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 
-# Add utils directory to path for imports
-sys.path.insert(0, utils_dir)
-
-try:
-    from trading_utils import APIClient, PositionManager, is_market_open
-except ImportError:
-    try:
-        # Try absolute import
-        sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import APIClient, PositionManager, is_market_open
-    except ImportError:
-        try:
-            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
-        except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            is_market_open = lambda: True
+from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -261,7 +247,9 @@ def run_strategy():
         sys.exit(1)
     
     port = args.port or int(os.getenv('OPENALGO_PORT', '5001'))
-    api_key = args.api_key or os.getenv('OPENALGO_APIKEY', 'demo_key')
+    # Prioritize OPENALGO_API_KEY, fallback to OPENALGO_APIKEY
+    env_key = os.getenv('OPENALGO_API_KEY') or os.getenv('OPENALGO_APIKEY')
+    api_key = args.api_key if args.api_key != 'demo_key' else (env_key or 'demo_key')
     threshold = args.threshold or float(os.getenv('THRESHOLD', '0.01'))
 
     strategy = MLMomentumStrategy(symbol, api_key, port, threshold=threshold, sector=args.sector)
