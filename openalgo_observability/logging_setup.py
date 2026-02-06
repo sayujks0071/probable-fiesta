@@ -12,14 +12,16 @@ from datetime import datetime
 # Format: (Regex Pattern, Replacement String)
 # Regex matches common secret characters: alphanumeric, dash, dot, plus, slash, equals
 SENSITIVE_PATTERNS = [
+    # Specific patterns first
+    (r'(Bearer\s+)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
     (r'(api[_-]?key[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
     (r'(password[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
     (r'(token[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
     (r'(secret[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
-    (r'(authorization[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
-    (r'(Bearer\s+)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
     (r'(enctoken[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
     (r'(access_token[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
+    # Generic Authorization last, catch-all for remaining value
+    (r'(authorization[\s]*[=:]\s*).*', r'\1[REDACTED]'),
 ]
 
 class SensitiveDataFilter(logging.Filter):

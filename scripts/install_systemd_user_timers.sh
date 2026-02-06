@@ -1,31 +1,47 @@
 #!/bin/bash
-# Install Systemd User Timer for OpenAlgo Healthcheck
+# Install Systemd User Timer for OpenAlgo Health Check
 
-mkdir -p ~/.config/systemd/user
-SCRIPT_DIR=$(cd $(dirname $0) && pwd)
-SCRIPT_PATH="$SCRIPT_DIR/healthcheck.py"
-PYTHON_EXEC=$(which python3)
+set -e
 
-SERVICE_FILE=~/.config/systemd/user/openalgo-health.service
-TIMER_FILE=~/.config/systemd/user/openalgo-health.timer
+# Resolve Repo Root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+HEALTHCHECK_SCRIPT="$REPO_ROOT/scripts/healthcheck.py"
+PYTHON_EXEC="$(which python3)"
+
+# Ensure healthcheck script is executable
+chmod +x "$HEALTHCHECK_SCRIPT"
+
+# Systemd User Config Directory
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+mkdir -p "$SYSTEMD_USER_DIR"
+
+SERVICE_FILE="$SYSTEMD_USER_DIR/openalgo-health.service"
+TIMER_FILE="$SYSTEMD_USER_DIR/openalgo-health.timer"
 
 echo "Installing Systemd User Service..."
 
-cat <<EOF > $SERVICE_FILE
+# Create Service File
+cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=OpenAlgo Health Check
+After=network.target
 
 [Service]
-ExecStart=$PYTHON_EXEC $SCRIPT_PATH
-WorkingDirectory=$SCRIPT_DIR
-StandardOutput=journal
-StandardError=journal
+Type=oneshot
+ExecStart=$PYTHON_EXEC $HEALTHCHECK_SCRIPT
+WorkingDirectory=$REPO_ROOT
+StandardOutput=append:$REPO_ROOT/logs/healthcheck_service.log
+StandardError=append:$REPO_ROOT/logs/healthcheck_service.log
 
 [Install]
 WantedBy=default.target
 EOF
 
-cat <<EOF > $TIMER_FILE
+echo "Created $SERVICE_FILE"
+
+# Create Timer File
+cat > "$TIMER_FILE" <<EOF
 [Unit]
 Description=Run OpenAlgo Health Check every 5 minutes
 
@@ -38,9 +54,15 @@ Unit=openalgo-health.service
 WantedBy=timers.target
 EOF
 
+echo "Created $TIMER_FILE"
+
+# Reload and Enable
+echo "Reloading systemd user daemon..."
 systemctl --user daemon-reload
+
+echo "Enabling and starting timer..."
 systemctl --user enable openalgo-health.timer
 systemctl --user start openalgo-health.timer
-
-echo "✅ Systemd user timer installed and started."
 systemctl --user list-timers --all | grep openalgo
+
+echo "✅ OpenAlgo Health Check Timer Installed."
