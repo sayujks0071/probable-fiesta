@@ -165,11 +165,12 @@ class TestEODSquareOff(unittest.TestCase):
             os.remove(self.rm.state_file)
 
     @patch('openalgo.strategies.utils.risk_manager.datetime')
-    def test_execute_square_off(self, mock_datetime):
-        # Mock time to be past square off
+    def test_execute_square_off_fallback(self, mock_datetime):
+        # Test fallback when price is missing (PnL = 0)
         mock_now = datetime(2023, 10, 27, 15, 20)
         mock_datetime.now.return_value = mock_now
 
+        # Default mock returns success but no price
         executed = self.eod.check_and_execute()
         self.assertTrue(executed)
 
@@ -179,9 +180,36 @@ class TestEODSquareOff(unittest.TestCase):
         # Verify position is closed in RM
         self.assertEqual(len(self.rm.positions), 0)
 
+        # PnL should be 0 because entry_price was used as fallback
+        self.assertEqual(self.rm.daily_pnl, 0.0)
+
         # Should not execute again
         executed_again = self.eod.check_and_execute()
         self.assertFalse(executed_again)
+
+    @patch('openalgo.strategies.utils.risk_manager.datetime')
+    def test_execute_square_off_with_price(self, mock_datetime):
+        # Test with explicit exit price
+        mock_now = datetime(2023, 10, 27, 15, 20)
+        mock_datetime.now.return_value = mock_now
+
+        # Reset state for this test (POS1 is already there from setUp)
+        self.eod._squared_off_today = False
+
+        # Mock returns price
+        self.mock_exit.return_value = {'status': 'success', 'average_price': 95.0}
+
+        executed = self.eod.check_and_execute()
+        self.assertTrue(executed)
+
+        # Verify exit callback was called
+        self.mock_exit.assert_called_with("POS1", "SELL", 10)
+
+        # Verify position is closed
+        self.assertEqual(len(self.rm.positions), 0)
+
+        # PnL should be calculated: (95 - 100) * 10 = -50
+        self.assertEqual(self.rm.daily_pnl, -50.0)
 
 if __name__ == '__main__':
     unittest.main()
