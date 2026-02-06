@@ -240,6 +240,14 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key')
 
+    # Ignored args to prevent crash when called by orchestrator
+    parser.add_argument('--underlying', type=str)
+    parser.add_argument('--usd_inr_trend', type=str)
+    parser.add_argument('--usd_inr_volatility', type=float)
+    parser.add_argument('--seasonality_score', type=int)
+    parser.add_argument('--global_alignment_score', type=int)
+    parser.add_argument('--fundamental_score', type=int)
+
     args = parser.parse_args()
 
     # Use command-line args or env vars
@@ -257,18 +265,28 @@ if __name__ == "__main__":
 
     # Validate symbol or resolve default
     if not SYMBOL:
-        if SymbolResolver:
-            logger.info("Resolving default MCX Gold symbol...")
-            resolver = SymbolResolver()
-            SYMBOL = resolver.resolve({'underlying': 'GOLD', 'type': 'FUT', 'exchange': 'MCX'})
-            if not SYMBOL:
-                 SYMBOL = "GOLDM05FEB26FUT"
-                 logger.warning(f"Could not resolve symbol, using fallback: {SYMBOL}")
+        # Check if underlying is provided and resolve
+        if args.underlying:
+             if SymbolResolver:
+                 logger.info(f"Resolving symbol for {args.underlying}...")
+                 resolver = SymbolResolver()
+                 SYMBOL = resolver.resolve({'underlying': args.underlying, 'type': 'FUT', 'exchange': 'MCX'})
+                 if SYMBOL:
+                     logger.info(f"Resolved to: {SYMBOL}")
+
+        if not SYMBOL:
+            if SymbolResolver:
+                logger.info("Resolving default MCX Gold symbol...")
+                resolver = SymbolResolver()
+                SYMBOL = resolver.resolve({'underlying': 'GOLD', 'type': 'FUT', 'exchange': 'MCX'})
+                if not SYMBOL:
+                     SYMBOL = "GOLDM05FEB26FUT"
+                     logger.warning(f"Could not resolve symbol, using fallback: {SYMBOL}")
+                else:
+                     logger.info(f"Resolved to: {SYMBOL}")
             else:
-                 logger.info(f"Resolved to: {SYMBOL}")
-        else:
-             SYMBOL = "GOLDM05FEB26FUT"
-             logger.warning("SymbolResolver not available, using hardcoded fallback.")
+                 SYMBOL = "GOLDM05FEB26FUT"
+                 logger.warning("SymbolResolver not available, using hardcoded fallback.")
 
     # Initialize API client
     api_client = None
