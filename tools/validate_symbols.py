@@ -102,6 +102,10 @@ def scan_files_for_hardcoded_symbols(instruments):
 
         for file in files:
             if file.endswith('.py'):
+                # Skip mcx_utils.py as it contains examples of malformed symbols in docstrings
+                if file == 'mcx_utils.py':
+                    continue
+
                 filepath = os.path.join(root, file)
                 try:
                     with open(filepath, 'r', encoding='utf-8') as f:
