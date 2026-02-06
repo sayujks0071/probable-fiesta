@@ -25,20 +25,24 @@ sys.path.insert(0, utils_dir)
 try:
     from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
     from symbol_resolver import SymbolResolver
+    from equity_analysis import EquityAnalyzer
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
         from utils.symbol_resolver import SymbolResolver
+        from utils.equity_analysis import EquityAnalyzer
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+            from openalgo.strategies.utils.equity_analysis import EquityAnalyzer
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
             SymbolResolver = None
+            EquityAnalyzer = None
             normalize_symbol = lambda s: s
             is_market_open = lambda: True
             def calculate_intraday_vwap(df):
@@ -104,6 +108,7 @@ class SuperTrendVWAPStrategy:
             self.client = APIClient(api_key=self.api_key, host=self.host)
 
         self.pm = PositionManager(symbol) if PositionManager else None
+        self.analyzer = EquityAnalyzer(api_client=self.client) if EquityAnalyzer else None
 
     def generate_signal(self, df):
         """
@@ -389,7 +394,15 @@ class SuperTrendVWAPStrategy:
                     # Entry Logic
                     sector_bullish = self.check_sector_correlation()
 
-                    if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish:
+                    # Enhanced Trend Check
+                    trend_ok = True
+                    if self.analyzer:
+                        t_score = self.analyzer.calculate_trend_score(df)
+                        if t_score < 50:
+                            trend_ok = False
+                            self.logger.info(f"Analyzer Trend Score weak ({t_score}). Skipping.")
+
+                    if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish and trend_ok:
                         adj_qty = int(self.quantity * size_multiplier)
                         if adj_qty < 1: adj_qty = 1 # Minimum 1
                         self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")

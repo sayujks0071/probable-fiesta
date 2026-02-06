@@ -24,18 +24,22 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+    from equity_analysis import EquityAnalyzer
 except ImportError:
     try:
         # Try absolute import
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+        from utils.equity_analysis import EquityAnalyzer
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+            from openalgo.strategies.utils.equity_analysis import EquityAnalyzer
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            EquityAnalyzer = None
             normalize_symbol = lambda s: s
             is_market_open = lambda: True
 
@@ -62,6 +66,7 @@ class AIHybridStrategy:
             self.logger.addHandler(fh)
 
         self.pm = PositionManager(symbol) if PositionManager else None
+        self.analyzer = EquityAnalyzer(api_client=self.client) if EquityAnalyzer else None
 
         self.rsi_lower = rsi_lower
         self.rsi_upper = rsi_upper
@@ -167,6 +172,9 @@ class AIHybridStrategy:
 
     def check_earnings(self):
         """Check if earnings are near (within 2 days)."""
+        if self.analyzer and self.earnings_date:
+            return self.analyzer.check_earnings(self.symbol, {self.symbol: self.earnings_date})
+
         if not self.earnings_date:
             return False
 
