@@ -23,7 +23,11 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          if [ -f openalgo/requirements.txt ]; then
+            pip install -r openalgo/requirements.txt
+          else
+            pip install pandas httpx
+          fi
 
       - name: A) Sync Instruments
         id: sync
@@ -63,18 +67,23 @@ jobs:
           name: symbol-audit-reports
           path: reports/
 
+      - name: Get Date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
       - name: Create Pull Request
         if: steps.gate.outputs.gate_ok == 'true'
         uses: peter-evans/create-pull-request@v5
         with:
-          branch: chore/symbols-daily
-          title: "chore: Daily Symbol Normalization"
+          branch: chore/symbols-daily-${{ steps.date.outputs.date }}
+          title: "chore: Daily Symbol Normalization (${{ steps.date.outputs.date }})"
           body: |
-            Daily symbol normalization report.
+            Daily symbol normalization report for ${{ steps.date.outputs.date }}.
+
             See attached audit report for details.
 
             [Audit Report](reports/symbol_audit.md)
-          commit-message: "chore: normalize symbols"
+          commit-message: "chore: normalize symbols ${{ steps.date.outputs.date }}"
           add-paths: |
             openalgo/strategies/**/*.py
             reports/symbol_audit.md
@@ -88,10 +97,10 @@ jobs:
             const fs = require('fs');
             let body = "Daily symbol audit failed. Please check the attached artifacts.\n\n";
             try {
-              // Read report if exists
               if (fs.existsSync('reports/symbol_audit.md')) {
                 const report = fs.readFileSync('reports/symbol_audit.md', 'utf8');
-                body += report;
+                // Truncate if too long (GitHub limit ~65k chars)
+                body += report.substring(0, 60000);
               }
             } catch (e) {
               body += "Could not read audit report.";

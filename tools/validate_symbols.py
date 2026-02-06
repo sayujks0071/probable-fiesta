@@ -5,7 +5,7 @@ import argparse
 import time
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Add repo root to path
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -17,8 +17,20 @@ INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 CONFIG_FILE = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategies.json')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
-# Regex for MCX Symbols
-MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
+# Import mcx_utils
+try:
+    from openalgo.strategies.utils.mcx_utils import normalize_mcx_string
+except ImportError:
+    sys.path.insert(0, os.path.join(REPO_ROOT, 'openalgo'))
+    try:
+        from strategies.utils.mcx_utils import normalize_mcx_string
+    except ImportError:
+        print("Error: Could not import mcx_utils")
+        sys.exit(1)
+
+# Regex for MCX Symbols (matching the one in mcx_utils but with word boundaries for search)
+# We want to find strings that LOOK like MCX symbols.
+MCX_SEARCH_PATTERN = re.compile(r'\b([A-Z]+)\s*(\d{1,2})\s*([A-Z]{3})\s*(\d{2})\s*FUT\b', re.IGNORECASE)
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
 def check_instruments_freshness():
@@ -97,7 +109,7 @@ def scan_files_for_hardcoded_symbols(instruments):
                 except UnicodeDecodeError:
                     continue # Skip binary/bad files
 
-                for match in MCX_PATTERN.finditer(content):
+                for match in MCX_SEARCH_PATTERN.finditer(content):
                     symbol_str = match.group(0)
                     parts = match.groups() # (Symbol, Day, Month, Year)
 
@@ -111,8 +123,8 @@ def scan_files_for_hardcoded_symbols(instruments):
                         })
                         continue
 
-                    # Normalized form:
-                    normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
+                    # Normalized form using shared utility
+                    normalized = normalize_mcx_string(symbol_str)
 
                     if symbol_str != normalized:
                          issues.append({
