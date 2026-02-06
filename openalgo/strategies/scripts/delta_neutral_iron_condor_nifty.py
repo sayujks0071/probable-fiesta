@@ -139,8 +139,8 @@ class DeltaNeutralIronCondor:
         logger.info(f"Current VIX: {vix}")
 
         # VIX Filters
-        if vix < 12:
-            logger.warning(f"VIX {vix} < 12. Too low for Iron Condor (Low Premium/High Gamma Risk). Skipping.")
+        if vix <= 20:
+            logger.warning(f"VIX {vix} <= 20. Too low for Premium Selling (Iron Condor). Skipping as per strategy rules.")
             return
 
         if vix > self.max_vix:
