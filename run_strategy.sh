@@ -6,7 +6,7 @@
 export OPENALGO_APIKEY="${OPENALGO_APIKEY:-YOUR_OPENALGO_APIKEY}"
 
 # Change to openalgo directory
-cd "$(dirname "$0")/openalgo"
+cd "$(dirname "$0")/vendor/openalgo"
 
 # Activate virtual environment
 source venv/bin/activate

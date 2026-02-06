@@ -11,8 +11,12 @@ import httpx
 import pandas as pd
 
 # Add repo root to path
-repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.append(repo_root)
+script_dir = os.path.dirname(__file__)
+openalgo_root = os.path.abspath(os.path.join(script_dir, '..')) # vendor/openalgo
+project_root = os.path.abspath(os.path.join(openalgo_root, '../..')) # Project root
+
+sys.path.append(project_root)
+sys.path.append(os.path.dirname(openalgo_root)) # Add vendor to path so 'import openalgo' works
 
 from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 from openalgo.strategies.utils.trading_utils import APIClient
@@ -27,10 +31,10 @@ except ImportError:
 
 logger = logging.getLogger("DailyPrep")
 
-DATA_DIR = os.path.join(repo_root, 'openalgo/data')
-STATE_DIR = os.path.join(repo_root, 'openalgo/strategies/state')
-SESSION_DIR = os.path.join(repo_root, 'openalgo/sessions')
-CONFIG_FILE = os.path.join(repo_root, 'openalgo/strategies/active_strategies.json')
+DATA_DIR = os.path.join(openalgo_root, 'data')
+STATE_DIR = os.path.join(openalgo_root, 'strategies/state')
+SESSION_DIR = os.path.join(openalgo_root, 'sessions')
+CONFIG_FILE = os.path.join(openalgo_root, 'strategies/active_strategies.json')
 
 def check_env():
     logger.info("Checking Environment...")
@@ -39,7 +43,7 @@ def check_env():
         os.environ['OPENALGO_APIKEY'] = 'demo_key'
 
     # Verify paths
-    if not os.path.exists(os.path.join(repo_root, 'openalgo')):
+    if not os.path.exists(openalgo_root):
         logger.error("Repo structure invalid. 'openalgo' dir not found.")
         sys.exit(1)
     logger.info("Environment OK.")
@@ -84,7 +88,7 @@ def purge_stale_state():
 
 def check_auth():
     logger.info("Running Authentication Health Check...")
-    script_path = os.path.join(repo_root, 'openalgo/scripts/authentication_health_check.py')
+    script_path = os.path.join(openalgo_root, 'scripts/authentication_health_check.py')
 
     # Check if script exists, if not, mock it for now
     if not os.path.exists(script_path):
@@ -238,12 +242,16 @@ def validate_symbols():
                 resolved_str = str(resolved)
                 valid_count += 1
 
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {resolved_str[:30]:<30} | {status}")
+            itype = config.get('type', 'EQUITY')
+            underlying = config.get('underlying', config.get('symbol', 'Unknown'))
+            print(f"{strat_id:<25} | {itype:<8} | {underlying:<15} | {resolved_str[:30]:<30} | {status}")
 
         except Exception as e:
             logger.error(f"Error validating {strat_id}: {e}")
             invalid_count += 1
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {'ERROR':<30} | 🔴 Error")
+            itype = config.get('type', 'EQUITY')
+            underlying = config.get('underlying', config.get('symbol', 'Unknown'))
+            print(f"{strat_id:<25} | {itype:<8} | {underlying:<15} | {'ERROR':<30} | 🔴 Error")
 
     print("-" * 95)
     if invalid_count > 0:

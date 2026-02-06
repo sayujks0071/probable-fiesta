@@ -7,9 +7,14 @@ import logging
 from openalgo_observability.logging_setup import setup_logging
 
 REPO_URL = "https://github.com/dheerajw7/OpenAlgo.git"
-TARGET_DIR = "openalgo"
+TARGET_DIR = os.path.join("vendor", "openalgo")
 
 def check_and_clone():
+    # Ensure vendor dir exists
+    vendor_dir = "vendor"
+    if not os.path.exists(vendor_dir):
+        os.makedirs(vendor_dir)
+
     if not os.path.exists(TARGET_DIR):
         logging.info(f"Directory '{TARGET_DIR}' not found. Cloning from {REPO_URL}...")
         try:
@@ -29,10 +34,14 @@ def run_script(script_path, description):
     logging.info(f"Executing {description} ({script_path})...")
     try:
         env = os.environ.copy()
-        env['PYTHONPATH'] = os.getcwd() + ":" + env.get('PYTHONPATH', '')
+        # Add 'vendor' to PYTHONPATH so 'import openalgo' works
+        # Add CWD to PYTHONPATH so 'openalgo_observability' works (it's in root)
+        vendor_path = os.path.abspath("vendor")
+        cwd_path = os.getcwd()
+        env['PYTHONPATH'] = f"{vendor_path}:{cwd_path}:{env.get('PYTHONPATH', '')}"
 
         # Use venv if exists, else system python
-        venv_python = os.path.join("openalgo", "venv", "bin", "python3")
+        venv_python = os.path.join(TARGET_DIR, "venv", "bin", "python3")
         python_exec = venv_python if os.path.exists(venv_python) else sys.executable
 
         subprocess.check_call([python_exec, script_path], env=env)
@@ -55,12 +64,12 @@ def main():
     check_and_clone()
 
     # 2. Daily Prep
-    prep_script = os.path.join("openalgo", "scripts", "daily_prep.py")
+    prep_script = os.path.join(TARGET_DIR, "scripts", "daily_prep.py")
     run_script(prep_script, "Daily Prep")
 
     # 3. Backtest (Optional)
     if args.backtest:
-        backtest_script = os.path.join("openalgo", "scripts", "daily_backtest_leaderboard.py")
+        backtest_script = os.path.join(TARGET_DIR, "scripts", "daily_backtest_leaderboard.py")
         run_script(backtest_script, "Daily Backtest & Leaderboard")
 
     logging.info("=== DAILY ROUTINE COMPLETE ===")

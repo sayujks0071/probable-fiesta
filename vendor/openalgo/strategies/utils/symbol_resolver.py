@@ -130,10 +130,21 @@ class SymbolResolver:
                 logger.info(f"Found MCX MINI contract for {underlying}: {mini_matches.iloc[0]['symbol']}")
                 return mini_matches.iloc[0]['symbol']
 
-            # Also check if the symbol itself ends with 'M' before some digits (less reliable but possible)
-            # e.g. CRUDEOILM23NOV...
+            logger.info(f"No MCX MINI contract found for {underlying}, falling back to smallest lot size.")
 
-            logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
+            # Fallback: Sort by lot_size ascending if available
+            if 'lot_size' in matches.columns:
+                # Filter for the NEAREST expiry first (don't want small lot in 2025 if we need 2023)
+                # But usually MINI and Standard have same expiry.
+                # Let's find unique expiries.
+                nearest_exp = matches['expiry'].min()
+                nearest_matches = matches[matches['expiry'] == nearest_exp].copy()
+
+                nearest_matches['lot_size'] = pd.to_numeric(nearest_matches['lot_size'], errors='coerce').fillna(999999)
+                nearest_matches = nearest_matches.sort_values('lot_size')
+
+                logger.info(f"Fallback selected {nearest_matches.iloc[0]['symbol']} (Lot: {nearest_matches.iloc[0]['lot_size']})")
+                return nearest_matches.iloc[0]['symbol']
 
         # Return nearest expiry
         return matches.iloc[0]['symbol']
