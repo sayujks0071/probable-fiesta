@@ -148,6 +148,11 @@ class MCXGlobalArbitrageStrategy:
 
         logger.info(f"MCX Chg: {mcx_change_pct:.2f}% | Global Chg: {global_change_pct:.2f}% | Divergence: {divergence_pct:.2f}%")
         
+        # Safety Guard: Excessive divergence implies data error
+        if abs(divergence_pct) > 5.0:
+            logger.warning(f"SAFETY: Divergence {divergence_pct:.2f}% > 5.0%. Skipping trade execution.")
+            return
+
         # Entry Logic
         current_time = time.time()
         time_since_last_trade = current_time - self.last_trade_time

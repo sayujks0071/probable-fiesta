@@ -52,12 +52,24 @@ class GapFadeStrategy:
 
         # Assuming the last completed row is previous day, or if market just opened, we might have today's open
         # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
 
-        prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
+        last_row = df.iloc[-1]
+
+        # Check if the last row is today's data
+        # 'datetime' column might be string or datetime object depending on APIClient implementation
+        last_date_str = str(last_row.get('datetime', '')).split(' ')[0]
+        today_str = today.strftime("%Y-%m-%d")
+
+        if last_date_str == today_str:
+            # Last row is today, so previous close is at -2
+            if len(df) >= 2:
+                prev_close = df.iloc[-2]['close']
+            else:
+                logger.error("Not enough history data to determine previous close.")
+                return
+        else:
+            # Last row is likely yesterday (or last trading day)
+            prev_close = last_row['close']
 
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
         if not quote:
@@ -66,7 +78,7 @@ class GapFadeStrategy:
 
         current_price = float(quote['ltp'])
 
-        # Some APIs provide 'close' in quote which is prev_close
+        # Double check: Some APIs provide 'close' in quote which is prev_close
         if 'close' in quote and quote['close'] > 0:
             prev_close = float(quote['close'])
 
