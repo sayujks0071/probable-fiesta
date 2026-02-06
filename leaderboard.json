@@ -1,0 +1,232 @@
+[
+    {
+        "strategy": "ML_Momentum",
+        "params": {},
+        "total_return": 0.010081700426773749,
+        "sharpe": 3.262842927121897,
+        "drawdown": 0.00844027106669071,
+        "win_rate": 55.55555555555556,
+        "trades": 9,
+        "profit_factor": 1.5252229430603772,
+        "total_profit": 29.276788074706985,
+        "total_loss": -19.195087647949208
+    },
+    {
+        "strategy": "ML_Momentum_v2",
+        "params": {
+            "threshold": 0.005,
+            "vol_multiplier": 0.2
+        },
+        "total_return": 0.010081700426773749,
+        "sharpe": 3.262842927121897,
+        "drawdown": 0.00844027106669071,
+        "win_rate": 55.55555555555556,
+        "trades": 9,
+        "profit_factor": 1.5252229430603772,
+        "total_profit": 29.276788074706985,
+        "total_loss": -19.195087647949208
+    },
+    {
+        "strategy": "ML_Momentum_v1",
+        "params": {
+            "threshold": 0.003,
+            "vol_multiplier": 0.2
+        },
+        "total_return": 0.010081268983893096,
+        "sharpe": 3.2628429271218935,
+        "drawdown": 0.00844027110310238,
+        "win_rate": 55.55555555555556,
+        "trades": 9,
+        "profit_factor": 1.525188661801167,
+        "total_profit": 29.276788074706985,
+        "total_loss": -19.195519090820312
+    },
+    {
+        "strategy": "MCX_Momentum_v1",
+        "params": {
+            "min_atr": 0.05,
+            "adx_threshold": 20
+        },
+        "total_return": 0.024601183278718967,
+        "sharpe": 1.0817211122460082,
+        "drawdown": 0.042971925963198356,
+        "win_rate": 55.46875,
+        "trades": 256,
+        "profit_factor": 1.1528464193974588,
+        "total_profit": 185.55479524917604,
+        "total_loss": -160.95361197041078
+    },
+    {
+        "strategy": "MCX_Momentum",
+        "params": {
+            "min_atr": 0.05
+        },
+        "total_return": 0.012037053898297017,
+        "sharpe": 0.834171773298582,
+        "drawdown": 0.04297711130986468,
+        "win_rate": 55.309734513274336,
+        "trades": 226,
+        "profit_factor": 1.0790365526651167,
+        "total_profit": 164.33435802557807,
+        "total_loss": -152.2973041271753
+    },
+    {
+        "strategy": "MCX_Momentum_v2",
+        "params": {
+            "min_atr": 0.05,
+            "adx_threshold": 25
+        },
+        "total_return": 0.012037053898297017,
+        "sharpe": 0.834171773298582,
+        "drawdown": 0.04297711130986468,
+        "win_rate": 55.309734513274336,
+        "trades": 226,
+        "profit_factor": 1.0790365526651167,
+        "total_profit": 164.33435802557807,
+        "total_loss": -152.2973041271753
+    },
+    {
+        "strategy": "SuperTrend_VWAP",
+        "params": {},
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0,
+        "total_profit": 0,
+        "total_loss": 0
+    },
+    {
+        "strategy": "SuperTrend_VWAP_v1",
+        "params": {
+            "vol_multiplier": 0.5,
+            "adx_threshold": 15
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0,
+        "total_profit": 0,
+        "total_loss": 0
+    },
+    {
+        "strategy": "SuperTrend_VWAP_v2",
+        "params": {
+            "vol_multiplier": 0.5,
+            "adx_threshold": 20
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0,
+        "total_profit": 0,
+        "total_loss": 0
+    },
+    {
+        "strategy": "SuperTrend_VWAP_v3",
+        "params": {
+            "vol_multiplier": 1.0,
+            "adx_threshold": 15
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0,
+        "total_profit": 0,
+        "total_loss": 0
+    },
+    {
+        "strategy": "SuperTrend_VWAP_v4",
+        "params": {
+            "vol_multiplier": 1.0,
+            "adx_threshold": 20
+        },
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0,
+        "total_profit": 0,
+        "total_loss": 0
+    },
+    {
+        "strategy": "AI_Hybrid_v1",
+        "params": {
+            "rsi_lower": 30,
+            "rsi_upper": 55
+        },
+        "total_return": -2.7904365966795157,
+        "sharpe": -3.5547189879517793,
+        "drawdown": 4.719230534421535,
+        "win_rate": 47.05882352941176,
+        "trades": 17,
+        "profit_factor": 0.5852158553176755,
+        "total_profit": 3937.0061767578763,
+        "total_loss": -6727.4427734373885
+    },
+    {
+        "strategy": "AI_Hybrid_v2",
+        "params": {
+            "rsi_lower": 30,
+            "rsi_upper": 60
+        },
+        "total_return": -2.7904365966795157,
+        "sharpe": -3.5547189879517793,
+        "drawdown": 4.719230534421535,
+        "win_rate": 47.05882352941176,
+        "trades": 17,
+        "profit_factor": 0.5852158553176755,
+        "total_profit": 3937.0061767578763,
+        "total_loss": -6727.4427734373885
+    },
+    {
+        "strategy": "AI_Hybrid_v3",
+        "params": {
+            "rsi_lower": 40,
+            "rsi_upper": 55
+        },
+        "total_return": -4.834710998534952,
+        "sharpe": -4.86278149294736,
+        "drawdown": 6.4810046895471345,
+        "win_rate": 38.095238095238095,
+        "trades": 21,
+        "profit_factor": 0.4908948453289508,
+        "total_profit": 4661.777014160236,
+        "total_loss": -9496.488012695181
+    },
+    {
+        "strategy": "AI_Hybrid_v4",
+        "params": {
+            "rsi_lower": 40,
+            "rsi_upper": 60
+        },
+        "total_return": -4.834710998534952,
+        "sharpe": -4.86278149294736,
+        "drawdown": 6.4810046895471345,
+        "win_rate": 38.095238095238095,
+        "trades": 21,
+        "profit_factor": 0.4908948453289508,
+        "total_profit": 4661.777014160236,
+        "total_loss": -9496.488012695181
+    },
+    {
+        "strategy": "AI_Hybrid",
+        "params": {},
+        "total_return": -5.739662377929519,
+        "sharpe": -6.271441468969537,
+        "drawdown": 7.385232807864396,
+        "win_rate": 35.0,
+        "trades": 20,
+        "profit_factor": 0.3956015771033925,
+        "total_profit": 3756.825634765675,
+        "total_loss": -9496.488012695181
+    }
+]
