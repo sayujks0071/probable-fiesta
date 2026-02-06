@@ -199,24 +199,24 @@ def main():
     manual_actions = []
 
     if not kite_port_up:
-        issues.append("Kite Port 5001 is closed -> Server not started")
+        issues.append("Kite Port 5001 Closed -> Server Not Started -> Action Needed")
         actions_taken.append("Checked Kite Port -> Failed")
     if not dhan_port_up:
-        issues.append("Dhan Port 5002 is closed -> Server not started")
+        issues.append("Dhan Port 5002 Closed -> Server Not Started -> Action Needed")
         actions_taken.append("Checked Dhan Port -> Failed")
 
     if "Valid" not in kite_token_status:
-        issues.append("Kite Token Invalid -> Expired/Missing")
+        issues.append("Kite Token Invalid -> Expired/Missing -> Generated Auth URL")
         actions_taken.append(f"Generated Kite Auth URL")
         manual_actions.append(f"Kite token expired. Visit: {generate_auth_url('zerodha')} to re-authenticate")
 
     if "Valid" not in dhan_token_status:
-        issues.append("Dhan Token Invalid -> Expired/Missing")
+        issues.append("Dhan Token Invalid -> Expired/Missing -> Generated Auth URL")
         actions_taken.append(f"Generated Dhan Auth URL")
         manual_actions.append(f"Dhan token expired. Visit: {generate_auth_url('dhan')} to re-authenticate")
 
     if "Unknown (DB Error)" in kite_token_status or "Unknown (DB Error)" in dhan_token_status:
-         issues.append("DB Connectivity Error")
+         issues.append("DB Connectivity Error -> DB Connection Failed -> Check .env Config")
          manual_actions.append("Check Database configuration in .env")
 
     print(f"⚠️ ISSUES DETECTED:")
