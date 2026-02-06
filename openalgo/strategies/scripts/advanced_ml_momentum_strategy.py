@@ -22,18 +22,22 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from equity_analysis import EquityAnalyzer
 except ImportError:
     try:
         # Try absolute import
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.equity_analysis import EquityAnalyzer
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.equity_analysis import EquityAnalyzer
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            EquityAnalyzer = None
             is_market_open = lambda: True
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -45,6 +49,7 @@ class MLMomentumStrategy:
         self.client = APIClient(api_key=api_key, host=self.host)
         self.logger = logging.getLogger(f"MLMomentum_{symbol}")
         self.pm = PositionManager(symbol) if PositionManager else None
+        self.analyzer = EquityAnalyzer(api_client=self.client) if EquityAnalyzer else None
 
         self.roc_threshold = threshold
         self.stop_pct = stop_pct
@@ -224,12 +229,21 @@ class MLMomentumStrategy:
                 # Price > SMA50 (Uptrend)
                 # Sentiment > 0 (Not Negative)
 
+                # Enhanced Momentum Check via Analyzer
+                analyzer_score_ok = True
+                if self.analyzer:
+                    mom_score = self.analyzer.calculate_momentum_score(df)
+                    if mom_score < 50:
+                        analyzer_score_ok = False
+                        self.logger.info(f"Analyzer Momentum Score too low ({mom_score}). Skipping.")
+
                 if (last['roc'] > self.roc_threshold and
                     last['rsi'] > 55 and
                     rs_excess > 0 and
                     sector_outperformance > 0 and
                     current_price > last['sma50'] and
-                    sentiment >= 0):
+                    sentiment >= 0 and
+                    analyzer_score_ok):
 
                     # Volume check
                     avg_vol = df['volume'].rolling(20).mean().iloc[-1]
