@@ -357,8 +357,8 @@ def run_strategy():
 # Module level wrapper for SimpleBacktestEngine
 def generate_signal(df, client=None, symbol=None, params=None):
     strat_params = {
-        'rsi_lower': 30.0,
-        'rsi_upper': 60.0,
+        'rsi_lower': 35.0, # Relaxed from 30.0
+        'rsi_upper': 55.0, # Relaxed from 60.0
         'stop_pct': 1.0,
         'sector': 'NIFTY 50'
     }

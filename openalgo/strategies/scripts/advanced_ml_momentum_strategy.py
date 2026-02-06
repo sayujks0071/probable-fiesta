@@ -270,10 +270,10 @@ def run_strategy():
 # Module level wrapper for SimpleBacktestEngine
 def generate_signal(df, client=None, symbol=None, params=None):
     strat_params = {
-        'threshold': 0.01,
+        'threshold': 0.005, # Lowered from 0.01
         'stop_pct': 1.0,
         'sector': 'NIFTY 50',
-        'vol_multiplier': 0.5
+        'vol_multiplier': 0.2 # Lowered from 0.5
     }
     if params:
         strat_params.update(params)

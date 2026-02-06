@@ -77,6 +77,7 @@ class SuperTrendVWAPStrategy:
         self.stop_pct = 1.8
         self.adx_threshold = 20  # Added ADX Filter
         self.adx_period = 14
+        self.vol_multiplier = 1.0 # Default 1.0 (was 1.5)
 
         # State
         self.trailing_stop = 0.0
@@ -144,7 +145,7 @@ class SuperTrendVWAPStrategy:
 
         vol_mean = df['volume'].rolling(20).mean().iloc[-1]
         vol_std = df['volume'].rolling(20).std().iloc[-1]
-        dynamic_threshold = vol_mean + (1.5 * vol_std)
+        dynamic_threshold = vol_mean + (self.vol_multiplier * vol_std)
         is_volume_spike = last['volume'] > dynamic_threshold
 
         is_above_poc = last['close'] > poc_price
@@ -465,6 +466,7 @@ def generate_signal(df, client=None, symbol=None, params=None):
         if 'threshold' in params: strat.threshold = params['threshold']
         if 'stop_pct' in params: strat.stop_pct = params['stop_pct']
         if 'adx_threshold' in params: strat.adx_threshold = params['adx_threshold']
+        if 'vol_multiplier' in params: strat.vol_multiplier = params['vol_multiplier']
 
     # Set Breakeven Trigger
     setattr(strat, 'BREAKEVEN_TRIGGER_R', 1.5)
