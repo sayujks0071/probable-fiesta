@@ -37,17 +37,9 @@ def test_format_mcx_symbol_year():
 
 def test_normalize_mcx_string():
     # Normalization check
-    assert normalize_mcx_string('GOLDM 5 FEB 26 FUT') == 'GOLDM05FEB26FUT' # Should fail if strict regex doesn't match spaces?
-    # Wait, the current implementation of normalize_mcx_string in mcx_utils.py uses a regex that might not catch spaces if it expects specific format.
-    # Let's check the implementation again.
-
-    # The current regex in mcx_utils.py is r'^([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT$'
-    # This expects NO spaces. So 'GOLDM 5 FEB 26 FUT' would NOT match and would return original.
-    # But the requirement says "normalize_mcx_string... e.g. GOLDM 5 FEB 26 FUT -> GOLDM05FEB26FUT".
-    # I should check if I need to update mcx_utils.py to handle spaces or if the test should reflect current behavior.
-    # The requirement in the prompt says: "Add unit tests asserting exactly: ... GOLDM05FEB26FUT ...".
-    # It does not explicitly ask to change normalize_mcx_string to handle spaces, but implies "zero padding on DD".
-
-    # Let's test what IS supported: padding.
+    # Check handling of spaces
+    assert normalize_mcx_string('GOLDM 5 FEB 26 FUT') == 'GOLDM05FEB26FUT'
+    # Check handling of missing padding
     assert normalize_mcx_string('GOLDM5FEB26FUT') == 'GOLDM05FEB26FUT'
+    # Check already normalized
     assert normalize_mcx_string('GOLDM05FEB26FUT') == 'GOLDM05FEB26FUT'
