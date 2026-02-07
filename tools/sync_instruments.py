@@ -7,17 +7,30 @@ repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-# Also add openalgo/scripts to path if needed for internal imports within daily_prep
-scripts_dir = os.path.join(repo_root, 'openalgo', 'scripts')
+# Add vendor directory to path to support 'from openalgo...' imports
+vendor_dir = os.path.join(repo_root, 'vendor')
+if vendor_dir not in sys.path:
+    sys.path.insert(0, vendor_dir)
+
+# Also add vendor/openalgo/scripts to path if needed for internal imports within daily_prep
+scripts_dir = os.path.join(repo_root, 'vendor', 'openalgo', 'scripts')
 if scripts_dir not in sys.path:
     sys.path.insert(0, scripts_dir)
 
 try:
     from openalgo.scripts.daily_prep import fetch_instruments
 except ImportError:
-    # Fallback if openalgo package is not directly importable (e.g. not installed)
-    sys.path.insert(0, os.path.join(repo_root, 'openalgo'))
-    from scripts.daily_prep import fetch_instruments
+    # Fallback if package import fails, try direct import from scripts dir
+    sys.path.insert(0, os.path.join(repo_root, 'vendor', 'openalgo'))
+    try:
+        from scripts.daily_prep import fetch_instruments
+    except ImportError:
+        # Last resort: direct file import
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("daily_prep", os.path.join(scripts_dir, "daily_prep.py"))
+        daily_prep = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(daily_prep)
+        fetch_instruments = daily_prep.fetch_instruments
 
 def main():
     print("🔄 Syncing instruments...")

@@ -12,9 +12,9 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
+DATA_DIR = os.path.join(REPO_ROOT, 'vendor', 'openalgo', 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
-CONFIG_FILE = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategies.json')
+CONFIG_FILE = os.path.join(REPO_ROOT, 'vendor', 'openalgo', 'strategies', 'active_strategies.json')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
 # Regex for MCX Symbols
@@ -79,7 +79,7 @@ def validate_config_symbols(resolver):
 
 def scan_files_for_hardcoded_symbols(instruments):
     issues = []
-    strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    strategies_dir = os.path.join(REPO_ROOT, 'vendor', 'openalgo', 'strategies')
 
     for root, dirs, files in os.walk(strategies_dir):
         # Exclude tests
@@ -152,12 +152,24 @@ def main():
 
     # Load resolver
     try:
+        # Add vendor to path
+        sys.path.insert(0, os.path.join(REPO_ROOT, 'vendor'))
+
         # Check if openalgo package is importable
         try:
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
         except ImportError:
-            sys.path.insert(0, os.path.join(REPO_ROOT, 'openalgo'))
-            from strategies.utils.symbol_resolver import SymbolResolver
+            sys.path.insert(0, os.path.join(REPO_ROOT, 'vendor', 'openalgo'))
+            try:
+                from strategies.utils.symbol_resolver import SymbolResolver
+            except ImportError:
+                 # Direct file import as fallback
+                import importlib.util
+                resolver_path = os.path.join(REPO_ROOT, 'vendor', 'openalgo', 'strategies', 'utils', 'symbol_resolver.py')
+                spec = importlib.util.spec_from_file_location("symbol_resolver", resolver_path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                SymbolResolver = mod.SymbolResolver
 
         resolver = SymbolResolver(INSTRUMENTS_FILE)
         instruments = set(resolver.df['symbol'].unique()) if not resolver.df.empty else set()
