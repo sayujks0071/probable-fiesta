@@ -8,57 +8,60 @@ VWAP mean reversion with volume profile analysis, Enhanced Sector RSI Filter, an
 import os
 import sys
 import time
+import signal
 import logging
 import argparse
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-# Add repo root to path to allow imports
+# --- Robust Imports ---
+# Ensure we can import from openalgo
 script_dir = os.path.dirname(os.path.abspath(__file__))
-strategies_dir = os.path.dirname(script_dir)
-utils_dir = os.path.join(strategies_dir, 'utils')
+strategies_dir = os.path.dirname(script_dir) # openalgo/strategies
+repo_root = os.path.dirname(strategies_dir)  # openalgo/
+vendor_root = os.path.dirname(repo_root)     # vendor/ (if applicable)
 
-# Add utils directory to path for imports
-sys.path.insert(0, utils_dir)
+# Try adding repo_root to path
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
 
+# Try adding vendor_root to path
+if vendor_root not in sys.path:
+    sys.path.insert(0, vendor_root)
+
+# Try importing
 try:
-    from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-    from symbol_resolver import SymbolResolver
+    from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+    from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 except ImportError:
+    # Fallback for direct execution without package structure
+    utils_dir = os.path.join(strategies_dir, 'utils')
+    if utils_dir not in sys.path:
+        sys.path.insert(0, utils_dir)
     try:
-        sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-        from utils.symbol_resolver import SymbolResolver
+        from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+        from symbol_resolver import SymbolResolver
     except ImportError:
-        try:
-            from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
-        except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            SymbolResolver = None
-            normalize_symbol = lambda s: s
-            is_market_open = lambda: True
-            def calculate_intraday_vwap(df):
-                df = df.copy()
-                if 'datetime' not in df.columns:
-                    if isinstance(df.index, pd.DatetimeIndex):
-                        df['datetime'] = df.index
-                    elif 'timestamp' in df.columns:
-                        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-                    else:
-                        df['datetime'] = pd.to_datetime(df.index)
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df['date'] = df['datetime'].dt.date
-                typical_price = (df['high'] + df['low'] + df['close']) / 3
-                df['pv'] = typical_price * df['volume']
-                df['cum_pv'] = df.groupby('date')['pv'].cumsum()
-                df['cum_vol'] = df.groupby('date')['volume'].cumsum()
-                df['vwap'] = df['cum_pv'] / df['cum_vol']
-                df['vwap_dev'] = (df['close'] - df['vwap']) / df['vwap']
-                return df
+        print("CRITICAL: Failed to import openalgo modules. check PYTHONPATH.")
+        # Define dummies to prevent crash on import check, but will fail later
+        APIClient = None
+        PositionManager = None
+        SymbolResolver = None
+        normalize_symbol = lambda s: s
+        is_market_open = lambda: True
+        calculate_intraday_vwap = lambda df: df
+
+class GracefulKiller:
+    """Handle SIGINT/SIGTERM to allow graceful shutdown."""
+    kill_now = False
+    def __init__(self):
+        signal.signal(signal.SIGINT, self.exit_gracefully)
+        signal.signal(signal.SIGTERM, self.exit_gracefully)
+
+    def exit_gracefully(self, signum, frame):
+        self.kill_now = True
+        print("\nReceived shutdown signal. Finishing current iteration...")
 
 class SuperTrendVWAPStrategy:
     def __init__(self, symbol, quantity, api_key=None, host=None, ignore_time=False, sector_benchmark='NIFTY BANK', logfile=None, client=None):
@@ -280,10 +283,12 @@ class SuperTrendVWAPStrategy:
         self.symbol = normalize_symbol(self.symbol)
         self.logger.info(f"Starting SuperTrend VWAP for {self.symbol}")
 
-        while True:
+        killer = GracefulKiller()
+
+        while not killer.kill_now:
             try:
                 if not self.ignore_time and not is_market_open():
-                    time.sleep(60)
+                    self.sleep_until_next_minute()
                     continue
 
                 exchange = "NSE_INDEX" if "NIFTY" in self.symbol.upper() or "VIX" in self.symbol.upper() else "NSE"
@@ -297,17 +302,17 @@ class SuperTrendVWAPStrategy:
                     )
                 except Exception as e:
                     self.logger.error(f"Failed to fetch history for {self.symbol} on {exchange}: {e}", exc_info=True)
-                    time.sleep(60)
+                    self.sleep_until_next_minute()
                     continue
                 if df.empty or len(df) < 50:
                     self.logger.warning(f"Insufficient data for {self.symbol}: {len(df)} rows. Need at least 50.")
-                    time.sleep(60)
+                    self.sleep_until_next_minute()
                     continue
                 required_cols = ['open', 'high', 'low', 'close', 'volume']
                 missing_cols = [col for col in required_cols if col not in df.columns]
                 if missing_cols:
                     self.logger.error(f"Missing required columns for {self.symbol}: {missing_cols}")
-                    time.sleep(60)
+                    self.sleep_until_next_minute()
                     continue
                 if "datetime" in df.columns:
                     df["datetime"] = pd.to_datetime(df["datetime"])
@@ -319,16 +324,16 @@ class SuperTrendVWAPStrategy:
                 try:
                     if not callable(calculate_intraday_vwap):
                         self.logger.error("calculate_intraday_vwap is not callable. Check imports.")
-                        time.sleep(60)
+                        self.sleep_until_next_minute()
                         continue
                     df = calculate_intraday_vwap(df)
                     if 'vwap' not in df.columns or 'vwap_dev' not in df.columns:
                         self.logger.error("VWAP calculation failed - missing required columns")
-                        time.sleep(60)
+                        self.sleep_until_next_minute()
                         continue
                 except Exception as e:
                     self.logger.error(f"VWAP calc failed: {e}", exc_info=True)
-                    time.sleep(60)
+                    self.sleep_until_next_minute()
                     continue
                 self.atr = self.calculate_atr(df)
                 last = df.iloc[-1]
@@ -401,7 +406,16 @@ class SuperTrendVWAPStrategy:
             except Exception as e:
                 self.logger.error(f"Error in SuperTrend VWAP strategy for {self.symbol}: {e}", exc_info=True)
 
-            time.sleep(60)
+            if not killer.kill_now:
+                self.sleep_until_next_minute()
+
+    def sleep_until_next_minute(self):
+        """Sleep until the start of the next minute."""
+        now = datetime.now()
+        next_minute = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+        sleep_seconds = (next_minute - now).total_seconds()
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
 
 def run_strategy():
     parser = argparse.ArgumentParser(description="SuperTrend VWAP Strategy")
