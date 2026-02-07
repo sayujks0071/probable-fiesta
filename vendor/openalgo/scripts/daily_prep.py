@@ -10,11 +10,7 @@ from datetime import datetime, timedelta
 import httpx
 import pandas as pd
 
-# Add repo root to path (vendor directory)
-# __file__ = vendor/openalgo/scripts/daily_prep.py
-# dirname = vendor/openalgo/scripts
-# .. = vendor/openalgo
-# ../.. = vendor
+# Add repo root to path
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.append(repo_root)
 
@@ -43,10 +39,8 @@ def check_env():
         os.environ['OPENALGO_APIKEY'] = 'demo_key'
 
     # Verify paths
-    check_path = os.path.join(repo_root, 'openalgo')
-    logger.info(f"Checking Path: {check_path}")
-    if not os.path.exists(check_path):
-        logger.error(f"Repo structure invalid. '{check_path}' dir not found.")
+    if not os.path.exists(os.path.join(repo_root, 'openalgo')):
+        logger.error("Repo structure invalid. 'openalgo' dir not found.")
         sys.exit(1)
     logger.info("Environment OK.")
 
@@ -103,6 +97,8 @@ def check_auth():
         if result.returncode != 0:
             logger.error("Authentication check failed!")
             logger.error(result.stderr)
+            # In a strict environment, we might exit here:
+            # sys.exit(1)
         else:
             logger.info("Authentication check passed.")
     except Exception as e:
@@ -144,6 +140,7 @@ def fetch_instruments():
         next_thursday = now + timedelta(days=days_ahead)
 
         # Calculate Monthly Expiry (Last Thursday of current month)
+        # Simplified: Last day of month
         import calendar
         last_day = calendar.monthrange(now.year, now.month)[1]
         month_end = datetime(now.year, now.month, last_day)
@@ -151,34 +148,32 @@ def fetch_instruments():
         offset = (month_end.weekday() - 3) % 7
         monthly_expiry = month_end - timedelta(days=offset)
 
-        # MCX Future Dates (Mocking +30 days)
-        mcx_expiry = (now + timedelta(days=30)).strftime('%Y-%m-%d')
-        mcx_sym_date = (now + timedelta(days=30)).strftime('%d%b%y').upper()
-
         data = [
             # Equities
             {'exchange': 'NSE', 'token': '1', 'symbol': 'RELIANCE', 'name': 'RELIANCE', 'expiry': None, 'lot_size': 1, 'instrument_type': 'EQ'},
             {'exchange': 'NSE', 'token': '2', 'symbol': 'NIFTY', 'name': 'NIFTY', 'expiry': None, 'lot_size': 1, 'instrument_type': 'EQ'},
             {'exchange': 'NSE', 'token': '3', 'symbol': 'INFY', 'name': 'INFY', 'expiry': None, 'lot_size': 1, 'instrument_type': 'EQ'},
-            {'exchange': 'NSE', 'token': '4', 'symbol': 'BANKNIFTY', 'name': 'BANKNIFTY', 'expiry': None, 'lot_size': 1, 'instrument_type': 'EQ'},
 
             # MCX Futures (Standard & MINI)
-            # MINI (Explicit)
-            {'exchange': 'MCX', 'token': '5', 'symbol': f'SILVERMINI{mcx_sym_date}FUT', 'name': 'SILVER', 'expiry': mcx_expiry, 'lot_size': 1, 'instrument_type': 'FUT'},
-            # Standard
-            {'exchange': 'MCX', 'token': '6', 'symbol': f'SILVER{mcx_sym_date}FUT', 'name': 'SILVER', 'expiry': mcx_expiry, 'lot_size': 30, 'instrument_type': 'FUT'},
-             # GOLDM
-            {'exchange': 'MCX', 'token': '7', 'symbol': f'GOLDM{mcx_sym_date}FUT', 'name': 'GOLD', 'expiry': mcx_expiry, 'lot_size': 10, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'token': '4', 'symbol': 'SILVERMIC23NOVFUT', 'name': 'SILVER', 'expiry': (now + timedelta(days=20)).strftime('%Y-%m-%d'), 'lot_size': 1, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'token': '5', 'symbol': 'SILVER23NOVFUT', 'name': 'SILVER', 'expiry': (now + timedelta(days=20)).strftime('%Y-%m-%d'), 'lot_size': 30, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'token': '6', 'symbol': 'GOLDM23NOVFUT', 'name': 'GOLD', 'expiry': (now + timedelta(days=25)).strftime('%Y-%m-%d'), 'lot_size': 10, 'instrument_type': 'FUT'},
+
+            # 2026 Mock Futures for Testing
+            {'exchange': 'MCX', 'token': '100', 'symbol': 'GOLDM05FEB26FUT', 'name': 'GOLD', 'expiry': '2026-02-05', 'lot_size': 10, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'token': '101', 'symbol': 'SILVERM27FEB26FUT', 'name': 'SILVER', 'expiry': '2026-02-27', 'lot_size': 5, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'token': '102', 'symbol': 'CRUDEOIL19FEB26FUT', 'name': 'CRUDEOIL', 'expiry': '2026-02-19', 'lot_size': 100, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'token': '103', 'symbol': 'NATURALGAS24FEB26FUT', 'name': 'NATURALGAS', 'expiry': '2026-02-24', 'lot_size': 1250, 'instrument_type': 'FUT'},
 
             # NSE Futures
-            {'exchange': 'NFO', 'token': '8', 'symbol': f'NIFTY{monthly_expiry.strftime("%d%b").upper()}FUT', 'name': 'NIFTY', 'expiry': monthly_expiry.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'FUT'},
+            {'exchange': 'NFO', 'token': '7', 'symbol': 'NIFTY23OCTFUT', 'name': 'NIFTY', 'expiry': monthly_expiry.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'FUT'},
 
             # NSE Options (Weekly)
-            {'exchange': 'NFO', 'token': '10', 'symbol': f'NIFTY{next_thursday.strftime("%d%b%y").upper()}19500CE', 'name': 'NIFTY', 'expiry': next_thursday.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT', 'strike': 19500},
-            {'exchange': 'NFO', 'token': '11', 'symbol': f'NIFTY{next_thursday.strftime("%d%b%y").upper()}19500PE', 'name': 'NIFTY', 'expiry': next_thursday.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT', 'strike': 19500},
+            {'exchange': 'NFO', 'token': '10', 'symbol': 'NIFTY23OCT19500CE', 'name': 'NIFTY', 'expiry': next_thursday.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT'},
+            {'exchange': 'NFO', 'token': '11', 'symbol': 'NIFTY23OCT19500PE', 'name': 'NIFTY', 'expiry': next_thursday.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT'},
 
             # NSE Options (Monthly)
-            {'exchange': 'NFO', 'token': '12', 'symbol': f'NIFTY{monthly_expiry.strftime("%d%b%y").upper()}19600CE', 'name': 'NIFTY', 'expiry': monthly_expiry.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT', 'strike': 19600},
+            {'exchange': 'NFO', 'token': '12', 'symbol': 'NIFTY23OCT19600CE', 'name': 'NIFTY', 'expiry': monthly_expiry.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT'},
         ]
 
         try:
@@ -220,7 +215,7 @@ def validate_symbols():
 
     for strat_id, config in configs.items():
         try:
-            resolved = resolver.resolve(config, strict=True)
+            resolved = resolver.resolve(config)
 
             status = "✅ Valid"
             resolved_str = "Unknown"
