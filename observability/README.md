@@ -69,6 +69,18 @@ export TELEGRAM_BOT_TOKEN="your_token"
 export TELEGRAM_CHAT_ID="your_chat_id"
 ```
 
+### Environment Configuration
+
+For scheduled health checks (via Systemd), you can persist these variables in `~/.config/openalgo/openalgo.env`:
+
+```bash
+mkdir -p ~/.config/openalgo
+cat <<EOF > ~/.config/openalgo/openalgo.env
+TELEGRAM_BOT_TOKEN=your_token
+TELEGRAM_CHAT_ID=your_chat_id
+EOF
+```
+
 To install the scheduled health check:
 ```bash
 # Install as Systemd User Timer (Recommended)

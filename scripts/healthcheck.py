@@ -6,7 +6,6 @@ Checks service health and queries logs for alerts.
 import os
 import sys
 import logging
-import logging.handlers
 import subprocess
 import json
 import time
@@ -15,31 +14,28 @@ import urllib.parse
 import urllib.error
 from datetime import datetime, timedelta
 
+# Ensure repo root is in path for imports
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+try:
+    from openalgo_observability.logging_setup import setup_logging
+except ImportError:
+    # Fallback if module not found (should not happen if path is correct)
+    def setup_logging(log_filename="healthcheck.log"):
+        logging.basicConfig(level=logging.INFO)
+        logging.warning("Could not import setup_logging. Using basic config.")
+
 # Configuration
 LOKI_URL = "http://localhost:3100"
 GRAFANA_URL = "http://localhost:3000"
-LOG_FILE = os.path.join(os.path.dirname(__file__), "../logs/healthcheck.log")
-OPENALGO_LOG_FILE = os.path.join(os.path.dirname(__file__), "../logs/openalgo.log")
 
 # Alert Thresholds
 ERROR_THRESHOLD = 5 # Max errors in 5m
 ALERT_LOOKBACK_MINUTES = 5
 
-# Setup Logging for Healthcheck itself
+# Initialize Logging
+setup_logging(log_filename="healthcheck.log")
 logger = logging.getLogger("HealthCheck")
-logger.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-
-# Rotating File Handler
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-handler = logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=3)
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-
-# Console Handler
-console = logging.StreamHandler()
-console.setFormatter(formatter)
-logger.addHandler(console)
 
 def check_service(name, url, timeout=2):
     try:
@@ -55,11 +51,20 @@ def check_service(name, url, timeout=2):
 
 def check_process(pattern):
     try:
-        # Use pgrep
+        # Use pgrep to find process matching pattern
+        # We exclude the current process to avoid false positives if the script name matches
         cmd = ["pgrep", "-f", pattern]
         output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
         pids = output.decode().strip().split('\n')
-        return True, f"Running ({len(pids)} processes: {', '.join(pids)})"
+
+        # Filter out self (pid)
+        self_pid = str(os.getpid())
+        pids = [p for p in pids if p != self_pid]
+
+        if pids:
+            return True, f"Running ({len(pids)} processes: {', '.join(pids)})"
+        else:
+            return False, "Not Running"
     except subprocess.CalledProcessError:
         return False, "Not Running"
 
@@ -126,10 +131,18 @@ def main():
 
     # 1. Service Health
     loki_ok, loki_msg = check_service("Loki", f"{LOKI_URL}/ready")
-    grafana_ok, graf_msg = check_service("Grafana", f"{GRAFANA_URL}/login")
+    # Grafana uses /api/health for health check
+    grafana_ok, graf_msg = check_service("Grafana", f"{GRAFANA_URL}/api/health")
 
-    # Check OpenAlgo Process (look for python scripts)
-    oa_ok, oa_msg = check_process("openalgo")
+    # Check OpenAlgo Process (look for python scripts running openalgo or daily_startup)
+    # Using python.*openalgo ensures we catch python processes related to openalgo
+    oa_ok, oa_msg = check_process("python.*openalgo")
+    if not oa_ok:
+        # Also check for daily_startup as it might not be 'openalgo' package based
+        ds_ok, ds_msg = check_process("daily_startup.py")
+        if ds_ok:
+            oa_ok = True
+            oa_msg = ds_msg
 
     logger.info(f"Loki: {loki_msg}")
     logger.info(f"Grafana: {graf_msg}")
@@ -165,8 +178,8 @@ def main():
             send_alert("Critical Event", f"Found {crit_count} critical events.\nSample:\n{sample}")
 
     else:
-        # Fallback to reading file if Loki is down?
-        pass
+        # Fallback to reading file if Loki is down
+        logger.warning("Loki is down, skipping log analysis.")
 
     logger.info("--- Health Check Complete ---")
 

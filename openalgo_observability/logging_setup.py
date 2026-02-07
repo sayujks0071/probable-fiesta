@@ -22,6 +22,9 @@ SENSITIVE_PATTERNS = [
     (r'(access_token[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
 ]
 
+# Track setup status within the process
+_SETUP_DONE = False
+
 class SensitiveDataFilter(logging.Filter):
     """Filter to redact sensitive information from log messages."""
 
@@ -74,11 +77,12 @@ class JsonFormatter(logging.Formatter):
 
         return json.dumps(log_data)
 
-def setup_logging():
+def setup_logging(log_filename="openalgo.log"):
     """Configure structured logging with rotation and redaction."""
+    global _SETUP_DONE
 
     # Prevent double setup
-    if os.environ.get('OPENALGO_LOGGING_SETUP_DONE') == 'true':
+    if _SETUP_DONE:
         return
 
     log_level_name = os.getenv('OPENALGO_LOG_LEVEL', 'INFO').upper()
@@ -118,7 +122,7 @@ def setup_logging():
         repo_root = Path(__file__).resolve().parent.parent
         log_dir = repo_root / "logs"
         log_dir.mkdir(exist_ok=True)
-        log_file = log_dir / "openalgo.log"
+        log_file = log_dir / log_filename
 
         # RotatingFileHandler: 10MB max, 5 backups
         file_handler = logging.handlers.RotatingFileHandler(
@@ -143,4 +147,4 @@ def setup_logging():
     logging.getLogger('httpx').setLevel(logging.WARNING)
 
     # Mark setup as done
-    os.environ['OPENALGO_LOGGING_SETUP_DONE'] = 'true'
+    _SETUP_DONE = True
