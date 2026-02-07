@@ -23,20 +23,23 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install pandas httpx pytz
 
       - name: A) Sync Instruments
         id: sync
+        continue-on-error: true
         run: python3 tools/sync_instruments.py
 
       - name: B) Pre-Check Strict Validation
         id: precheck
+        if: steps.sync.outcome == 'success'
         continue-on-error: true
         run: python3 tools/validate_symbols.py --strict --check
 
       - name: C) Normalize Symbols
         id: normalize
         if: steps.precheck.outcome == 'success'
+        continue-on-error: true
         run: python3 tools/normalize_symbols_repo.py --write
 
       - name: D) Post-Check Strict Validation
@@ -47,8 +50,17 @@ jobs:
 
       - name: Gate Check
         id: gate
+        if: always()
         run: |
-          if [[ "${{ steps.precheck.outcome }}" == "success" && "${{ steps.postcheck.outcome }}" == "success" ]]; then
+          # Check all steps succeeded
+          SYNC="${{ steps.sync.outcome }}"
+          PRE="${{ steps.precheck.outcome }}"
+          NORM="${{ steps.normalize.outcome }}"
+          POST="${{ steps.postcheck.outcome }}"
+
+          echo "Step Statuses: Sync=$SYNC, Pre=$PRE, Norm=$NORM, Post=$POST"
+
+          if [[ "$SYNC" == "success" && "$PRE" == "success" && "$NORM" == "success" && "$POST" == "success" ]]; then
             echo "gate_ok=true" >> $GITHUB_OUTPUT
             echo "Gate passed."
           else
@@ -87,6 +99,14 @@ jobs:
           script: |
             const fs = require('fs');
             let body = "Daily symbol audit failed. Please check the attached artifacts.\n\n";
+
+            // Add status summary
+            body += "### Status Summary\n";
+            body += "- Sync: ${{ steps.sync.outcome }}\n";
+            body += "- Pre-Check: ${{ steps.precheck.outcome }}\n";
+            body += "- Normalize: ${{ steps.normalize.outcome }}\n";
+            body += "- Post-Check: ${{ steps.postcheck.outcome }}\n\n";
+
             try {
               // Read report if exists
               if (fs.existsSync('reports/symbol_audit.md')) {

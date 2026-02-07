@@ -12,14 +12,22 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from openalgo.strategies.utils.mcx_utils import MCX_FUZZY_PATTERN, normalize_mcx_string
+
 DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 CONFIG_FILE = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategies.json')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
-# Regex for MCX Symbols
-MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+
+# Files to exclude from hardcoded symbol scanning
+# Typically utility files that define patterns or tests that intentionally use bad symbols
+EXCLUDED_FILES = {
+    'mcx_utils.py',
+    'test_mcx_formatting.py',
+    'normalize_symbols_repo.py'
+}
 
 def check_instruments_freshness():
     if not os.path.exists(INSTRUMENTS_FILE):
@@ -80,6 +88,10 @@ def validate_config_symbols(resolver):
 def scan_files_for_hardcoded_symbols(instruments):
     issues = []
     strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    # Also include tools/ for completeness if needed, but primarily scanning strategies
+
+    # We will walk strategies_dir, but we might also want to exclude the utils folder itself if it's too noisy
+    # For now, file-based exclusion is safer.
 
     for root, dirs, files in os.walk(strategies_dir):
         # Exclude tests
@@ -89,15 +101,21 @@ def scan_files_for_hardcoded_symbols(instruments):
             dirs.remove('test')
 
         for file in files:
+            if file in EXCLUDED_FILES:
+                continue
+
             if file.endswith('.py'):
                 filepath = os.path.join(root, file)
                 try:
                     with open(filepath, 'r', encoding='utf-8') as f:
                         content = f.read()
                 except UnicodeDecodeError:
-                    continue # Skip binary/bad files
+                    continue
+                except Exception as e:
+                    print(f"Error reading {filepath}: {e}")
+                    continue
 
-                for match in MCX_PATTERN.finditer(content):
+                for match in MCX_FUZZY_PATTERN.finditer(content):
                     symbol_str = match.group(0)
                     parts = match.groups() # (Symbol, Day, Month, Year)
 
@@ -111,8 +129,7 @@ def scan_files_for_hardcoded_symbols(instruments):
                         })
                         continue
 
-                    # Normalized form:
-                    normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
+                    normalized = normalize_mcx_string(symbol_str)
 
                     if symbol_str != normalized:
                          issues.append({
@@ -189,7 +206,6 @@ def main():
     with open(os.path.join(REPORTS_DIR, 'symbol_audit.json'), 'w') as f:
         json.dump(audit_report, f, indent=2)
 
-    # Also create Markdown
     with open(os.path.join(REPORTS_DIR, 'symbol_audit.md'), 'w') as f:
          f.write("# Symbol Validation Report\n\n")
          f.write(f"Date: {datetime.now()}\n")
