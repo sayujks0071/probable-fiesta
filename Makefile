@@ -23,6 +23,7 @@ obs-down:
 
 obs-logs:
 	@echo "Tailing Promtail logs and App logs (Ctrl+C to stop)..."
+	@mkdir -p logs && touch logs/openalgo.log
 	@(trap 'kill 0' SIGINT; tail -f logs/openalgo.log & docker compose -f observability/docker-compose.yml logs -f promtail)
 
 run:

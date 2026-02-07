@@ -11,11 +11,16 @@ TIMER_FILE=~/.config/systemd/user/openalgo-health.timer
 
 echo "Installing Systemd User Service..."
 
+# Ensure config directory exists
+mkdir -p ~/.config/openalgo
+
 cat <<EOF > $SERVICE_FILE
 [Unit]
 Description=OpenAlgo Health Check
 
 [Service]
+# Optional environment file for secrets (e.g. TELEGRAM_BOT_TOKEN)
+EnvironmentFile=-%h/.config/openalgo/openalgo.env
 ExecStart=$PYTHON_EXEC $SCRIPT_PATH
 WorkingDirectory=$SCRIPT_DIR
 StandardOutput=journal
