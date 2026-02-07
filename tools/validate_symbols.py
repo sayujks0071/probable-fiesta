@@ -21,6 +21,14 @@ REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
+# Files to exclude from hardcoded symbol scanning
+# Typically utility files that define patterns or tests that intentionally use bad symbols
+EXCLUDED_FILES = {
+    'mcx_utils.py',
+    'test_mcx_formatting.py',
+    'normalize_symbols_repo.py'
+}
+
 def check_instruments_freshness():
     if not os.path.exists(INSTRUMENTS_FILE):
         return False, "Instruments file missing"
@@ -80,6 +88,10 @@ def validate_config_symbols(resolver):
 def scan_files_for_hardcoded_symbols(instruments):
     issues = []
     strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    # Also include tools/ for completeness if needed, but primarily scanning strategies
+
+    # We will walk strategies_dir, but we might also want to exclude the utils folder itself if it's too noisy
+    # For now, file-based exclusion is safer.
 
     for root, dirs, files in os.walk(strategies_dir):
         # Exclude tests
@@ -89,6 +101,9 @@ def scan_files_for_hardcoded_symbols(instruments):
             dirs.remove('test')
 
         for file in files:
+            if file in EXCLUDED_FILES:
+                continue
+
             if file.endswith('.py'):
                 filepath = os.path.join(root, file)
                 try:
