@@ -27,11 +27,12 @@ logging.basicConfig(
 logger = logging.getLogger("GapFadeStrategy")
 
 class GapFadeStrategy:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5, sentiment_score=None):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
+        self.sentiment_score = sentiment_score
         self.pm = PositionManager(f"{symbol}_GapFade")
 
     def execute(self):
@@ -85,6 +86,10 @@ class GapFadeStrategy:
 
         if gap_pct > self.gap_threshold:
             # Gap UP -> Fade (Sell/Short or Buy Put)
+            if self.sentiment_score is not None and self.sentiment_score > 0.6:
+                 logger.warning(f"Gap UP but Sentiment is Bullish ({self.sentiment_score}). Continuation Risk. Skipping Fade.")
+                 return
+
             logger.info("Gap UP detected. Looking to FADE (Short).")
             action = "SELL" # Futures Sell or PE Buy
             # For options: Buy PE
@@ -92,6 +97,10 @@ class GapFadeStrategy:
 
         elif gap_pct < -self.gap_threshold:
             # Gap DOWN -> Fade (Buy/Long or Buy Call)
+            if self.sentiment_score is not None and self.sentiment_score < 0.4:
+                 logger.warning(f"Gap DOWN but Sentiment is Bearish ({self.sentiment_score}). Continuation Risk. Skipping Fade.")
+                 return
+
             logger.info("Gap DOWN detected. Looking to FADE (Long).")
             action = "BUY"
             option_type = "CE"
@@ -123,10 +132,11 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--threshold", type=float, default=0.5, help="Gap Threshold %%")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
+    parser.add_argument("--sentiment_score", type=float, default=None, help="Sentiment Score (0.0-1.0)")
     args = parser.parse_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold)
+    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold, sentiment_score=args.sentiment_score)
     strategy.execute()
 
 if __name__ == "__main__":

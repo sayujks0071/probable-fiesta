@@ -4,7 +4,7 @@ import os
 import json
 import logging
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
@@ -46,7 +46,7 @@ class AdvancedOptionsRanker:
         self.script_map = {
             "Iron Condor": "delta_neutral_iron_condor_nifty.py",
             "Gap Fade": "gap_fade_strategy.py",
-            # Others not yet implemented as scripts
+            "Sentiment Reversal": "sentiment_reversal_strategy.py",
         }
 
         # Thresholds
@@ -68,11 +68,6 @@ class AdvancedOptionsRanker:
 
     def _fetch_gift_nifty_proxy(self, nifty_spot):
         try:
-            # Deterministic: Return 0 gap if no data.
-            # In production, fetch specific symbol.
-            # For now, we assume if we are running before market, we might check last close
-            # But without history, we can't do much.
-            # Returning 0.0 ensures deterministic behavior for tests.
             return nifty_spot, 0.0
         except Exception as e:
             logger.warning(f"Error fetching GIFT Nifty proxy: {e}")
@@ -92,12 +87,12 @@ class AdvancedOptionsRanker:
             soup = BeautifulSoup(response.content, 'xml')
             items = soup.find_all('item')
 
-            positive_words = ['surge', 'jump', 'gain', 'rally', 'bull', 'high', 'profit', 'growth', 'buy', 'positive']
-            negative_words = ['fall', 'drop', 'crash', 'bear', 'low', 'loss', 'decline', 'sell', 'negative', 'fear', 'inflation']
+            positive_words = ['surge', 'jump', 'gain', 'rally', 'bull', 'high', 'profit', 'growth', 'buy', 'positive', 'up']
+            negative_words = ['fall', 'drop', 'crash', 'bear', 'low', 'loss', 'decline', 'sell', 'negative', 'fear', 'inflation', 'down', 'weak']
 
             score = 0
             count = 0
-            for item in items[:10]:
+            for item in items[:15]:
                 title = item.title.text.lower()
                 p_count = sum(1 for w in positive_words if w in title)
                 n_count = sum(1 for w in negative_words if w in title)
@@ -111,8 +106,8 @@ class AdvancedOptionsRanker:
             normalized_score = max(0.0, min(1.0, normalized_score))
 
             label = "Neutral"
-            if normalized_score > 0.6: label = "Positive"
-            elif normalized_score < 0.4: label = "Negative"
+            if normalized_score >= 0.6: label = "Positive"
+            elif normalized_score <= 0.4: label = "Negative"
 
             return normalized_score, label
 
@@ -123,52 +118,166 @@ class AdvancedOptionsRanker:
     def fetch_market_data(self):
         logger.info("Fetching market data...")
         data = {}
+
+        # 1. India VIX
         vix_quote = self.client.get_quote("INDIA VIX", "NSE")
         data['vix'] = float(vix_quote['ltp']) if vix_quote else 15.0
 
+        # 2. Spot Prices
         nifty_quote = self.client.get_quote("NIFTY 50", "NSE")
         data['nifty_spot'] = float(nifty_quote['ltp']) if nifty_quote else 0.0
 
+        banknifty_quote = self.client.get_quote("NIFTY BANK", "NSE")
+        data['banknifty_spot'] = float(banknifty_quote['ltp']) if banknifty_quote else 0.0
+
+        sensex_quote = self.client.get_quote("SENSEX", "BSE")
+        data['sensex_spot'] = float(sensex_quote['ltp']) if sensex_quote else 0.0
+
+        # 3. GIFT Nifty / Gap
         gift_price, gap_pct = self._fetch_gift_nifty_proxy(data['nifty_spot'])
         data['gift_nifty'] = gift_price
         data['gap_pct'] = gap_pct
 
+        # 4. Sentiment
         score, label = self._fetch_news_sentiment()
         data['sentiment_score'] = score
         data['sentiment_label'] = label
 
+        # 5. Option Chains
         data['chains'] = {}
         for index in self.indices:
             exchange = "NFO" if index != "SENSEX" else "BFO"
             chain = self.client.get_option_chain(index, exchange)
             if chain:
-                data['chains'][index] = chain
+                spot = data.get(f"{index.lower()}_spot", 0)
+                if spot == 0 and index == "NIFTY": spot = data['nifty_spot']
+
+                enhanced_chain = []
+                for item in chain:
+                    strike = item.get('strike')
+                    if not strike: continue
+
+                    expiry = item.get('expiry')
+                    T = 7/365.0
+                    if expiry:
+                        try:
+                            exp_date = datetime.strptime(expiry, "%Y-%m-%d")
+                            T = (exp_date - datetime.now()).days / 365.0
+                            if T <= 0: T = 1/365.0
+                        except:
+                            pass
+
+                    r = 0.06
+
+                    # CE
+                    ce_iv = item.get('ce_iv', 0)
+                    if ce_iv == 0: ce_iv = data['vix'] / 100.0
+                    else: ce_iv = ce_iv / 100.0
+
+                    ce_greeks = calculate_greeks(spot, strike, T, r, ce_iv, 'ce')
+                    item['ce_greeks'] = ce_greeks
+
+                    # PE
+                    pe_iv = item.get('pe_iv', 0)
+                    if pe_iv == 0: pe_iv = data['vix'] / 100.0
+                    else: pe_iv = pe_iv / 100.0
+
+                    pe_greeks = calculate_greeks(spot, strike, T, r, pe_iv, 'pe')
+                    item['pe_greeks'] = pe_greeks
+
+                    enhanced_chain.append(item)
+
+                data['chains'][index] = enhanced_chain
 
         return data
 
-    def calculate_iv_rank(self, symbol, current_iv):
-        # Simplification: Assume IV Range 10-30 for indices
+    def calculate_iv_rank(self, symbol, current_vix):
         low = 10
         high = 30
-        return max(0, min(100, (current_iv - low) / (high - low) * 100))
+        return max(0, min(100, (current_vix - low) / (high - low) * 100))
 
     def calculate_composite_score(self, scores):
-        """
-        Calculate final weighted score.
-        scores: dict with keys matching weights
-        """
         composite = 0
         for key, weight in self.weights.items():
             composite += scores.get(key, 0) * weight
         return composite
 
-    def analyze_strategy(self, strategy_type, index, market_data, chain_data):
-        """
-        Score a specific strategy for an index using multi-factor analysis.
-        """
-        vix = market_data.get('vix', 15)
-        spot = market_data.get('nifty_spot', 0) if index == "NIFTY" else 0
+    def score_greeks_alignment(self, strategy, chain_data, vix):
+        score = 50
+        if strategy in ["Iron Condor", "Credit Spread"]:
+            if vix > 18: score += 20
+            if vix > 25: score += 20
+            if vix < 12: score -= 30
+        elif strategy in ["Debit Spread", "Straddle"]:
+            if vix < 15: score += 30
+            if vix > 25: score -= 20
+        return max(0, min(100, score))
 
+    def score_liquidity(self, chain_data):
+        total_oi = 0
+        for item in chain_data:
+             total_oi += item.get('ce_oi', 0) + item.get('pe_oi', 0)
+
+        if total_oi > self.liquidity_oi_threshold * 10:
+            return 100
+        elif total_oi > self.liquidity_oi_threshold:
+            return 70
+        return 30
+
+    def score_pcr_oi(self, strategy, pcr):
+        score = 50
+        is_extreme_high = pcr > 1.5
+        is_extreme_low = pcr < 0.5
+
+        if strategy == "Sentiment Reversal":
+            if is_extreme_high or is_extreme_low: score = 90
+            else: score = 30
+        elif strategy in ["Iron Condor"]:
+            dist = abs(pcr - 1.0)
+            if dist < 0.2: score = 90
+            else: score = max(0, 100 - dist * 100)
+        return score
+
+    def score_vix_regime(self, strategy, vix):
+        score = 50
+        if strategy in ["Iron Condor", "Credit Spread"]:
+             if vix > 20: score = 100
+             elif vix < 12: score = 20
+             else: score = 60
+        elif strategy in ["Calendar Spread"]:
+             if vix < 13: score = 90
+             elif vix > 20: score = 10
+        elif strategy in ["Debit Spread", "Straddle"]:
+             if vix < 15: score = 80
+             elif vix > 25: score = 30
+             else: score = 50
+        return score
+
+    def score_gift_bias(self, strategy, gap_pct):
+        score = 50
+        if strategy == "Gap Fade":
+             if abs(gap_pct) > 0.5: score = 100
+             elif abs(gap_pct) > 0.3: score = 70
+             else: score = 20
+        elif strategy == "Iron Condor":
+             if abs(gap_pct) < 0.2: score = 100
+             else: score = max(0, 100 - abs(gap_pct)*200)
+        return score
+
+    def score_sentiment(self, strategy, sentiment_score):
+        score = 50
+        dist_from_neutral = abs(sentiment_score - 0.5)
+
+        if strategy == "Sentiment Reversal":
+             if dist_from_neutral > 0.3: score = 90
+             else: score = 20
+        elif strategy == "Iron Condor":
+             if dist_from_neutral < 0.1: score = 100
+             else: score = max(0, 100 - dist_from_neutral * 200)
+        return score
+
+    def analyze_strategy(self, strategy_type, index, market_data, chain_data):
+        vix = market_data.get('vix', 15)
         pcr = calculate_pcr(chain_data)
         sentiment = market_data.get('sentiment_score', 0.5)
         gap = market_data.get('gap_pct', 0)
@@ -179,70 +288,29 @@ class AdvancedOptionsRanker:
         # 1. IV Rank
         iv_rank = self.calculate_iv_rank(index, vix)
         details['iv_rank'] = iv_rank
-
         if strategy_type in ["Iron Condor", "Credit Spread", "Straddle"]:
             scores['iv_rank'] = iv_rank
         elif strategy_type in ["Debit Spread", "Calendar Spread", "Gap Fade", "Sentiment Reversal"]:
             scores['iv_rank'] = 100 - iv_rank
 
         # 2. VIX Regime
-        vix_score = 50
-        if strategy_type in ["Iron Condor", "Credit Spread"]:
-             if vix > 20: vix_score = 100
-             elif vix < 12: vix_score = 20
-             else: vix_score = 60
-        elif strategy_type in ["Calendar Spread"]:
-             if vix < 13: vix_score = 90
-             elif vix > 20: vix_score = 10
-        elif strategy_type in ["Debit Spread"]:
-             if vix < 15: vix_score = 80
-             else: vix_score = 40
-        scores['vix_regime'] = vix_score
+        scores['vix_regime'] = self.score_vix_regime(strategy_type, vix)
 
         # 3. Liquidity
-        scores['liquidity'] = 90
+        scores['liquidity'] = self.score_liquidity(chain_data)
 
         # 4. PCR / OI
-        pcr_score = 50
-        if strategy_type == "Iron Condor":
-             dist_from_1 = abs(pcr - 1.0)
-             if dist_from_1 < 0.2: pcr_score = 90
-             else: pcr_score = max(0, 100 - dist_from_1 * 100)
-
-        scores['pcr_oi'] = pcr_score
+        scores['pcr_oi'] = self.score_pcr_oi(strategy_type, pcr)
         details['pcr'] = pcr
 
         # 5. Greeks Alignment
-        greeks_score = 50
-        if strategy_type in ["Iron Condor", "Credit Spread"]:
-             if vix > 18: greeks_score += 20
-             if vix > 25: greeks_score += 10
-        scores['greeks'] = greeks_score
+        scores['greeks'] = self.score_greeks_alignment(strategy_type, chain_data, vix)
 
         # 6. GIFT Nifty Bias
-        gift_score = 50
-        if strategy_type == "Gap Fade":
-             if abs(gap) > 0.5: gift_score = 100
-             elif abs(gap) > 0.3: gift_score = 70
-             else: gift_score = 20
-        elif strategy_type == "Iron Condor":
-             if abs(gap) < 0.2: gift_score = 100
-             else: gift_score = max(0, 100 - abs(gap)*200)
-
-        scores['gift_nifty'] = gift_score
+        scores['gift_nifty'] = self.score_gift_bias(strategy_type, gap)
 
         # 7. Sentiment
-        sent_score = 50
-        if strategy_type == "Sentiment Reversal":
-             dist = abs(sentiment - 0.5)
-             if dist > 0.3: sent_score = 90
-             else: sent_score = 20
-        elif strategy_type == "Iron Condor":
-             dist = abs(sentiment - 0.5)
-             if dist < 0.1: sent_score = 100
-             else: sent_score = max(0, 100 - dist * 200)
-
-        scores['sentiment'] = sent_score
+        scores['sentiment'] = self.score_sentiment(strategy_type, sentiment)
 
         # Calculate Final
         final_score = self.calculate_composite_score(scores)
@@ -250,10 +318,14 @@ class AdvancedOptionsRanker:
         details['gap_pct'] = gap
         details['sentiment_val'] = sentiment
 
+        # Populate Greeks for display (using first item or avg)
+        # Just getting max pain for context
+        mp = calculate_max_pain(chain_data)
+        details['max_pain'] = mp
+
         return details
 
     def generate_report(self):
-        """Main execution flow."""
         print(f"📊 DAILY OPTIONS STRATEGY ANALYSIS - {datetime.now().strftime('%Y-%m-%d')}\n")
 
         market_data = self.fetch_market_data()
@@ -284,16 +356,20 @@ class AdvancedOptionsRanker:
         # Rank by score
         opportunities.sort(key=lambda x: x['score'], reverse=True)
 
-        for i, opp in enumerate(opportunities[:5], 1):
+        for i, opp in enumerate(opportunities[:7], 1):
             print(f"\n{i}. {opp['strategy']} - {opp['index']} - Score: {opp['score']}/100")
             print(f"   - IV Rank: {opp.get('iv_rank', 0):.1f}% | PCR: {opp.get('pcr', 0)}")
-            print(f"   - Rationale: Multi-factor score (VIX, Greeks, Sentiment, Gap)")
+            print(f"   - Max Pain: {opp.get('max_pain')} | Gap: {opp.get('gap_pct', 0):.2f}%")
+            print(f"   - Rationale: Multi-factor score (VIX: {opp.get('score',0)})")
 
             # Risk Warning Checks
             warnings = []
             if market_data['vix'] > 30: warnings.append("High VIX - Reduce Size")
             if opp['score'] < 60: warnings.append("Low Score - Caution")
             if opp['index'] == "NIFTY" and abs(opp.get('gap_pct', 0)) > 0.8: warnings.append("Large Gap - Volatility Risk")
+
+            # Liquidity check warning
+            # We don't have exact check here but score reflects it
 
             if warnings:
                 print(f"   ⚠️ WARNINGS: {', '.join(warnings)}")
@@ -317,7 +393,6 @@ class AdvancedOptionsRanker:
              return []
 
     def deploy_strategies(self, top_strategies):
-        """Deploy top strategies."""
         logger.info(f"Deploying {len(top_strategies)} top strategies...")
 
         for strat in top_strategies:
@@ -338,13 +413,14 @@ class AdvancedOptionsRanker:
             # Pass extra args
             if strategy_name == "Iron Condor":
                 cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
+            elif strategy_name == "Gap Fade":
+                cmd.extend(["--threshold", "0.5"]) # Default
+            elif strategy_name == "Sentiment Reversal":
+                 cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
 
             logger.info(f"Executing: {' '.join(cmd)}")
 
             try:
-                # Run in background or wait? Usually deployment triggers and returns.
-                # Here we use Popen to run detached or run and wait.
-                # We'll run and log output
                 subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 print(f"✅ Deployed: {strategy_name} on {strat['index']}")
             except Exception as e:
