@@ -10,15 +10,14 @@ from collections import defaultdict
 
 # Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from openalgo.strategies.utils.mcx_utils import MCX_FUZZY_PATTERN, normalize_mcx_string
+
 DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
-
-# Regex for MCX Symbols
-# Pattern: SYMBOL + 1-2 digits (Day) + 3 letters (Month) + 2 digits (Year) + FUT
-# e.g. GOLDM05FEB26FUT
-# Capture groups: 1=Symbol, 2=Day, 3=Month, 4=Year
-MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
 
 # Valid Months
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
@@ -33,30 +32,22 @@ def load_instruments():
         print(f"Warning: Failed to load instruments: {e}")
         return None
 
-def normalize_mcx_symbol(match):
-    symbol = match.group(1).upper()
-    day = int(match.group(2))
-    month = match.group(3).upper()
-    year = match.group(4)
-
-    # Normalize: Pad day with 0 if needed
-    normalized = f"{symbol}{day:02d}{month}{year}FUT"
-    return normalized
-
 def scan_file(filepath, instruments, strict=False):
     issues = []
-    normalized_content = ""
     changes_made = False
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception as e:
+        print(f"Error reading {filepath}: {e}")
+        return "", False, []
 
     def replacement_handler(match):
         nonlocal changes_made
         original = match.group(0)
-        normalized = normalize_mcx_symbol(match)
 
-        # Validation
+        # Validation of Month
         month = match.group(3).upper()
         if month not in MONTHS:
             issues.append({
@@ -67,12 +58,10 @@ def scan_file(filepath, instruments, strict=False):
             })
             return original
 
+        normalized = normalize_mcx_string(original)
+
         if instruments is not None:
             if normalized not in instruments:
-                 # Check if original was in instruments (maybe current format is valid?)
-                 if original in instruments:
-                     return original
-
                  issues.append({
                     "file": filepath,
                     "symbol": original,
@@ -80,7 +69,6 @@ def scan_file(filepath, instruments, strict=False):
                     "error": "Symbol not found in instrument master",
                     "status": "MISSING"
                  })
-                 # If valid format but missing in master, we keep original but flag it
                  return original
 
         if original != normalized:
@@ -95,8 +83,8 @@ def scan_file(filepath, instruments, strict=False):
 
         return original
 
-    # Apply regex substitution
-    new_content = MCX_PATTERN.sub(replacement_handler, content)
+    # Apply regex substitution using FUZZY pattern
+    new_content = MCX_FUZZY_PATTERN.sub(replacement_handler, content)
 
     return new_content, changes_made, issues
 
@@ -136,7 +124,6 @@ def main():
             if file.endswith('.py') or file.endswith('.json'):
                 files_to_scan.append(os.path.join(root, file))
 
-
     for filepath in files_to_scan:
         new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
         if file_issues:
@@ -173,19 +160,30 @@ def main():
                  f.write(f"| {os.path.basename(issue['file'])} | {issue['symbol']} | {issue['status']} | {issue.get('error', issue.get('normalized', ''))} |\n")
 
     # Check for strict failure
-    invalid_symbols = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING')]
+    # In strict check mode: fail if ANY issue (NORMALIZED, INVALID, MISSING) exists.
+    # Why NORMALIZED? Because "changes that still pass strict validation" is the requirement for Hard-Gate "Normalize produced either (a) no changes or (b) changes that still pass".
+    # But here, if we are in check mode, "needing normalization" is technically a failure of validation (it's malformed).
 
-    if args.strict and args.check:
-         # In strict check mode, fail if normalization is needed
-         normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
-         if normalized_count > 0:
-             print(f"❌ Found {normalized_count} symbols needing normalization.")
-             sys.exit(1)
+    invalid_or_missing = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING')]
+    normalized_needed = [i for i in audit_report["issues"] if i['status'] == 'NORMALIZED']
 
-    if invalid_symbols:
-        print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols.")
-        if args.strict:
-            sys.exit(1)
+    if args.strict:
+        if args.check:
+            # Strictly Check: No invalid, No missing, No normalization needed
+            if invalid_or_missing or normalized_needed:
+                print(f"❌ Strict Check Failed: {len(invalid_or_missing)} invalid/missing, {len(normalized_needed)} need normalization.")
+                sys.exit(1)
+        else:
+            # Just strict: Fail on Invalid/Missing (Normalization applied if --write)
+            if invalid_or_missing:
+                print(f"❌ Strict Mode Failed: {len(invalid_or_missing)} invalid/missing symbols.")
+                sys.exit(1)
+
+    if invalid_or_missing:
+        print(f"⚠️ Found {len(invalid_or_missing)} invalid/missing symbols.")
+
+    if normalized_needed:
+        print(f"ℹ️ Found {len(normalized_needed)} symbols needing normalization.")
 
     if args.write:
          print("✅ Normalization complete.")
