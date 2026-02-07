@@ -183,5 +183,31 @@ class TestEODSquareOff(unittest.TestCase):
         executed_again = self.eod.check_and_execute()
         self.assertFalse(executed_again)
 
+    @patch('openalgo.strategies.utils.risk_manager.datetime')
+    def test_execute_square_off_with_price(self, mock_datetime):
+        # Mock time to be past square off
+        mock_now = datetime(2023, 10, 27, 15, 20)
+        mock_datetime.now.return_value = mock_now
+
+        # Mock exit callback returning a specific price
+        # Entry was 100, exit at 110 -> Profit of 10 * 10 = 100
+        self.mock_exit.return_value = {'status': 'success', 'average_price': 110.0}
+
+        # Reset daily pnl for clarity
+        self.rm.daily_pnl = 0.0
+
+        executed = self.eod.check_and_execute()
+        self.assertTrue(executed)
+
+        # Verify exit callback was called
+        self.mock_exit.assert_called_with("POS1", "SELL", 10)
+
+        # Verify position is closed in RM
+        self.assertEqual(len(self.rm.positions), 0)
+
+        # Verify PnL
+        # Long 10 @ 100, Sold 10 @ 110 -> (110 - 100) * 10 = 100
+        self.assertEqual(self.rm.daily_pnl, 100.0)
+
 if __name__ == '__main__':
     unittest.main()
