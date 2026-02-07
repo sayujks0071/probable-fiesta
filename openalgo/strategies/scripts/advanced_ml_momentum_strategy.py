@@ -39,7 +39,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class MLMomentumStrategy:
-    def __init__(self, symbol, api_key, port, threshold=0.01, stop_pct=1.0, sector='NIFTY 50', vol_multiplier=0.5):
+    def __init__(self, symbol, api_key, port, threshold=0.01, stop_pct=1.5, sector='NIFTY 50', vol_multiplier=0.5):
         self.symbol = symbol
         self.host = f"http://127.0.0.1:{port}"
         self.client = APIClient(api_key=api_key, host=self.host)
@@ -53,7 +53,7 @@ class MLMomentumStrategy:
 
     def calculate_signal(self, df):
         """Calculate signal for backtesting."""
-        if df.empty or len(df) < 50:
+        if df.empty or len(df) < 200:
             return 'HOLD', 0.0, {}
 
         # Indicators
@@ -68,6 +68,15 @@ class MLMomentumStrategy:
 
         # SMA for Trend
         df['sma50'] = df['close'].rolling(50).mean()
+        df['sma200'] = df['close'].rolling(200).mean() # Added Long Term Trend
+
+        # ATR for Volatility
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift()).abs()
+        low_close = (df['low'] - df['close'].shift()).abs()
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        df['atr'] = true_range.rolling(14).mean()
 
         last = df.iloc[-1]
         current_price = last['close']
@@ -82,17 +91,25 @@ class MLMomentumStrategy:
         sentiment = 0.5 # Mock positive
 
         # Entry Logic
+        # Enhanced Trend Filter: Price > SMA200 (Long Term Bullish)
+        is_uptrend = True
+        if not pd.isna(last['sma200']):
+            is_uptrend = current_price > last['sma200']
+
         if (last['roc'] > self.roc_threshold and
             last['rsi'] > 55 and
             rs_excess > 0 and
             sector_outperformance > 0 and
             current_price > last['sma50'] and
+            is_uptrend and
             sentiment >= 0):
 
             # Volume check
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             if last['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
-                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi']}
+                # Use ATR for sizing/stop if available
+                atr_val = last.get('atr', 0)
+                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi'], 'atr': atr_val}
 
         return 'HOLD', 0.0, {}
 
@@ -267,11 +284,16 @@ def run_strategy():
     strategy = MLMomentumStrategy(symbol, api_key, port, threshold=threshold, sector=args.sector)
     strategy.run()
 
+# Module level constants for Backtest Engine
+ATR_SL_MULTIPLIER = 2.0
+ATR_TP_MULTIPLIER = 4.0
+TIME_STOP_BARS = 20
+
 # Module level wrapper for SimpleBacktestEngine
 def generate_signal(df, client=None, symbol=None, params=None):
     strat_params = {
         'threshold': 0.01,
-        'stop_pct': 1.0,
+        'stop_pct': 1.5, # Tuned stop
         'sector': 'NIFTY 50',
         'vol_multiplier': 0.5
     }
@@ -283,7 +305,7 @@ def generate_signal(df, client=None, symbol=None, params=None):
         api_key="dummy",
         port=5001,
         threshold=float(strat_params.get('threshold', 0.01)),
-        stop_pct=float(strat_params.get('stop_pct', 1.0)),
+        stop_pct=float(strat_params.get('stop_pct', 1.5)),
         sector=strat_params.get('sector', 'NIFTY 50'),
         vol_multiplier=float(strat_params.get('vol_multiplier', 0.5))
     )

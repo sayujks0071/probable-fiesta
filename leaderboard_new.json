@@ -1,0 +1,42 @@
+[
+    {
+        "strategy": "ai_hybrid_reversion_breakout",
+        "symbol": "NIFTY",
+        "total_return": 5.180593853348226,
+        "sharpe": 15.003309050656451,
+        "drawdown": 0.9607422171545335,
+        "win_rate": 85.71428571428571,
+        "trades": 7,
+        "profit_factor": 7.533567467332048
+    },
+    {
+        "strategy": "advanced_ml_momentum_strategy",
+        "symbol": "NIFTY",
+        "total_return": 1.0346829045759223,
+        "sharpe": 1.9671422688145586,
+        "drawdown": 1.7187696365133127,
+        "win_rate": 47.61904761904761,
+        "trades": 21,
+        "profit_factor": 1.2221754785569863
+    },
+    {
+        "strategy": "mcx_commodity_momentum_strategy",
+        "symbol": "SILVERMIC",
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    },
+    {
+        "strategy": "supertrend_vwap_strategy",
+        "symbol": "NIFTY",
+        "total_return": 0.0,
+        "sharpe": 0.0,
+        "drawdown": 0.0,
+        "win_rate": 0.0,
+        "trades": 0,
+        "profit_factor": 0.0
+    }
+]

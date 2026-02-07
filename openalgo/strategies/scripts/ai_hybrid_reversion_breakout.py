@@ -115,22 +115,22 @@ class AIHybridStrategy:
         if not pd.isna(last.get('sma200')) and last['close'] < last['sma200']:
             is_bullish_regime = False
 
-        # Reversion Logic: RSI < 30 and Price < Lower BB (Oversold)
+        # Reversion Logic: RSI < 35 and Price < Lower BB (Oversold)
+        # Relaxed RSI from 30 to 35 for daily
         if last['rsi'] < self.rsi_lower and last['close'] < last['lower']:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-            # Enhanced Volume Confirmation (Stricter than average)
+            # Enhanced Volume Confirmation
             if last['volume'] > avg_vol * 1.2:
-                # Reversion can trade against trend, so maybe ignore regime or be strict?
-                # Let's say Reversion is allowed in any regime if oversold enough.
-                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
 
-        # Breakout Logic: RSI > 60 and Price > Upper BB
+        # Breakout Logic: RSI > 55 and Price > Upper BB
+        # Relaxed RSI from 60 to 55, Volume from 2.0 to 1.5
         elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-            # Breakout needs significant volume (2x avg)
+            # Breakout needs significant volume (1.5x avg)
             # Breakout ONLY in Bullish Regime
-            if last['volume'] > avg_vol * 2.0 and is_bullish_regime:
-                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+            if last['volume'] > avg_vol * 1.5 and is_bullish_regime:
+                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
 
         return 'HOLD', 0.0, {}
 
@@ -354,11 +354,15 @@ def run_strategy():
     )
     strategy.run()
 
+# Module level constants for Backtest Engine
+ATR_SL_MULTIPLIER = 2.0
+ATR_TP_MULTIPLIER = 3.0
+
 # Module level wrapper for SimpleBacktestEngine
 def generate_signal(df, client=None, symbol=None, params=None):
     strat_params = {
-        'rsi_lower': 30.0,
-        'rsi_upper': 60.0,
+        'rsi_lower': 40.0, # Tuned
+        'rsi_upper': 55.0, # Tuned
         'stop_pct': 1.0,
         'sector': 'NIFTY 50'
     }
@@ -369,8 +373,8 @@ def generate_signal(df, client=None, symbol=None, params=None):
         symbol=symbol or "TEST",
         api_key="dummy",
         port=5001,
-        rsi_lower=float(strat_params.get('rsi_lower', 30.0)),
-        rsi_upper=float(strat_params.get('rsi_upper', 60.0)),
+        rsi_lower=float(strat_params.get('rsi_lower', 40.0)),
+        rsi_upper=float(strat_params.get('rsi_upper', 55.0)),
         stop_pct=float(strat_params.get('stop_pct', 1.0)),
         sector=strat_params.get('sector', 'NIFTY 50')
     )
