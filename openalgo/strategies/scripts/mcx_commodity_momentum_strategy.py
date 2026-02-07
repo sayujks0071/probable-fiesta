@@ -342,6 +342,10 @@ DEFAULT_PARAMS = {
 def generate_signal(df, client=None, symbol=None, params=None):
     # Merge default params with provided params
     strat_params = DEFAULT_PARAMS.copy()
+
+    # Override for backtest (handling different price scales e.g. SI=F vs SILVERMIC)
+    strat_params['min_atr'] = 0
+
     if params:
         strat_params.update(params)
 
