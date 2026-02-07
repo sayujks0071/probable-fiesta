@@ -1,7 +1,32 @@
 {
-    "GOLD": {"score": 60, "note": "Safe haven demand due to geopolitical tension"},
-    "SILVER": {"score": 55, "note": "Industrial demand picking up"},
-    "CRUDEOIL": {"score": 45, "note": "High inventory levels reported by EIA"},
-    "NATURALGAS": {"score": 80, "note": "Cold snap forecast in US"},
-    "COPPER": {"score": 50, "note": "China demand stable"}
+    "GOLD": {
+        "score": 75,
+        "note": "Inflation hedge strong, Festival demand expected",
+        "inventory_trend": "Stable",
+        "news": "Central Bank buying continues"
+    },
+    "SILVER": {
+        "score": 60,
+        "note": "Industrial demand picking up",
+        "inventory_trend": "Declining",
+        "news": "Green energy transition driving demand"
+    },
+    "CRUDEOIL": {
+        "score": 45,
+        "note": "OPEC+ cuts priced in, weak demand outlook",
+        "inventory_trend": "Rising",
+        "news": "EIA reports build in stocks"
+    },
+    "NATURALGAS": {
+        "score": 80,
+        "note": "Winter heating demand forecast strong",
+        "inventory_trend": "Below Average",
+        "news": "Cold snap expected in US Northeast"
+    },
+    "COPPER": {
+        "score": 55,
+        "note": "China stimulus measures awaited",
+        "inventory_trend": "Stable",
+        "news": "Mine supply disruptions in Peru"
+    }
 }

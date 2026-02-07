@@ -146,7 +146,8 @@ class MCXGlobalArbitrageStrategy:
         # Divergence: If MCX rose more than Global, it's overpriced relative to start
         divergence_pct = mcx_change_pct - global_change_pct
 
-        logger.info(f"MCX Chg: {mcx_change_pct:.2f}% | Global Chg: {global_change_pct:.2f}% | Divergence: {divergence_pct:.2f}%")
+        # Requested Log Format: Global-MCX Divergence: X%
+        logger.info(f"Global-MCX Divergence: {divergence_pct:.2f}% (MCX: {mcx_change_pct:.2f}%, Global: {global_change_pct:.2f}%)")
         
         # Entry Logic
         current_time = time.time()
@@ -227,6 +228,7 @@ class MCXGlobalArbitrageStrategy:
 
     def run(self):
         logger.info(f"Starting MCX Global Arbitrage Strategy for {self.symbol} vs {self.global_symbol}")
+        logger.info(f"Thresholds: Div={self.params['divergence_threshold']}%, Conv={self.params['convergence_threshold']}%")
         
         while True:
             if self.fetch_data():
@@ -237,6 +239,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='MCX Global Arbitrage Strategy')
     parser.add_argument('--symbol', type=str, help='MCX Symbol (e.g., GOLDM05FEB26FUT)')
     parser.add_argument('--global_symbol', type=str, default='GC=F', help='Global Symbol for comparison (e.g. GC=F)')
+    parser.add_argument('--divergence_threshold', type=float, default=3.0, help='Divergence Threshold %% (default: 3.0)')
     parser.add_argument('--port', type=int, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key')
 
@@ -254,6 +257,9 @@ if __name__ == "__main__":
     
     if args.api_key: API_KEY = args.api_key
     else: API_KEY = os.getenv('OPENALGO_APIKEY', API_KEY)
+
+    if args.divergence_threshold:
+        PARAMS['divergence_threshold'] = args.divergence_threshold
 
     # Validate symbol or resolve default
     if not SYMBOL:

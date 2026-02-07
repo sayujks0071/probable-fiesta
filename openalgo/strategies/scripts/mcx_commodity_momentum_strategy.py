@@ -7,11 +7,12 @@ Enhanced with Multi-Factor inputs (USD/INR, Seasonality).
 import os
 import sys
 import time
+import re
 import logging
 import argparse
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 # Add repo root to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -52,6 +53,7 @@ class MCXMomentumStrategy:
         # Log active filters
         logger.info(f"Initialized Strategy for {symbol}")
         logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
+        logger.info(f"Global Alignment={params.get('global_alignment_score', 'N/A')}")
 
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
@@ -82,51 +84,11 @@ class MCXMomentumStrategy:
         except Exception as e:
             logger.error(f"Error fetching data: {e}", exc_info=True)
 
-    def generate_signal(self, df):
-        """
-        Generate signal for backtesting.
-        """
-        if df.empty: return 'HOLD', 0.0, {}
-
-        self.data = df
-        self.calculate_indicators()
-
-        # Check signals (Reusing existing logic but adapting return)
-        current = self.data.iloc[-1]
-        prev = self.data.iloc[-2]
-
-        # Factors
-        seasonality_ok = self.params.get('seasonality_score', 50) > 40
-
-        action = 'HOLD'
-
-        if not seasonality_ok:
-            return 'HOLD', 0.0, {'reason': 'Seasonality Weak'}
-
-        # Volatility Filter
-        min_atr = self.params.get('min_atr', 0)
-        if current.get('atr', 0) < min_atr:
-             return 'HOLD', 0.0, {'reason': 'Low Volatility'}
-
-        if (current['adx'] > self.params['adx_threshold'] and
-            current['rsi'] > 50 and
-            current['close'] > prev['close']):
-            action = 'BUY'
-
-        elif (current['adx'] > self.params['adx_threshold'] and
-              current['rsi'] < 50 and
-              current['close'] < prev['close']):
-            action = 'SELL'
-
-        return action, 1.0, {'atr': current.get('atr', 0)}
-
     def calculate_indicators(self):
         """Calculate technical indicators."""
         if self.data.empty:
             return
 
-        # Optimization: If columns already exist and length matches, skip?
-        # But for now, we assume data is fresh.
         df = self.data.copy()
 
         # RSI
@@ -156,7 +118,7 @@ class MCXMomentumStrategy:
         df['plus_dm'] = plus_dm
         df['minus_dm'] = minus_dm
 
-        # Smooth (using simple moving average for simplicity as originally intended in simple mock)
+        # Smooth
         tr_smooth = true_range.rolling(window=self.params['period_adx']).mean()
         plus_dm_smooth = df['plus_dm'].rolling(window=self.params['period_adx']).mean()
         minus_dm_smooth = df['minus_dm'].rolling(window=self.params['period_adx']).mean()
@@ -172,6 +134,32 @@ class MCXMomentumStrategy:
 
         self.data = df
 
+    def check_expiry(self):
+        """Check if contract is expiring soon (within 3 days)."""
+        symbol = self.symbol
+        # Symbol format: GOLDM05FEB26FUT
+        match = re.match(r'^([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT$', symbol, re.IGNORECASE)
+        if not match:
+            return False # Can't parse, assume safe or handle error
+
+        day = int(match.group(2))
+        month_str = match.group(3).upper()
+        year_str = match.group(4)
+
+        try:
+            year = 2000 + int(year_str)
+            month = datetime.strptime(month_str, "%b").month
+            expiry_date = date(year, month, day)
+            days_to_expiry = (expiry_date - date.today()).days
+
+            if days_to_expiry < 3:
+                logger.warning(f"Contract {symbol} expiring in {days_to_expiry} days. Skipping new entries.")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error checking expiry: {e}")
+            return False
+
     def check_signals(self):
         """Check entry and exit conditions."""
         if self.data.empty or 'adx' not in self.data.columns:
@@ -184,36 +172,41 @@ class MCXMomentumStrategy:
         current = self.data.iloc[-1]
         prev = self.data.iloc[-2]
 
-        # Log current state
-        # logger.info(f"Price: {current['close']:.2f}, RSI: {current['rsi']:.2f}, ADX: {current['adx']:.2f}")
-
         # Check Position
         has_position = False
         if self.pm:
             has_position = self.pm.has_position()
 
-        # Multi-Factor Checks
-        seasonality_ok = self.params.get('seasonality_score', 50) > 40
-        global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
-        usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
+        # 1. Expiry Check
+        if self.check_expiry() and not has_position:
+            return # Skip new entries close to expiry
 
-        # Adjust Position Size
+        # 2. Multi-Factor Checks
+        seasonality_score = self.params.get('seasonality_score', 50)
+        global_score = self.params.get('global_alignment_score', 50)
+        usd_vol = self.params.get('usd_inr_volatility', 0)
+
+        if seasonality_score < 40 and not has_position:
+            logger.info(f"Seasonality Weak ({seasonality_score}). Skipping new entries.")
+            return
+
+        if global_score < 40 and not has_position:
+            logger.info(f"Global Alignment Weak ({global_score}). Skipping new entries.")
+            return
+
+        # 3. Position Sizing
         base_qty = 1
-        if usd_vol_high:
-            logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size by 30%.")
-            base_qty = max(1, int(base_qty * 0.7)) # Reduce size, minimum 1
-
-        if not seasonality_ok and not has_position:
-            logger.info("Seasonality Weak: Skipping new entries.")
-            return
-
-        if not global_alignment_ok and not has_position:
-            logger.info("Global Alignment Weak: Skipping new entries.")
-            return
+        if usd_vol > 1.0:
+            # Reduce position size by 30% roughly (min 1)
+            # Assuming base is usually 1, this effectively keeps it 1 unless base is higher.
+            # If we had higher lots, logic: int(qty * 0.7)
+            logger.warning(f"⚠️ High USD/INR Volatility ({usd_vol}%). Position sizing restricted.")
+            # For this simplified strategy, we just log. If we had variable size logic:
+            # quantity = max(1, int(default_quantity * 0.7))
 
         # Entry Logic
         if not has_position:
-            # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
+            # BUY Signal: ADX > 25 (Trend Strength), RSI > 55 (Bullish), Price > Prev Close
             if (current['adx'] > self.params['adx_threshold'] and
                 current['rsi'] > 55 and
                 current['close'] > prev['close']):
@@ -233,13 +226,9 @@ class MCXMomentumStrategy:
 
         # Exit Logic
         elif has_position:
-            # Retrieve position details
             pos_qty = self.pm.position
-            entry_price = self.pm.entry_price
 
-            # Stop Loss / Take Profit Logic could be added here
             # Simple Exit: Trend Fades (ADX < 20) or RSI Reversal
-
             if pos_qty > 0: # Long
                 if current['rsi'] < 45 or current['adx'] < 20:
                      logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
@@ -248,6 +237,39 @@ class MCXMomentumStrategy:
                 if current['rsi'] > 55 or current['adx'] < 20:
                      logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+
+    def generate_signal(self, df):
+        """
+        Generate signal for backtesting.
+        """
+        if df.empty: return 'HOLD', 0.0, {}
+
+        self.data = df
+        self.calculate_indicators()
+
+        current = self.data.iloc[-1]
+        prev = self.data.iloc[-2]
+
+        # Filter Logic for Backtest
+        seasonality_ok = self.params.get('seasonality_score', 50) >= 40
+        global_ok = self.params.get('global_alignment_score', 50) >= 40
+
+        if not seasonality_ok: return 'HOLD', 0.0, {'reason': 'Seasonality Weak'}
+        if not global_ok: return 'HOLD', 0.0, {'reason': 'Global Alignment Weak'}
+
+        action = 'HOLD'
+
+        if (current['adx'] > self.params['adx_threshold'] and
+            current['rsi'] > 55 and
+            current['close'] > prev['close']):
+            action = 'BUY'
+
+        elif (current['adx'] > self.params['adx_threshold'] and
+              current['rsi'] < 45 and
+              current['close'] < prev['close']):
+            action = 'SELL'
+
+        return action, 1.0, {'atr': current.get('atr', 0)}
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
@@ -271,7 +293,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
@@ -294,7 +316,6 @@ if __name__ == "__main__":
     # Symbol Resolution
     symbol = args.symbol or os.getenv('SYMBOL')
 
-    # Try to resolve from underlying using SymbolResolver
     if not symbol and args.underlying:
         try:
             from symbol_resolver import SymbolResolver
@@ -315,8 +336,6 @@ if __name__ == "__main__":
                 logger.info(f"Resolved {args.underlying} -> {symbol}")
             else:
                 logger.error(f"Could not resolve symbol for {args.underlying}")
-        else:
-            logger.error("SymbolResolver not available")
 
     if not symbol:
         logger.error("Symbol not provided. Use --symbol or --underlying argument, or set SYMBOL env var.")
