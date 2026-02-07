@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
 
+# [Optimization 2026-02-07] Changes: rsi_lower: 30.0 -> 25.0 (Tightened due to WR 30.0%)
+
+# [Optimization 2026-02-07] Changes: rsi_lower: 35.0 -> 30.0 (Tightened due to WR 30.0%)
+
 # [Optimization 2026-01-31] Changes: rsi_lower: 30.0 -> 35.0 (Relaxed due to WR 100.0%)
 AI Hybrid Reversion Breakout Strategy
 Enhanced with Sector Rotation, Market Breadth, Earnings Filter, and VIX Sizing.
@@ -302,6 +306,8 @@ class AIHybridStrategy:
                         qty = int(100 * size_multiplier)
                         self.logger.info("Oversold Reversion Signal (RSI<30, <LowerBB, Vol>1.2x). BUY.")
                         self.pm.update_position(qty, current_price, 'BUY')
+                    else:
+                        self.logger.info(f"Signal detected: Skipping new entries due to Low Volume (Reversion) {last['volume']:.0f} vs {avg_vol * 1.2:.0f}")
 
                 # Breakout Logic: RSI > 60 and Price > Upper BB
                 elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
@@ -311,6 +317,8 @@ class AIHybridStrategy:
                          qty = int(100 * size_multiplier)
                          self.logger.info("Breakout Signal (RSI>60, >UpperBB, Vol>2x). BUY.")
                          self.pm.update_position(qty, current_price, 'BUY')
+                    else:
+                        self.logger.info(f"Signal detected: Skipping new entries due to Low Volume (Breakout) {last['volume']:.0f} vs {avg_vol * 2.0:.0f}")
 
             except Exception as e:
                 self.logger.error(f"Error in AI Hybrid strategy for {self.symbol}: {e}", exc_info=True)
@@ -323,7 +331,7 @@ def run_strategy():
     parser.add_argument('--symbol', type=str, required=True, help='Stock Symbol')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key (or set OPENALGO_APIKEY env var)')
-    parser.add_argument('--rsi_lower', type=float, default=35.0, help='RSI Lower Threshold')
+    parser.add_argument('--rsi_lower', type=float, default=25.0, help='RSI Lower Threshold')
     parser.add_argument('--sector', type=str, default='NIFTY 50', help='Sector Benchmark')
     parser.add_argument('--earnings_date', type=str, help='Earnings Date YYYY-MM-DD')
     parser.add_argument("--logfile", type=str, help="Log file path")

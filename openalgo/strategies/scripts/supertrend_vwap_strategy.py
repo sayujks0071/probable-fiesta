@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
 
+# [Optimization 2026-02-07] Changes: threshold: 145 -> 140 (Lowered due to Rejection 100.0%), stop_pct: 1.6 -> 1.4 (Tightened due to R:R 0.50)
+
+# [Optimization 2026-02-07] Changes: threshold: 150 -> 145 (Lowered due to Rejection 100.0%), stop_pct: 1.8 -> 1.6 (Tightened due to R:R 0.50)
+
 # [Optimization 2026-01-31] Changes: threshold: 155 -> 150 (Lowered due to Rejection 100.0%)
 SuperTrend VWAP Strategy
 VWAP mean reversion with volume profile analysis, Enhanced Sector RSI Filter, and Dynamic Risk.
@@ -73,8 +77,8 @@ class SuperTrendVWAPStrategy:
         self.sector_benchmark = sector_benchmark
 
         # Optimization Parameters
-        self.threshold = 150
-        self.stop_pct = 1.8
+        self.threshold = 140
+        self.stop_pct = 1.4
         self.adx_threshold = 20  # Added ADX Filter
         self.adx_period = 14
 
@@ -389,14 +393,22 @@ class SuperTrendVWAPStrategy:
                     # Entry Logic
                     sector_bullish = self.check_sector_correlation()
 
-                    if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish:
-                        adj_qty = int(self.quantity * size_multiplier)
-                        if adj_qty < 1: adj_qty = 1 # Minimum 1
-                        self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
-                        if self.pm:
-                            self.pm.update_position(adj_qty, last['close'], 'BUY')
-                            sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
-                            self.trailing_stop = last['close'] - (sl_mult * self.atr)
+                    if is_above_vwap:
+                        if is_volume_spike and is_above_poc and is_not_overextended and sector_bullish:
+                            adj_qty = int(self.quantity * size_multiplier)
+                            if adj_qty < 1: adj_qty = 1 # Minimum 1
+                            self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
+                            if self.pm:
+                                self.pm.update_position(adj_qty, last['close'], 'BUY')
+                                sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
+                                self.trailing_stop = last['close'] - (sl_mult * self.atr)
+                        else:
+                            reasons = []
+                            if not is_volume_spike: reasons.append("Volume Spike")
+                            if not is_above_poc: reasons.append("POC")
+                            if not is_not_overextended: reasons.append("Overextended")
+                            if not sector_bullish: reasons.append("Sector")
+                            self.logger.info(f"Signal detected: Skipping new entries due to {', '.join(reasons)}")
 
             except Exception as e:
                 self.logger.error(f"Error in SuperTrend VWAP strategy for {self.symbol}: {e}", exc_info=True)
