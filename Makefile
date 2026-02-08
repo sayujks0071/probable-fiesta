@@ -1,6 +1,6 @@
 # OpenAlgo Makefile
 
-.PHONY: all obs-up obs-down obs-logs run status help
+.PHONY: all obs-up obs-down obs-logs run status help install-obs
 
 all: help
 
