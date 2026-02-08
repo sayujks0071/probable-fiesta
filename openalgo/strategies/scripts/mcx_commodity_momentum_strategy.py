@@ -172,6 +172,28 @@ class MCXMomentumStrategy:
 
         self.data = df
 
+    def execute_trade(self, action, quantity):
+        """Execute trade via API."""
+        if not self.client:
+            logger.info(f"Simulated Trade: {action} {quantity} (No Client)")
+            return
+
+        try:
+            # CORRECT: strategy name as first argument
+            order = self.client.placesmartorder(
+                strategy="MCX_Momentum",
+                symbol=self.symbol,
+                action=action,
+                exchange="MCX",
+                price_type="MARKET",
+                product="MIS",
+                quantity=quantity,
+                position_size=quantity
+            )
+            logger.info(f"ORDER {action} {quantity}: {order}")
+        except Exception as e:
+            logger.error(f"Trade failed: {e}")
+
     def check_signals(self):
         """Check entry and exit conditions."""
         if self.data.empty or 'adx' not in self.data.columns:
@@ -219,6 +241,7 @@ class MCXMomentumStrategy:
                 current['close'] > prev['close']):
 
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                self.execute_trade("BUY", base_qty)
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
@@ -228,6 +251,7 @@ class MCXMomentumStrategy:
                   current['close'] < prev['close']):
 
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                self.execute_trade("SELL", base_qty)
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
 
@@ -243,17 +267,21 @@ class MCXMomentumStrategy:
             if pos_qty > 0: # Long
                 if current['rsi'] < 45 or current['adx'] < 20:
                      logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                     self.execute_trade("SELL", abs(pos_qty))
+                     if self.pm:
+                        self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
             elif pos_qty < 0: # Short
                 if current['rsi'] > 55 or current['adx'] < 20:
                      logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                     self.execute_trade("BUY", abs(pos_qty))
+                     if self.pm:
+                        self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
         while True:
-            if not is_market_open():
-                logger.info("Market is closed. Sleeping...")
+            if not is_market_open(exchange="MCX"):
+                logger.info("MCX Market is closed. Sleeping...")
                 time.sleep(300)
                 continue
 
