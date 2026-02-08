@@ -4,7 +4,7 @@ import json
 import logging
 import datetime
 import psutil
-import yfinance as yf
+import argparse
 import requests
 import pandas as pd
 from pathlib import Path
@@ -24,8 +24,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("WeeklyAudit")
 
+try:
+    import yfinance as yf
+except ImportError:
+    logger.warning("yfinance not found. Market data will be limited.")
+    yf = None
+
 class WeeklyAudit:
-    def __init__(self):
+    def __init__(self, mock=False):
+        self.mock = mock
         self.root_dir = Path("openalgo")
         self.strategies_dir = self.root_dir / "strategies"
         self.state_dir = self.strategies_dir / "state"
@@ -79,11 +86,21 @@ class WeeklyAudit:
                 active_strats = json.load(f)
                 strategies_count = len(active_strats)
         else:
-            logger.warning("active_strategies.json not found!")
-            active_strats = {}
+            if self.mock:
+                strategies_count = 3
+            else:
+                logger.warning("active_strategies.json not found!")
+                active_strats = {}
 
-        # Scan State Files
-        if self.state_dir.exists():
+        # Scan State Files or Mock
+        state_data = []
+
+        if self.mock:
+            # Mock Data
+            state_data.append({'symbol': 'NIFTY', 'position': 50, 'entry': 24000.0})
+            state_data.append({'symbol': 'BANKNIFTY', 'position': -15, 'entry': 52000.0})
+            strategies_count = max(strategies_count, 2)
+        elif self.state_dir.exists():
             for state_file in self.state_dir.glob("*_state.json"):
                 try:
                     with open(state_file, 'r') as f:
@@ -91,31 +108,38 @@ class WeeklyAudit:
                         pos = data.get('position', 0)
                         entry = data.get('entry_price', 0.0)
                         symbol = state_file.stem.replace('_state', '')
-
                         if pos != 0:
-                            exposure = abs(pos * entry)
-                            total_exposure += exposure
-                            active_positions += 1
-                            tracked_symbols.add(symbol)
-
-                            # Fetch current price for PnL/DD
-                            current_price = self.get_market_price(symbol)
-                            pnl = 0.0
-                            if current_price:
-                                if pos > 0:
-                                    pnl = (current_price - entry) * pos
-                                else:
-                                    pnl = (entry - current_price) * abs(pos)
-
-                                # Estimate Drawdown for this position
-                                if pnl < 0:
-                                    dd_pct = abs(pnl) / (abs(pos) * entry)
-                                    if dd_pct > max_dd:
-                                        max_dd = dd_pct
-
-                            position_details.append(f"- {symbol}: {pos} @ {entry} (Exp: {exposure:,.2f})")
+                            state_data.append({'symbol': symbol, 'position': pos, 'entry': entry})
                 except Exception as e:
                     logger.error(f"Error reading {state_file}: {e}")
+
+        for item in state_data:
+            symbol = item['symbol']
+            pos = item['position']
+            entry = item['entry']
+
+            exposure = abs(pos * entry)
+            total_exposure += exposure
+            active_positions += 1
+            tracked_symbols.add(symbol)
+
+            # Fetch current price for PnL/DD
+            current_price = self.get_market_price(symbol) if not self.mock else entry * 0.99 # Mock 1% loss
+
+            pnl = 0.0
+            if current_price:
+                if pos > 0:
+                    pnl = (current_price - entry) * pos
+                else:
+                    pnl = (entry - current_price) * abs(pos)
+
+                # Estimate Drawdown for this position
+                if pnl < 0:
+                    dd_pct = abs(pnl) / (abs(pos) * entry)
+                    if dd_pct > max_dd:
+                        max_dd = dd_pct
+
+            position_details.append(f"- {symbol}: {pos} @ {entry} (Exp: {exposure:,.2f})")
 
         # Calculations
         heat = total_exposure / self.CAPITAL
@@ -145,8 +169,11 @@ class WeeklyAudit:
         return tracked_symbols
 
     def get_market_price(self, symbol):
+        if self.mock:
+            return 1000.0 # Dummy
+
         ticker = self._get_ticker(symbol)
-        if not ticker:
+        if not ticker or not yf:
             return None
 
         try:
@@ -160,6 +187,10 @@ class WeeklyAudit:
 
     def analyze_correlations(self, tracked_symbols):
         logger.info("Analyzing Correlations...")
+        if self.mock:
+             self.add_section("🔗 CORRELATION ANALYSIS:", "✅ No significant correlations detected (Mocked).")
+             return
+
         if len(tracked_symbols) < 2:
             return
 
@@ -173,37 +204,34 @@ class WeeklyAudit:
             return
 
         try:
-            data = yf.download(list(tickers.values()), period="1mo", progress=False)['Close']
-            if data.empty:
-                return
+            if yf:
+                data = yf.download(list(tickers.values()), period="1mo", progress=False)['Close']
+                if data.empty:
+                    return
 
-            # If multiple tickers, columns are the tickers.
-            # If single ticker (shouldn't happen due to check), it's a Series.
+                corr_matrix = data.corr()
 
-            corr_matrix = data.corr()
+                high_corr_pairs = []
+                for i in range(len(corr_matrix.columns)):
+                    for j in range(i):
+                        val = corr_matrix.iloc[i, j]
+                        if abs(val) > self.MAX_CORRELATION:
+                            t1 = corr_matrix.columns[i]
+                            t2 = corr_matrix.columns[j]
+                            # Map back to internal symbols if possible
+                            s1 = [k for k,v in tickers.items() if v == t1]
+                            s2 = [k for k,v in tickers.items() if v == t2]
+                            s1_name = s1[0] if s1 else t1
+                            s2_name = s2[0] if s2 else t2
 
-            high_corr_pairs = []
-            for i in range(len(corr_matrix.columns)):
-                for j in range(i):
-                    val = corr_matrix.iloc[i, j]
-                    if abs(val) > self.MAX_CORRELATION:
-                        t1 = corr_matrix.columns[i]
-                        t2 = corr_matrix.columns[j]
-                        # Map back to internal symbols if possible
-                        s1 = [k for k,v in tickers.items() if v == t1]
-                        s2 = [k for k,v in tickers.items() if v == t2]
-                        s1_name = s1[0] if s1 else t1
-                        s2_name = s2[0] if s2 else t2
+                            high_corr_pairs.append(f"{s1_name} <-> {s2_name}: {val:.2f}")
+                            self.risk_issues.append(f"High Correlation: {s1_name} & {s2_name} ({val:.2f})")
 
-                        high_corr_pairs.append(f"{s1_name} <-> {s2_name}: {val:.2f}")
-                        self.risk_issues.append(f"High Correlation: {s1_name} & {s2_name} ({val:.2f})")
-
-            if high_corr_pairs:
-                content = "⚠️ High Correlations Detected:\n" + "\n".join([f"- {p}" for p in high_corr_pairs])
-                self.add_section("🔗 CORRELATION ANALYSIS:", content)
-            else:
-                 self.add_section("🔗 CORRELATION ANALYSIS:", "✅ No significant correlations detected.")
-
+                if high_corr_pairs:
+                    content = "⚠️ High Correlations Detected:\n" + "\n".join([f"- {p}" for p in high_corr_pairs])
+                    self.add_section("🔗 CORRELATION ANALYSIS:", content)
+                else:
+                     self.add_section("🔗 CORRELATION ANALYSIS:", "✅ No significant correlations detected.")
         except Exception as e:
             logger.error(f"Correlation analysis failed: {e}")
 
@@ -235,17 +263,22 @@ class WeeklyAudit:
 
     def check_data_quality(self, tracked_symbols):
         logger.info("Checking Data Quality...")
+        if self.mock:
+             self.add_section("📡 DATA FEED QUALITY:", "✅ Data Feed Stable (Mocked)")
+             return
+
         issues = []
-        for sym in tracked_symbols:
-            t = self._get_ticker(sym)
-            if t:
-                try:
-                    data = yf.Ticker(t).history(period="5d")
-                    if data.empty:
-                        issues.append(f"{sym}: No data in last 5 days")
-                    # Check for gaps could be more complex, but this is a start
-                except Exception:
-                    issues.append(f"{sym}: Fetch failed")
+        if yf:
+            for sym in tracked_symbols:
+                t = self._get_ticker(sym)
+                if t:
+                    try:
+                        data = yf.Ticker(t).history(period="5d")
+                        if data.empty:
+                            issues.append(f"{sym}: No data in last 5 days")
+                        # Check for gaps could be more complex, but this is a start
+                    except Exception:
+                        issues.append(f"{sym}: Fetch failed")
 
         if issues:
             content = "⚠️ Data Issues:\n" + "\n".join([f"- {i}" for i in issues])
@@ -257,6 +290,19 @@ class WeeklyAudit:
 
     def fetch_broker_positions(self, port):
         """Fetch positions from broker API"""
+        if self.mock:
+            # Return mock positions
+            # Kite (5001) has both, Dhan (5002) is missing one
+            if port == 5001:
+                return [
+                    {'symbol': 'NIFTY', 'quantity': 50, 'average_price': 24000.0},
+                    {'symbol': 'BANKNIFTY', 'quantity': -15, 'average_price': 52000.0}
+                ]
+            else:
+                 return [
+                    {'symbol': 'NIFTY', 'quantity': 50, 'average_price': 24000.0}
+                ]
+
         url = f"http://localhost:{port}/api/v1/positions"
         try:
             response = requests.get(url, timeout=2)
@@ -273,6 +319,9 @@ class WeeklyAudit:
 
     def check_api_health(self, port, name):
         """Check API Health"""
+        if self.mock:
+            return "✅ Healthy (Mocked)"
+
         url = f"http://localhost:{port}/health"
         try:
             response = requests.get(url, timeout=2)
@@ -326,6 +375,10 @@ class WeeklyAudit:
             if orphaned_in_broker:
                 discrepancies.append(f"Orphaned in Broker: {', '.join(orphaned_in_broker)}")
 
+            # Since we mocked Dhan missing BANKNIFTY
+            if self.mock and 'BANKNIFTY' in missing_in_broker:
+                 pass # This is expected for the test
+
         action = "None"
         if discrepancies:
             if "Brokers Unreachable" in discrepancies[0]:
@@ -355,13 +408,16 @@ class WeeklyAudit:
 
         # Process Health
         strategy_procs = 0
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                cmd = proc.info['cmdline']
-                if cmd and 'python' in cmd[0] and any('strategy' in c for c in cmd):
-                    strategy_procs += 1
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
+        if self.mock:
+            strategy_procs = 3 # Mock
+        else:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    cmd = proc.info['cmdline']
+                    if cmd and 'python' in cmd[0] and any('strategy' in c for c in cmd):
+                        strategy_procs += 1
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
 
         # API Health Check
         kite_status = self.check_api_health(5001, "Kite")
@@ -389,14 +445,16 @@ class WeeklyAudit:
     def detect_market_regime(self):
         logger.info("Detecting Market Regime...")
         try:
-            vix = yf.Ticker("^INDIAVIX").history(period="5d")
-            if vix.empty:
-                vix = yf.Ticker("^VIX").history(period="5d")
+            current_vix = 15.0 # Default
+            if yf and not self.mock:
+                vix = yf.Ticker("^INDIAVIX").history(period="5d")
+                if vix.empty:
+                    vix = yf.Ticker("^VIX").history(period="5d")
 
-            if not vix.empty:
-                current_vix = vix['Close'].iloc[-1]
-            else:
-                current_vix = 15.0 # Default fallback
+                if not vix.empty:
+                    current_vix = vix['Close'].iloc[-1]
+            elif self.mock:
+                current_vix = 14.5 # Mock VIX
 
             regime = "Ranging"
             mix = "Mean Reversion"
@@ -432,7 +490,9 @@ class WeeklyAudit:
         active_logs = 0
         missing_records = False
 
-        if log_dir.exists():
+        if self.mock:
+            active_logs = 5 # Mock
+        elif log_dir.exists():
             # Check for logs modified in last 7 days
             week_ago = datetime.datetime.now().timestamp() - (7 * 24 * 3600)
             for log_file in log_dir.glob("*.log"):
@@ -493,5 +553,9 @@ class WeeklyAudit:
         logger.info(f"Report generated at {report_file}")
 
 if __name__ == "__main__":
-    audit = WeeklyAudit()
+    parser = argparse.ArgumentParser(description="Weekly Risk & Health Audit")
+    parser.add_argument("--mock", action="store_true", help="Run in mock mode for testing")
+    args = parser.parse_args()
+
+    audit = WeeklyAudit(mock=args.mock)
     audit.run()
