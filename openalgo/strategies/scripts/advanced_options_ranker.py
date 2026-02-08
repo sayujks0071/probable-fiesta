@@ -11,12 +11,13 @@ from bs4 import BeautifulSoup
 import re
 import math
 import subprocess
+import glob
 
 # Add project root to path
 current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+    sys.path.insert(0, str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, is_market_open
 from openalgo.strategies.utils.option_analytics import calculate_pcr, calculate_max_pain, calculate_greeks
@@ -46,7 +47,7 @@ class AdvancedOptionsRanker:
         self.script_map = {
             "Iron Condor": "delta_neutral_iron_condor_nifty.py",
             "Gap Fade": "gap_fade_strategy.py",
-            # Others not yet implemented as scripts
+            "Sentiment Reversal": "sentiment_reversal_strategy.py"
         }
 
         # Thresholds
@@ -54,6 +55,7 @@ class AdvancedOptionsRanker:
         self.vix_extreme_threshold = 30
         self.vix_low_threshold = 12
         self.liquidity_oi_threshold = 100000  # Minimum OI
+        self.max_global_positions = 5 # Max concurrent strategies
 
         # Weights
         self.weights = {
@@ -70,9 +72,8 @@ class AdvancedOptionsRanker:
         try:
             # Deterministic: Return 0 gap if no data.
             # In production, fetch specific symbol.
-            # For now, we assume if we are running before market, we might check last close
-            # But without history, we can't do much.
             # Returning 0.0 ensures deterministic behavior for tests.
+            # Improve: if nifty_spot > 0, maybe add random noise for simulation or check time
             return nifty_spot, 0.0
         except Exception as e:
             logger.warning(f"Error fetching GIFT Nifty proxy: {e}")
@@ -252,6 +253,29 @@ class AdvancedOptionsRanker:
 
         return details
 
+    def check_global_risk(self):
+        """
+        Check global portfolio risk across all strategies.
+        """
+        state_dir = project_root / "openalgo" / "strategies" / "state"
+        if not state_dir.exists():
+            return 0
+
+        total_positions = 0
+        files = glob.glob(str(state_dir / "*_state.json"))
+
+        for f in files:
+            try:
+                with open(f, 'r') as fp:
+                    data = json.load(fp)
+                    pos = data.get('position', 0)
+                    if pos != 0:
+                        total_positions += 1
+            except:
+                pass
+
+        return total_positions
+
     def generate_report(self):
         """Main execution flow."""
         print(f"📊 DAILY OPTIONS STRATEGY ANALYSIS - {datetime.now().strftime('%Y-%m-%d')}\n")
@@ -320,6 +344,13 @@ class AdvancedOptionsRanker:
         """Deploy top strategies."""
         logger.info(f"Deploying {len(top_strategies)} top strategies...")
 
+        # Global Risk Check
+        active_strats = self.check_global_risk()
+        if active_strats >= self.max_global_positions:
+            logger.warning(f"Global Risk Check Failed: Max positions ({self.max_global_positions}) reached. Skipping deployment.")
+            print(f"⚠️ Deployment Skipped: Max concurrent strategies limit ({self.max_global_positions}) reached.")
+            return
+
         for strat in top_strategies:
             strategy_name = strat['strategy']
             script = self.script_map.get(strategy_name)
@@ -338,13 +369,16 @@ class AdvancedOptionsRanker:
             # Pass extra args
             if strategy_name == "Iron Condor":
                 cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
+            elif strategy_name == "Sentiment Reversal":
+                cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
+            elif strategy_name == "Gap Fade":
+                # Ensure compatibility if we added args
+                cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
 
             logger.info(f"Executing: {' '.join(cmd)}")
 
             try:
-                # Run in background or wait? Usually deployment triggers and returns.
-                # Here we use Popen to run detached or run and wait.
-                # We'll run and log output
+                # Run detached
                 subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 print(f"✅ Deployed: {strategy_name} on {strat['index']}")
             except Exception as e:

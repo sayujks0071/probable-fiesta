@@ -11,7 +11,7 @@ from pathlib import Path
 current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+    sys.path.insert(0, str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 
@@ -27,15 +27,16 @@ logging.basicConfig(
 logger = logging.getLogger("GapFadeStrategy")
 
 class GapFadeStrategy:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5, sentiment_score=None):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
+        self.sentiment_score = sentiment_score
         self.pm = PositionManager(f"{symbol}_GapFade")
 
     def execute(self):
-        logger.info(f"Starting Gap Fade Check for {self.symbol}")
+        logger.info(f"Starting Gap Fade Check for {self.symbol} (Sentiment: {self.sentiment_score})")
 
         # 1. Get Previous Close
         # Using history API for last 2 days
@@ -90,11 +91,21 @@ class GapFadeStrategy:
             # For options: Buy PE
             option_type = "PE"
 
+            # Sentiment Check: If Fading Gap Up (Shorting), ensure Sentiment is NOT Extremely Positive
+            if self.sentiment_score is not None and self.sentiment_score > 0.6:
+                logger.warning(f"Sentiment is Positive ({self.sentiment_score}). Fading Gap Up is risky. Skipping.")
+                return
+
         elif gap_pct < -self.gap_threshold:
             # Gap DOWN -> Fade (Buy/Long or Buy Call)
             logger.info("Gap DOWN detected. Looking to FADE (Long).")
             action = "BUY"
             option_type = "CE"
+
+            # Sentiment Check: If Fading Gap Down (Longing), ensure Sentiment is NOT Extremely Negative
+            if self.sentiment_score is not None and self.sentiment_score < 0.4:
+                logger.warning(f"Sentiment is Negative ({self.sentiment_score}). Fading Gap Down is risky. Skipping.")
+                return
 
         # 3. Select Option Strike (ATM)
         atm = round(current_price / 50) * 50
@@ -123,10 +134,11 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--threshold", type=float, default=0.5, help="Gap Threshold %%")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
+    parser.add_argument("--sentiment_score", type=float, default=None, help="Sentiment Score (0.0-1.0)")
     args = parser.parse_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold)
+    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold, sentiment_score=args.sentiment_score)
     strategy.execute()
 
 if __name__ == "__main__":
