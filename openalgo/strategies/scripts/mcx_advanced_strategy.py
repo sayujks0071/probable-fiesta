@@ -18,23 +18,20 @@ from pathlib import Path
 try:
     import yfinance as yf
 except ImportError:
-    print("Warning: yfinance not found. Global market data will be simulated.")
     yf = None
 
 # Add repo root to path for imports
-script_dir = Path(__file__).parent
-strategies_dir = script_dir.parent
-utils_dir = strategies_dir / 'utils'
-sys.path.insert(0, str(utils_dir))
+script_path = Path(__file__).resolve()
+repo_root = script_path.parent.parent.parent.parent
+if str(repo_root) not in sys.path:
+    sys.path.append(str(repo_root))
 
-try:
-    from trading_utils import APIClient, is_market_open
-    from symbol_resolver import SymbolResolver
-except ImportError:
-    # Fallback for direct execution
-    sys.path.insert(0, str(strategies_dir))
-    from utils.trading_utils import APIClient, is_market_open
-    from utils.symbol_resolver import SymbolResolver
+from openalgo.strategies.utils.trading_utils import APIClient, is_market_open
+from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+
+if not yf:
+    # Configure logging first if needed, but here we assume basicConfig is called later or we use root
+    pass
 
 # Configuration
 API_HOST = os.getenv('OPENALGO_HOST', 'http://127.0.0.1:5001')
@@ -368,6 +365,64 @@ class AdvancedMCXStrategy:
         # Sort opportunities
         self.opportunities.sort(key=lambda x: x['score'], reverse=True)
 
+    def execute_trades(self):
+        """
+        Execute trades based on analyzed opportunities.
+        """
+        logger.info("Executing Trades...")
+
+        # Simple Position Sizing Logic (e.g. 1 lot per signal)
+
+        for opp in self.opportunities:
+             if opp['strategy_type'] == 'Avoid':
+                 continue
+
+             # Check if score is high enough for auto-execution
+             if opp['score'] < 60:
+                 logger.info(f"Skipping execution for {opp['name']} (Score {opp['score']} < 60)")
+                 continue
+
+             symbol = opp['symbol']
+             # MCX Futures are usually 1 lot. Hardcoded for safety.
+             # In production, fetch lot_size from instruments master
+             qty = 1
+
+             # Need to determine Action based on strategy
+             action = "BUY" # Default
+             if opp['strategy_type'] == 'Momentum':
+                 if opp['details']['trend_dir'] == 'Down':
+                     action = "SELL"
+             elif opp['strategy_type'] == 'MeanReversion':
+                 # If RSI > 60 -> Sell, else Buy
+                 if opp['details']['rsi'] > 60:
+                     action = "SELL"
+                 else:
+                     action = "BUY"
+             elif opp['strategy_type'] == 'Arbitrage':
+                 # Usually Arbitrage is complex. Assuming Long MCX for now if Global aligns?
+                 # Actually Arbitrage implies Mean Reversion to Global.
+                 # If MCX > Global -> Sell. If MCX < Global -> Buy.
+                 # Simplified: Follow Trend Dir for now as "Convergence"
+                 if opp['details']['trend_dir'] == 'Down':
+                     action = "SELL"
+
+             logger.info(f"Placing {action} Order for {symbol} ({opp['strategy_type']})")
+
+             try:
+                 resp = self.client.placesmartorder(
+                     strategy=f"MCX_Adv_{opp['strategy_type']}",
+                     symbol=symbol,
+                     action=action,
+                     exchange="MCX",
+                     price_type="MARKET",
+                     product="NRML",
+                     quantity=qty,
+                     position_size=qty
+                 )
+                 logger.info(f"Order Response: {resp}")
+             except Exception as e:
+                 logger.error(f"Order Execution Failed for {symbol}: {e}")
+
     def generate_report(self):
         """
         Generate and print the daily analysis report.
@@ -448,6 +503,7 @@ def main():
     parser = argparse.ArgumentParser(description='Advanced MCX Strategy Analyzer')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
+    parser.add_argument('--execute', action='store_true', help='Execute trades automatically')
     args = parser.parse_args()
 
     # Overwrite with env vars if present
@@ -455,11 +511,20 @@ def main():
     port = int(os.getenv('OPENALGO_PORT', args.port))
     host = f"http://127.0.0.1:{port}"
 
+    # Market Open Check
+    if args.execute:
+        if not is_market_open("MCX"):
+            logger.warning("MCX Market is Closed. Skipping Execution.")
+            return
+
     analyzer = AdvancedMCXStrategy(api_key, host)
     analyzer.fetch_global_context()
     analyzer.fetch_mcx_data()
     analyzer.analyze_commodities()
     analyzer.generate_report()
+
+    if args.execute:
+        analyzer.execute_trades()
 
 if __name__ == "__main__":
     main()

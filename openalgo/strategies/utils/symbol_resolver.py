@@ -133,7 +133,12 @@ class SymbolResolver:
             # Also check if the symbol itself ends with 'M' before some digits (less reliable but possible)
             # e.g. CRUDEOILM23NOV...
 
-            logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
+            # Check if we already have a MINI symbol by chance (e.g. underlying was passed as SILVERM)
+            current_best = matches.iloc[0]['symbol']
+            if "MINI" in current_best or (underlying + "M") in current_best:
+                 logger.info(f"Selected symbol {current_best} appears to be MINI/MIC.")
+            else:
+                 logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
 
         # Return nearest expiry
         return matches.iloc[0]['symbol']
@@ -254,9 +259,9 @@ class SymbolResolver:
         if 'strike' not in chain.columns:
             # Try to parse strike from symbol (e.g. NIFTY23OCT19500CE)
             # This is brittle but a fallback.
-            # Regex: look for digits before CE/PE
+            # Regex: look for digits before CE/PE, allowing for spaces
             def parse_strike(sym):
-                m = re.search(r'(\d+)(CE|PE)$', sym)
+                m = re.search(r'(\d+)\s*(CE|PE)$', sym)
                 return float(m.group(1)) if m else 0
             chain['strike'] = chain['symbol'].apply(parse_strike)
 

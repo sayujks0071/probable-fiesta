@@ -104,7 +104,7 @@ def check_auth():
     except Exception as e:
         logger.error(f"Failed to run auth check: {e}")
 
-def fetch_instruments():
+def fetch_instruments(no_mock=False):
     logger.info("Fetching Instruments...")
     os.makedirs(DATA_DIR, exist_ok=True)
     csv_path = os.path.join(DATA_DIR, 'instruments.csv')
@@ -131,6 +131,10 @@ def fetch_instruments():
 
     # Fallback: Generate Comprehensive Mock Instruments if not found
     if not fetched:
+        if no_mock:
+            logger.error("API failed to fetch instruments and --no-mock is set. Exiting.")
+            sys.exit(1)
+
         logger.info("Using Fallback: Generating Mock Instruments...")
         now = datetime.now()
 
@@ -238,12 +242,16 @@ def validate_symbols():
                 resolved_str = str(resolved)
                 valid_count += 1
 
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {resolved_str[:30]:<30} | {status}")
+            ctype = str(config.get('type', 'Unknown'))
+            underlying = str(config.get('underlying', 'Unknown'))
+            print(f"{strat_id:<25} | {ctype:<8} | {underlying:<15} | {resolved_str[:30]:<30} | {status}")
 
         except Exception as e:
             logger.error(f"Error validating {strat_id}: {e}")
             invalid_count += 1
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {'ERROR':<30} | 🔴 Error")
+            ctype = str(config.get('type', 'Unknown'))
+            underlying = str(config.get('underlying', 'Unknown'))
+            print(f"{strat_id:<25} | {ctype:<8} | {underlying:<15} | {'ERROR':<30} | 🔴 Error")
 
     print("-" * 95)
     if invalid_count > 0:
@@ -253,11 +261,16 @@ def validate_symbols():
         logger.info("All symbols valid. Ready to trade.")
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-mock", action="store_true", help="Fail if instruments cannot be fetched from API")
+    args = parser.parse_args()
+
     print("🚀 DAILY PREP STARTED")
     check_env()
     purge_stale_state()
     check_auth()
-    fetch_instruments()
+    fetch_instruments(no_mock=args.no_mock)
     validate_symbols()
     print("✅ DAILY PREP COMPLETE")
 
