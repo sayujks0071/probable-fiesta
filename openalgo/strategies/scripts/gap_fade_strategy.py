@@ -16,12 +16,15 @@ if str(project_root) not in sys.path:
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 
 # Configure logging
+log_dir = project_root / "openalgo" / "strategies" / "logs"
+os.makedirs(log_dir, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(project_root / "openalgo" / "strategies" / "logs" / "gap_fade.log")
+        logging.FileHandler(log_dir / "gap_fade.log")
     ]
 )
 logger = logging.getLogger("GapFadeStrategy")
@@ -35,12 +38,16 @@ class GapFadeStrategy:
         self.pm = PositionManager(f"{symbol}_GapFade")
 
     def execute(self):
+        if not is_market_open():
+            logger.info("Market is closed. Skipping Gap Fade check.")
+            return
+
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
 
         # 1. Get Previous Close
-        # Using history API for last 2 days
+        # Using history API for last 10 days to ensure we get valid trading days
         today = datetime.now()
-        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d") # Go back enough to get prev day
+        start_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
         end_date = today.strftime("%Y-%m-%d")
 
         # Get daily candles
@@ -112,10 +119,22 @@ class GapFadeStrategy:
             qty = int(qty * 0.5)
             logger.info(f"High VIX {vix}. Reduced Qty to {qty}")
 
-        # 5. Place Order (Simulation)
-        # self.client.placesmartorder(...)
-        logger.info(f"Executing {option_type} Buy for {qty} qty.")
-        self.pm.update_position(qty, 100, "BUY") # Mock update
+        # 5. Place Order
+        try:
+            order_response = self.client.placesmartorder(
+                strategy="Gap_Fade",
+                symbol=strike_symbol,
+                action="BUY", # We are buying the option (PE or CE)
+                exchange="NFO",
+                price_type="MARKET",
+                product="MIS",
+                quantity=qty,
+                position_size=qty
+            )
+            logger.info(f"Order Placed: {order_response}")
+            self.pm.update_position(qty, current_price, "BUY") # Update state
+        except Exception as e:
+            logger.error(f"Failed to place order: {e}")
 
 def main():
     parser = argparse.ArgumentParser()
