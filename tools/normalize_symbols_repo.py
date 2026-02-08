@@ -48,8 +48,12 @@ def scan_file(filepath, instruments, strict=False):
     normalized_content = ""
     changes_made = False
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except UnicodeDecodeError:
+        print(f"Skipping binary/non-utf8 file: {filepath}")
+        return "", False, []
 
     def replacement_handler(match):
         nonlocal changes_made
@@ -123,19 +127,22 @@ def main():
     }
 
     files_to_scan = []
-    # Walk openalgo/strategies
-    strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
-    for root, dirs, files in os.walk(strategies_dir):
-        # Exclude tests directories
+    # Walk openalgo/
+    scan_dir = os.path.join(REPO_ROOT, 'openalgo')
+    for root, dirs, files in os.walk(scan_dir):
+        # Exclude tests directories and pycache
         if 'tests' in dirs:
             dirs.remove('tests')
         if 'test' in dirs:
             dirs.remove('test')
+        if '__pycache__' in dirs:
+            dirs.remove('__pycache__')
 
         for file in files:
             if file.endswith('.py') or file.endswith('.json'):
                 files_to_scan.append(os.path.join(root, file))
 
+    print(f"Scanning {len(files_to_scan)} files...")
 
     for filepath in files_to_scan:
         new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)

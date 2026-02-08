@@ -79,23 +79,28 @@ def validate_config_symbols(resolver):
 
 def scan_files_for_hardcoded_symbols(instruments):
     issues = []
-    strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    scan_dir = os.path.join(REPO_ROOT, 'openalgo')
 
-    for root, dirs, files in os.walk(strategies_dir):
-        # Exclude tests
+    print(f"Scanning directory: {scan_dir}")
+
+    for root, dirs, files in os.walk(scan_dir):
+        # Exclude tests and pycache
         if 'tests' in dirs:
             dirs.remove('tests')
         if 'test' in dirs:
             dirs.remove('test')
+        if '__pycache__' in dirs:
+            dirs.remove('__pycache__')
 
         for file in files:
-            if file.endswith('.py'):
+            if file.endswith('.py') or file.endswith('.json'):
                 filepath = os.path.join(root, file)
                 try:
                     with open(filepath, 'r', encoding='utf-8') as f:
                         content = f.read()
                 except UnicodeDecodeError:
-                    continue # Skip binary/bad files
+                    print(f"Skipping binary/non-utf8 file: {filepath}")
+                    continue
 
                 for match in MCX_PATTERN.finditer(content):
                     symbol_str = match.group(0)

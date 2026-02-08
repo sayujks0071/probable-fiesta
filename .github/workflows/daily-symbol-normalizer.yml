@@ -23,7 +23,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install pandas httpx pyyaml
 
       - name: A) Sync Instruments
         id: sync
@@ -31,29 +31,29 @@ jobs:
 
       - name: B) Pre-Check Strict Validation
         id: precheck
-        continue-on-error: true
+        # If this fails, we STOP. Hard Gate.
         run: python3 tools/validate_symbols.py --strict --check
 
       - name: C) Normalize Symbols
         id: normalize
-        if: steps.precheck.outcome == 'success'
+        # Only run if precheck succeeded (implicit by previous step not failing, but good to be explicit)
         run: python3 tools/normalize_symbols_repo.py --write
 
       - name: D) Post-Check Strict Validation
         id: postcheck
-        if: steps.normalize.outcome == 'success'
-        continue-on-error: true
+        # Must pass strict check after normalization
         run: python3 tools/validate_symbols.py --strict --check
 
       - name: Gate Check
         id: gate
+        if: always()
         run: |
-          if [[ "${{ steps.precheck.outcome }}" == "success" && "${{ steps.postcheck.outcome }}" == "success" ]]; then
+          if [[ "${{ steps.precheck.outcome }}" == "success" && "${{ steps.normalize.outcome }}" == "success" && "${{ steps.postcheck.outcome }}" == "success" ]]; then
             echo "gate_ok=true" >> $GITHUB_OUTPUT
-            echo "Gate passed."
+            echo "✅ Gate Passed: All checks green."
           else
             echo "gate_ok=false" >> $GITHUB_OUTPUT
-            echo "Gate failed."
+            echo "❌ Gate Failed: Validation or Normalization error."
           fi
 
       - name: Generate Reports Artifact
@@ -63,20 +63,27 @@ jobs:
           name: symbol-audit-reports
           path: reports/
 
+      - name: Get Date
+        if: steps.gate.outputs.gate_ok == 'true'
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
       - name: Create Pull Request
         if: steps.gate.outputs.gate_ok == 'true'
         uses: peter-evans/create-pull-request@v5
         with:
-          branch: chore/symbols-daily
-          title: "chore: Daily Symbol Normalization"
+          branch: chore/symbols-daily-${{ steps.date.outputs.date }}
+          title: "chore: Daily Symbol Normalization ${{ steps.date.outputs.date }}"
           body: |
             Daily symbol normalization report.
-            See attached audit report for details.
 
-            [Audit Report](reports/symbol_audit.md)
-          commit-message: "chore: normalize symbols"
+            **Status**: ✅ Passed Strict Validation
+
+            See attached audit report for details.
+          commit-message: "chore: normalize symbols ${{ steps.date.outputs.date }}"
           add-paths: |
-            openalgo/strategies/**/*.py
+            openalgo/**/*.py
+            openalgo/**/*.json
             reports/symbol_audit.md
             reports/symbol_audit.json
 
@@ -86,18 +93,18 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let body = "Daily symbol audit failed. Please check the attached artifacts.\n\n";
+            let body = "Daily symbol audit failed. The strict validation pipeline did not pass.\n\n";
             try {
-              // Read report if exists
               if (fs.existsSync('reports/symbol_audit.md')) {
                 const report = fs.readFileSync('reports/symbol_audit.md', 'utf8');
                 body += report;
+              } else {
+                 body += "Audit report missing.";
               }
             } catch (e) {
               body += "Could not read audit report.";
             }
 
-            // Create Issue
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
