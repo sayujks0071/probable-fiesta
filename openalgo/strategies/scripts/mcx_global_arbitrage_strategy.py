@@ -23,13 +23,18 @@ if str(utils_path) not in sys.path:
 try:
     from trading_utils import APIClient
     from symbol_resolver import SymbolResolver
+    from risk_manager import RiskManager, EODSquareOff, create_risk_manager
 except ImportError:
     try:
         from openalgo.strategies.utils.trading_utils import APIClient
         from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+        from openalgo.strategies.utils.risk_manager import RiskManager, EODSquareOff, create_risk_manager
     except ImportError:
         APIClient = None
         SymbolResolver = None
+        RiskManager = None
+        EODSquareOff = None
+        create_risk_manager = None
 
 # Configuration
 SYMBOL = os.getenv('SYMBOL', None)
@@ -63,6 +68,32 @@ class MCXGlobalArbitrageStrategy:
         self.session_ref_mcx = None
         self.session_ref_global = None
 
+        # Risk Management
+        if create_risk_manager:
+            self.rm = create_risk_manager("MCX_Global_Arbitrage", exchange="MCX", capital=200000)
+            self.eod = EODSquareOff(self.rm, self._eod_exit_callback)
+
+            # Sync Position with Risk Manager
+            open_positions = self.rm.get_open_positions()
+            if self.symbol in open_positions:
+                qty = open_positions[self.symbol]['qty']
+                self.position = 1 if qty > 0 else -1
+                logger.info(f"Restored position from RiskManager: {self.position}")
+        else:
+            self.rm = None
+            self.eod = None
+            logger.warning("RiskManager not available. Running without risk controls!")
+
+    def _eod_exit_callback(self, symbol, action, quantity):
+        """Callback for EOD Square Off."""
+        logger.warning(f"EOD Callback Triggered: {action} {quantity} {symbol}")
+        price = 0.0
+        if not self.data.empty:
+            price = self.data.iloc[-1]['mcx_price']
+
+        self.exit(action, price, "EOD Square Off", qty=quantity)
+        return {"status": "success"}
+
     def fetch_data(self):
         """Fetch live MCX and Global prices. Returns True on success."""
         if not self.api_client:
@@ -70,8 +101,6 @@ class MCXGlobalArbitrageStrategy:
             return False
         
         try:
-            logger.info(f"Fetching data for {self.symbol} vs {self.global_symbol}...")
-
             # 1. Fetch MCX Price from Kite API
             mcx_quote = self.api_client.get_quote(self.symbol, exchange="MCX")
             
@@ -172,6 +201,13 @@ class MCXGlobalArbitrageStrategy:
                 self.exit(side, current['mcx_price'], "Convergence reached")
 
     def entry(self, side, price, reason):
+        # Risk Check
+        if self.rm:
+            allowed, msg = self.rm.can_trade()
+            if not allowed:
+                logger.warning(f"Trade Rejected by Risk Manager: {msg}")
+                return
+
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
         
         order_placed = False
@@ -195,12 +231,19 @@ class MCXGlobalArbitrageStrategy:
             logger.warning(f"[ENTRY] No API client available - signal logged but order not placed")
         
         if order_placed or not self.api_client: # Assume success if no client (testing)
+            # Register with Risk Manager
+            if self.rm:
+                rm_side = "LONG" if side == "BUY" else "SHORT"
+                self.rm.register_entry(self.symbol, 1, price, rm_side)
+
             self.position = 1 if side == "BUY" else -1
             self.last_trade_time = time.time()
 
-    def exit(self, side, price, reason):
+    def exit(self, side, price, reason, qty=None):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
         
+        exit_qty = qty if qty else abs(self.position)
+
         order_placed = False
         if self.api_client:
             try:
@@ -211,7 +254,7 @@ class MCXGlobalArbitrageStrategy:
                     exchange="MCX",
                     price_type="MARKET",
                     product="MIS",
-                    quantity=abs(self.position),
+                    quantity=exit_qty,
                     position_size=0
                 )
                 logger.info(f"[EXIT] Order placed: {side} {self.symbol} @ {price:.2f}")
@@ -222,7 +265,16 @@ class MCXGlobalArbitrageStrategy:
             logger.warning(f"[EXIT] No API client available - signal logged but order not placed")
         
         if order_placed or not self.api_client:
-            self.position = 0
+            # Register with Risk Manager
+            if self.rm:
+                self.rm.register_exit(self.symbol, price, exit_qty)
+
+            if exit_qty >= abs(self.position):
+                self.position = 0
+            else:
+                 if self.position > 0: self.position -= exit_qty
+                 else: self.position += exit_qty
+
             self.last_trade_time = time.time()
 
     def run(self):
@@ -230,6 +282,23 @@ class MCXGlobalArbitrageStrategy:
         
         while True:
             if self.fetch_data():
+                # Risk Management Loop
+                if not self.data.empty:
+                    current_price = self.data.iloc[-1]['mcx_price']
+
+                    if self.rm:
+                        # Check Stop Loss
+                        if self.position != 0:
+                            self.rm.update_trailing_stop(self.symbol, current_price)
+                            stop_hit, msg = self.rm.check_stop_loss(self.symbol, current_price)
+                            if stop_hit:
+                                side = "SELL" if self.position > 0 else "BUY"
+                                self.exit(side, current_price, msg)
+
+                        # Check EOD
+                        if self.eod:
+                            self.eod.check_and_execute()
+
                 self.check_signals()
             time.sleep(60)
 
