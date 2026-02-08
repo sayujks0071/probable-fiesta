@@ -8,6 +8,7 @@ services:
     command: -config.file=/etc/loki/local-config.yaml
     networks:
       - openalgo-net
+    restart: unless-stopped
 
   promtail:
     image: grafana/promtail:3.0.0
@@ -17,6 +18,7 @@ services:
     command: -config.file=/etc/promtail/config.yaml
     networks:
       - openalgo-net
+    restart: unless-stopped
 
   grafana:
     image: grafana/grafana:11.0.0
@@ -32,6 +34,7 @@ services:
       - openalgo-net
     depends_on:
       - loki
+    restart: unless-stopped
 
 networks:
   openalgo-net:
