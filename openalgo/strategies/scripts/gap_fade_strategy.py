@@ -131,3 +131,76 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+import pandas as pd
+import numpy as np
+
+# Module level wrapper for SimpleBacktestEngine
+def generate_signal(df, client=None, symbol=None, params=None):
+    """
+    Generate signal for Gap Fade Strategy (Backtest).
+    Checks if current bar is the first of the day and if gap > threshold.
+    Supports ATR-based dynamic threshold.
+    """
+    if df.empty or len(df) < 20:
+        return 'HOLD', 0.0, {}
+
+    # Ensure index is datetime
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return 'HOLD', 0.0, {}
+
+    current_bar = df.iloc[-1]
+    prev_bar = df.iloc[-2]
+
+    current_time = df.index[-1]
+    prev_time = df.index[-2]
+
+    # Check if new day
+    if current_time.date() > prev_time.date():
+        # Calculate ATR
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean().iloc[-2] # Use prev day/bar ATR
+
+        # This is the first bar of the day provided in df
+        prev_close = prev_bar['close']
+        current_open = current_bar['open']
+
+        # Calculate Gap
+        gap_pts = current_open - prev_close
+        gap_pct = (gap_pts / prev_close) * 100
+
+        # Parameters
+        threshold_pct = params.get('threshold', 0.2) if params else 0.2
+        atr_mult = params.get('gap_threshold_atr_mult', 0.5) if params else 0.5
+
+        use_atr = params.get('use_atr', True) if params else True
+
+        is_signal = False
+        action = 'HOLD'
+
+        if use_atr and atr > 0:
+            threshold_val = atr * atr_mult
+            if gap_pts > threshold_val: # Gap UP > ATR Threshold
+                action = 'SELL'
+                is_signal = True
+            elif gap_pts < -threshold_val: # Gap DOWN < -ATR Threshold
+                action = 'BUY'
+                is_signal = True
+        else:
+            if gap_pct > threshold_pct:
+                action = 'SELL'
+                is_signal = True
+            elif gap_pct < -threshold_pct:
+                action = 'BUY'
+                is_signal = True
+
+        if is_signal:
+            return action, 1.0, {'gap': gap_pct, 'prev_close': prev_close, 'open': current_open, 'atr': atr}
+
+    return 'HOLD', 0.0, {}

@@ -118,7 +118,15 @@ class MCXMomentumStrategy:
               current['close'] < prev['close']):
             action = 'SELL'
 
-        return action, 1.0, {'atr': current.get('atr', 0)}
+        score = 1.0
+        if self.params.get('use_volatility_sizing', False):
+            atr = current.get('atr', 0)
+            if atr > 0 and current['close'] > 0:
+                atr_pct = (atr / current['close']) * 100
+                if atr_pct > 1.0: # High Volatility (>1%)
+                    score = 0.5
+
+        return action, score, {'atr': current.get('atr', 0)}
 
     def calculate_indicators(self):
         """Calculate technical indicators."""
@@ -337,6 +345,7 @@ DEFAULT_PARAMS = {
     'adx_threshold': 25,
     'min_atr': 10,
     'risk_per_trade': 0.02,
+    'use_volatility_sizing': False,
 }
 
 def generate_signal(df, client=None, symbol=None, params=None):
@@ -352,5 +361,11 @@ def generate_signal(df, client=None, symbol=None, params=None):
 
     # Set Time Stop for Engine
     setattr(strat, 'TIME_STOP_BARS', 12) # 3 Hours (12 * 15m)
+
+    # Set ATR Multipliers if provided
+    if params and 'atr_sl_mult' in params:
+        setattr(strat, 'ATR_SL_MULTIPLIER', params['atr_sl_mult'])
+    else:
+        setattr(strat, 'ATR_SL_MULTIPLIER', 2.0)
 
     return strat.generate_signal(df)
