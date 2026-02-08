@@ -7,6 +7,7 @@ on:
       - "openalgo/configs/**"
       - "openalgo/data/instruments/**"
       - "tools/**"
+      - "openalgo/scripts/**"
 
 permissions:
   contents: read
@@ -24,12 +25,13 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install pandas httpx pyyaml
 
       - name: Sync Instruments
         run: python3 tools/sync_instruments.py
 
       - name: Run Strict Validation
+        id: validate
         run: python3 tools/validate_symbols.py --strict --check
 
       - name: Upload Report
