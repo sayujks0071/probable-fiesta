@@ -352,6 +352,9 @@ class SuperTrendVWAPStrategy:
                 # Logic
                 is_above_vwap = last['close'] > last['vwap']
 
+                # Determine Order Exchange
+                order_exchange = "NFO" if "FUT" in self.symbol or "CE" in self.symbol or "PE" in self.symbol else "NSE"
+
                 # Dynamic Volume Threshold (Mean + 1.5 StdDev)
                 vol_mean = df['volume'].rolling(20).mean().iloc[-1]
                 vol_std = df['volume'].rolling(20).std().iloc[-1]
@@ -378,10 +381,40 @@ class SuperTrendVWAPStrategy:
                     # Check Exit
                     if last['close'] < self.trailing_stop:
                         self.logger.info(f"Trailing Stop Hit at {last['close']:.2f}")
+                        # Place Sell Order
+                        try:
+                            self.client.placesmartorder(
+                                strategy="SuperTrend_VWAP",
+                                symbol=self.symbol,
+                                action="SELL",
+                                exchange=order_exchange,
+                                price_type="MARKET",
+                                product="MIS",
+                                quantity=self.quantity,
+                                position_size=self.quantity
+                            )
+                        except Exception as e:
+                            self.logger.error(f"Failed to place Exit order: {e}")
+
                         self.pm.update_position(self.quantity, last['close'], 'SELL')
                         self.trailing_stop = 0.0
                     elif last['close'] < last['vwap']:
                         self.logger.info(f"Price crossed below VWAP at {last['close']:.2f}. Exiting.")
+                        # Place Sell Order
+                        try:
+                            self.client.placesmartorder(
+                                strategy="SuperTrend_VWAP",
+                                symbol=self.symbol,
+                                action="SELL",
+                                exchange=order_exchange,
+                                price_type="MARKET",
+                                product="MIS",
+                                quantity=self.quantity,
+                                position_size=self.quantity
+                            )
+                        except Exception as e:
+                            self.logger.error(f"Failed to place Exit order: {e}")
+
                         self.pm.update_position(self.quantity, last['close'], 'SELL')
                         self.trailing_stop = 0.0
 
@@ -393,6 +426,22 @@ class SuperTrendVWAPStrategy:
                         adj_qty = int(self.quantity * size_multiplier)
                         if adj_qty < 1: adj_qty = 1 # Minimum 1
                         self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
+
+                        # Place Buy Order
+                        try:
+                            self.client.placesmartorder(
+                                strategy="SuperTrend_VWAP",
+                                symbol=self.symbol,
+                                action="BUY",
+                                exchange=order_exchange,
+                                price_type="MARKET",
+                                product="MIS",
+                                quantity=adj_qty,
+                                position_size=adj_qty
+                            )
+                        except Exception as e:
+                            self.logger.error(f"Failed to place Entry order: {e}")
+
                         if self.pm:
                             self.pm.update_position(adj_qty, last['close'], 'BUY')
                             sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
