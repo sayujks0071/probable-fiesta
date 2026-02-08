@@ -179,7 +179,7 @@ class AdvancedMCXStrategy:
 
                 comm['symbol'] = symbol
 
-                # Parse Expiry from Symbol (e.g., GOLDM05FEB26FUT or CRUDEOIL19JAN24FUT)
+                # Parse Expiry from Symbol (e.g., GOLDM05FEB26FUT)
                 # Try to find date pattern like ddMMMyy
                 # Regex for ddMMMyy: \d{2}[A-Z]{3}\d{2}
                 match = re.search(r'(\d{2}[A-Z]{3}\d{2})', symbol)
