@@ -1,0 +1,110 @@
+[
+    {
+        "strategy": "Gap_Fade",
+        "params": {
+            "threshold": 0.1,
+            "gap_threshold_atr_mult": 0.3,
+            "use_atr": true
+        },
+        "trades": 17,
+        "sharpe": -0.5594838038100096,
+        "return": -0.15295157226560696,
+        "drawdown": 1.1104173233258625
+    },
+    {
+        "strategy": "Gap_Fade",
+        "params": {
+            "threshold": 0.1,
+            "gap_threshold_atr_mult": 0.5,
+            "use_atr": true
+        },
+        "trades": 13,
+        "sharpe": -3.2425497723370427,
+        "return": -0.5205244404017867,
+        "drawdown": 1.0698372748325782
+    },
+    {
+        "strategy": "Gap_Fade",
+        "params": {
+            "threshold": 0.1,
+            "gap_threshold_atr_mult": 0.8,
+            "use_atr": true
+        },
+        "trades": 10,
+        "sharpe": -2.9242583382577485,
+        "return": -0.3279988206473063,
+        "drawdown": 0.7066163659598096
+    },
+    {
+        "strategy": "Gap_Fade",
+        "params": {
+            "threshold": 0.2,
+            "gap_threshold_atr_mult": 0.3,
+            "use_atr": true
+        },
+        "trades": 17,
+        "sharpe": -0.5594838038100096,
+        "return": -0.15295157226560696,
+        "drawdown": 1.1104173233258625
+    },
+    {
+        "strategy": "Gap_Fade",
+        "params": {
+            "threshold": 0.2,
+            "gap_threshold_atr_mult": 0.5,
+            "use_atr": true
+        },
+        "trades": 13,
+        "sharpe": -3.2425497723370427,
+        "return": -0.5205244404017867,
+        "drawdown": 1.0698372748325782
+    },
+    {
+        "strategy": "Gap_Fade",
+        "params": {
+            "threshold": 0.2,
+            "gap_threshold_atr_mult": 0.8,
+            "use_atr": true
+        },
+        "trades": 10,
+        "sharpe": -2.9242583382577485,
+        "return": -0.3279988206473063,
+        "drawdown": 0.7066163659598096
+    },
+    {
+        "strategy": "Gap_Fade",
+        "params": {
+            "threshold": 0.3,
+            "gap_threshold_atr_mult": 0.3,
+            "use_atr": true
+        },
+        "trades": 17,
+        "sharpe": -0.5594838038100096,
+        "return": -0.15295157226560696,
+        "drawdown": 1.1104173233258625
+    },
+    {
+        "strategy": "Gap_Fade",
+        "params": {
+            "threshold": 0.3,
+            "gap_threshold_atr_mult": 0.5,
+            "use_atr": true
+        },
+        "trades": 13,
+        "sharpe": -3.2425497723370427,
+        "return": -0.5205244404017867,
+        "drawdown": 1.0698372748325782
+    },
+    {
+        "strategy": "Gap_Fade",
+        "params": {
+            "threshold": 0.3,
+            "gap_threshold_atr_mult": 0.8,
+            "use_atr": true
+        },
+        "trades": 10,
+        "sharpe": -2.9242583382577485,
+        "return": -0.3279988206473063,
+        "drawdown": 0.7066163659598096
+    }
+]
