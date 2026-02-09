@@ -53,6 +53,32 @@ class MCXMomentumStrategy:
         logger.info(f"Initialized Strategy for {symbol}")
         logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
 
+    def parse_expiry(self, symbol):
+        """Parse expiry date from MCX symbol (e.g., GOLD05FEB24FUT)."""
+        try:
+            if not symbol.endswith('FUT'): return None
+            # Format: ...DDMMMYYFUT -> Last 7 chars before FUT are DDMMMYY
+            base = symbol[:-3]
+            date_part = base[-7:]
+            day = int(date_part[:2])
+            month_str = date_part[2:5]
+            year = int("20" + date_part[5:])
+            return datetime.strptime(f"{day}{month_str}{year}", "%d%b%Y")
+        except Exception as e:
+            # Try alternative format if needed, or just return None
+            return None
+
+    def check_expiry(self):
+        """Check if contract is near expiry."""
+        expiry_date = self.parse_expiry(self.symbol)
+        if not expiry_date: return True # Assume safe if parse fails
+
+        days_to_expiry = (expiry_date - datetime.now()).days
+        if days_to_expiry < 5:
+            logger.warning(f"⚠️ Contract {self.symbol} expires in {days_to_expiry} days. Skipping entries.")
+            return False
+        return True
+
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
         if not self.client:
@@ -181,6 +207,10 @@ class MCXMomentumStrategy:
         if len(self.data) < 50:
             return
 
+        # Expiry Check
+        if not self.check_expiry():
+            return
+
         current = self.data.iloc[-1]
         prev = self.data.iloc[-2]
 
@@ -197,18 +227,28 @@ class MCXMomentumStrategy:
         global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
         usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
 
-        # Adjust Position Size
-        base_qty = 1
+        # Dynamic Position Sizing
+        base_qty = self.params.get('base_quantity', 1)
+
+        # ATR Check
+        atr_val = current.get('atr', 0)
+        price = current['close']
+        atr_pct = (atr_val / price) * 100 if price > 0 else 0
+
+        if atr_pct > 1.5: # High volatility
+             logger.info(f"High ATR ({atr_pct:.2f}%): Halving position size.")
+             base_qty = max(1, int(base_qty * 0.5))
+
         if usd_vol_high:
             logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size by 30%.")
             base_qty = max(1, int(base_qty * 0.7)) # Reduce size, minimum 1
 
         if not seasonality_ok and not has_position:
-            logger.info("Seasonality Weak: Skipping new entries.")
+            logger.info(f"Seasonality Weak ({self.params.get('seasonality_score')}): Skipping new entries.")
             return
 
         if not global_alignment_ok and not has_position:
-            logger.info("Global Alignment Weak: Skipping new entries.")
+            logger.info(f"Global Alignment Weak ({self.params.get('global_alignment_score')}): Skipping new entries.")
             return
 
         # Entry Logic
@@ -218,7 +258,7 @@ class MCXMomentumStrategy:
                 current['rsi'] > 55 and
                 current['close'] > prev['close']):
 
-                logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}, Qty={base_qty}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
@@ -227,7 +267,7 @@ class MCXMomentumStrategy:
                   current['rsi'] < 45 and
                   current['close'] < prev['close']):
 
-                logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}, Qty={base_qty}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
 
