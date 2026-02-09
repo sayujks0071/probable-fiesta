@@ -21,18 +21,23 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from risk_manager import RiskManager, EODSquareOff
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.risk_manager import RiskManager, EODSquareOff
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.risk_manager import RiskManager, EODSquareOff
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
             is_market_open = lambda: True
+            RiskManager = None
+            EODSquareOff = None
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -49,9 +54,25 @@ class MCXMomentumStrategy:
         self.pm = PositionManager(symbol) if PositionManager else None
         self.data = pd.DataFrame()
 
+        # Risk Management
+        if RiskManager:
+            self.rm = RiskManager(strategy_name="MCX_Momentum", exchange="MCX", capital=200000)
+            self.eod = EODSquareOff(self.rm, self.exit_position_callback)
+        else:
+            self.rm = None
+            self.eod = None
+
         # Log active filters
         logger.info(f"Initialized Strategy for {symbol}")
         logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
+
+    def exit_position_callback(self, symbol, action, qty):
+        """Callback for EOD Square-off."""
+        logger.info(f"EOD Callback: {action} {qty} {symbol}")
+        price = self.data.iloc[-1]['close'] if not self.data.empty else 0
+        if self.pm:
+             self.pm.update_position(qty, price, action)
+        return {'status': 'success'}
 
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
@@ -184,6 +205,26 @@ class MCXMomentumStrategy:
         current = self.data.iloc[-1]
         prev = self.data.iloc[-2]
 
+        # Risk Management Checks
+        if self.rm:
+            # Check Stop Loss / Trailing Stop
+            stop_hit, reason = self.rm.check_stop_loss(self.symbol, current['close'])
+            if stop_hit:
+                logger.warning(reason)
+                if self.pm:
+                    pos_qty = self.pm.position
+                    action = "SELL" if pos_qty > 0 else "BUY"
+                    self.pm.update_position(abs(pos_qty), current['close'], action)
+                    self.rm.register_exit(self.symbol, current['close'])
+                return # Exit this iteration
+
+            # Update Trailing Stop
+            self.rm.update_trailing_stop(self.symbol, current['close'])
+
+            # Check EOD
+            if self.eod and self.eod.check_and_execute():
+                return
+
         # Log current state
         # logger.info(f"Price: {current['close']:.2f}, RSI: {current['rsi']:.2f}, ADX: {current['adx']:.2f}")
 
@@ -211,6 +252,13 @@ class MCXMomentumStrategy:
             logger.info("Global Alignment Weak: Skipping new entries.")
             return
 
+        # Entry Risk Check
+        if not has_position and self.rm:
+            can_trade, reason = self.rm.can_trade()
+            if not can_trade:
+                logger.warning(f"Risk Check Failed: {reason}")
+                return
+
         # Entry Logic
         if not has_position:
             # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
@@ -221,6 +269,8 @@ class MCXMomentumStrategy:
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
+                    if self.rm:
+                        self.rm.register_entry(self.symbol, base_qty, current['close'], 'LONG')
 
             # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
             elif (current['adx'] > self.params['adx_threshold'] and
@@ -230,6 +280,8 @@ class MCXMomentumStrategy:
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
+                    if self.rm:
+                        self.rm.register_entry(self.symbol, base_qty, current['close'], 'SHORT')
 
         # Exit Logic
         elif has_position:
@@ -244,10 +296,15 @@ class MCXMomentumStrategy:
                 if current['rsi'] < 45 or current['adx'] < 20:
                      logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                     if self.rm:
+                         self.rm.register_exit(self.symbol, current['close'])
+
             elif pos_qty < 0: # Short
                 if current['rsi'] > 55 or current['adx'] < 20:
                      logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                     if self.rm:
+                         self.rm.register_exit(self.symbol, current['close'])
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
@@ -271,7 +328,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
