@@ -78,7 +78,7 @@ class OpenAlgoAPIMock:
         exchange = payload.get("exchange", "")
         
         # Parse symbol to extract underlying, strike, option type
-        # Format: NIFTY25JAN202524500CE or NIFTY25000CE
+        # Format: NIFTY25JAN24500CE or NIFTY25000CE
         underlying, strike, option_type = self._parse_option_symbol(symbol)
         
         if not underlying:
@@ -368,7 +368,7 @@ class OpenAlgoAPIMock:
         Parse option symbol to extract underlying, strike, option type
         
         Examples:
-            NIFTY25JAN202524500CE -> (NIFTY, 24500, CE)
+            NIFTY25JAN24500CE -> (NIFTY, 24500, CE)
             NIFTY25000CE -> (NIFTY, 25000, CE)
         """
         symbol = symbol.upper()
