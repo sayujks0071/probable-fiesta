@@ -18,8 +18,21 @@ CONFIG_FILE = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategi
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
 # Regex for MCX Symbols
+# e.g. GOLDM05FEB26FUT
 MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
+
+# Regex for NSE Options
+# e.g. NIFTY23OCT19500CE
+# Structure: SYMBOL + YY + MMM + STRIKE + TYPE
+NSE_OPTION_PATTERN = re.compile(r'\b([A-Z]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)\b', re.IGNORECASE)
+
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+
+# Files to exclude from validation (e.g., mocks, tests)
+EXCLUDE_FILES = [
+    "openalgo/strategies/utils/openalgo_mock.py",
+    "openalgo_mock.py"
+]
 
 def check_instruments_freshness():
     if not os.path.exists(INSTRUMENTS_FILE):
@@ -89,7 +102,14 @@ def scan_files_for_hardcoded_symbols(instruments):
             dirs.remove('test')
 
         for file in files:
-            if file.endswith('.py'):
+            if file.endswith('.py') or file.endswith('.json'):
+                # Check exclusion
+                rel_path = os.path.relpath(os.path.join(root, file), REPO_ROOT)
+                if any(excluded in rel_path for excluded in EXCLUDE_FILES):
+                    continue
+                if file in EXCLUDE_FILES:
+                    continue
+
                 filepath = os.path.join(root, file)
                 try:
                     with open(filepath, 'r', encoding='utf-8') as f:
@@ -97,6 +117,7 @@ def scan_files_for_hardcoded_symbols(instruments):
                 except UnicodeDecodeError:
                     continue # Skip binary/bad files
 
+                # 1. Check MCX Patterns
                 for match in MCX_PATTERN.finditer(content):
                     symbol_str = match.group(0)
                     parts = match.groups() # (Symbol, Day, Month, Year)
@@ -128,6 +149,30 @@ def scan_files_for_hardcoded_symbols(instruments):
                             "source": os.path.basename(filepath),
                             "symbol": symbol_str,
                             "normalized": normalized,
+                            "error": "Symbol not found in master",
+                            "status": "MISSING"
+                        })
+
+                # 2. Check NSE Option Patterns
+                for match in NSE_OPTION_PATTERN.finditer(content):
+                    symbol_str = match.group(0)
+                    normalized = symbol_str.upper()
+
+                    # Basic Month Check
+                    month = match.group(3).upper()
+                    if month not in MONTHS:
+                        issues.append({
+                            "source": os.path.basename(filepath),
+                            "symbol": symbol_str,
+                            "error": f"Invalid month: {month}",
+                            "status": "INVALID"
+                        })
+                        continue
+
+                    if normalized not in instruments:
+                        issues.append({
+                            "source": os.path.basename(filepath),
+                            "symbol": symbol_str,
                             "error": "Symbol not found in master",
                             "status": "MISSING"
                         })
