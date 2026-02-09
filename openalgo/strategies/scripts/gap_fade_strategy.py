@@ -13,7 +13,14 @@ project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+try:
+    from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+    from openalgo.strategies.utils.risk_manager import RiskManager
+except ImportError:
+    # Fallback for local testing
+    sys.path.append(str(project_root / "openalgo"))
+    from strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+    from strategies.utils.risk_manager import RiskManager
 
 # Configure logging
 logging.basicConfig(
@@ -32,15 +39,50 @@ class GapFadeStrategy:
         self.symbol = symbol
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
-        self.pm = PositionManager(f"{symbol}_GapFade")
+        # Integrate Risk Manager
+        self.rm = RiskManager(f"{symbol}_GapFade", exchange="NSE", capital=100000)
+
+    def get_atm_option_symbol(self, underlying, spot_price, option_type):
+        """
+        Construct ATM option symbol with expiry handling.
+        """
+        # Try manual construction with rollover logic
+        return self._manual_symbol_construction(underlying, spot_price, option_type)
+
+    def _manual_symbol_construction(self, underlying, spot_price, option_type):
+        # Improved Manual Construction
+        today = datetime.now()
+
+        # Simple heuristic for Monthly Expiry:
+        # If today is after the last Thursday of the month (approx > 25th), use next month.
+        # This is a simplification. For production, use SymbolResolver or API.
+
+        expiry_date = today
+        if today.day > 25:
+             # Move to next month (safe jump)
+             expiry_date = today + timedelta(days=10)
+
+        month_str = expiry_date.strftime('%b').upper()
+        year_str = expiry_date.strftime('%y')
+
+        # Round to nearest 50 for NIFTY
+        strike = round(spot_price / 50) * 50
+
+        # Symbol Format: NIFTY23OCT19500CE
+        return f"{underlying}{year_str}{month_str}{strike}{option_type}"
 
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
 
+        # Risk Check
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.warning(f"Risk Check Failed: {reason}")
+            return
+
         # 1. Get Previous Close
-        # Using history API for last 2 days
         today = datetime.now()
-        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d") # Go back enough to get prev day
+        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
         end_date = today.strftime("%Y-%m-%d")
 
         # Get daily candles
@@ -50,15 +92,9 @@ class GapFadeStrategy:
             logger.error("Could not fetch history for previous close.")
             return
 
-        # Assuming the last completed row is previous day, or if market just opened, we might have today's open
-        # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
-
         prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
 
+        # Try to get real-time quote for more accuracy
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
         if not quote:
             logger.error("Could not fetch quote.")
@@ -66,7 +102,6 @@ class GapFadeStrategy:
 
         current_price = float(quote['ltp'])
 
-        # Some APIs provide 'close' in quote which is prev_close
         if 'close' in quote and quote['close'] > 0:
             prev_close = float(quote['close'])
 
@@ -80,42 +115,48 @@ class GapFadeStrategy:
             return
 
         # 2. Determine Action
-        action = None
+        trade_action = None
         option_type = None
 
         if gap_pct > self.gap_threshold:
-            # Gap UP -> Fade (Sell/Short or Buy Put)
             logger.info("Gap UP detected. Looking to FADE (Short).")
-            action = "SELL" # Futures Sell or PE Buy
-            # For options: Buy PE
             option_type = "PE"
+            trade_action = "BUY"
 
         elif gap_pct < -self.gap_threshold:
-            # Gap DOWN -> Fade (Buy/Long or Buy Call)
             logger.info("Gap DOWN detected. Looking to FADE (Long).")
-            action = "BUY"
             option_type = "CE"
+            trade_action = "BUY"
 
         # 3. Select Option Strike (ATM)
-        atm = round(current_price / 50) * 50
-        strike_symbol = f"{self.symbol}{today.strftime('%y%b').upper()}{atm}{option_type}" # Symbol format varies
-        # Simplified: Just log the intent
+        strike_symbol = self.get_atm_option_symbol(self.symbol, current_price, option_type)
 
-        logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade)")
+        logger.info(f"Signal: Buy {option_type} - {strike_symbol} (Gap Fade)")
 
-        # 4. Check VIX for Sizing (inherited from general rules)
+        # 4. Check VIX for Sizing
         vix_quote = self.client.get_quote("INDIA VIX", "NSE")
-        vix = float(vix_quote['ltp']) if vix_quote else 15
+        vix = float(vix_quote['ltp']) if vix_quote and 'ltp' in vix_quote else 15
 
         qty = self.qty
         if vix > 30:
             qty = int(qty * 0.5)
             logger.info(f"High VIX {vix}. Reduced Qty to {qty}")
 
-        # 5. Place Order (Simulation)
-        # self.client.placesmartorder(...)
-        logger.info(f"Executing {option_type} Buy for {qty} qty.")
-        self.pm.update_position(qty, 100, "BUY") # Mock update
+        # 5. Place Order via API
+        resp = self.client.placesmartorder("GapFade", strike_symbol, trade_action, "NFO", "MARKET", "MIS", qty, qty)
+
+        if resp and resp.get('status') == 'success':
+            logger.info(f"Executed {option_type} Buy for {qty} qty.")
+
+            # Register with Risk Manager
+            opt_quote = self.client.get_quote(strike_symbol, "NFO")
+            entry_price = float(opt_quote['ltp']) if opt_quote and 'ltp' in opt_quote else 100.0
+
+            # Set initial Stop Loss at 20%
+            sl = entry_price * 0.8
+            self.rm.register_entry(strike_symbol, qty, entry_price, "LONG", stop_loss=sl)
+        else:
+            logger.error(f"Order Execution Failed: {resp}")
 
 def main():
     parser = argparse.ArgumentParser()
