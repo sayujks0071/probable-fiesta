@@ -16,14 +16,19 @@ if str(project_root) not in sys.path:
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(project_root / "openalgo" / "strategies" / "logs" / "gap_fade.log")
-    ]
-)
+try:
+    from openalgo_observability.logging_setup import setup_logging
+    setup_logging()
+except ImportError:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(project_root / "openalgo" / "strategies" / "logs" / "gap_fade.log")
+        ]
+    )
+
 logger = logging.getLogger("GapFadeStrategy")
 
 class GapFadeStrategy:

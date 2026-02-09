@@ -1,20 +1,19 @@
 #!/bin/bash
-# Install Crontab entry (fallback)
+set -e
 
-SCRIPT_DIR=$(cd $(dirname $0) && pwd)
-SCRIPT_PATH="$SCRIPT_DIR/healthcheck.py"
-PYTHON_EXEC=$(which python3)
+# Setup Cron Job for OpenAlgo Monitoring
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MONITOR_SCRIPT="$REPO_ROOT/scripts/monitor.sh"
 
-echo "Installing Cron job..."
+CRON_JOB="*/5 * * * * $MONITOR_SCRIPT >> $REPO_ROOT/logs/monitor_cron.log 2>&1"
 
-# Remove existing entry to avoid duplicates
-crontab -l 2>/dev/null | grep -v "healthcheck.py" > /tmp/cron_backup
+# Check if already exists
+(crontab -l 2>/dev/null || true) | grep -q "$MONITOR_SCRIPT"
+if [ $? -eq 0 ]; then
+    echo "⚠️ Cron job already exists. Skipping."
+else
+    (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+    echo "✅ Cron job added."
+fi
 
-# Add new entry
-echo "*/5 * * * * $PYTHON_EXEC $SCRIPT_PATH >> /tmp/openalgo_cron.log 2>&1" >> /tmp/cron_backup
-
-crontab /tmp/cron_backup
-rm /tmp/cron_backup
-
-echo "✅ Cron job installed."
-crontab -l | grep healthcheck.py
+crontab -l | grep "$MONITOR_SCRIPT"

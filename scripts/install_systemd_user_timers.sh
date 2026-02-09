@@ -1,46 +1,48 @@
 #!/bin/bash
-# Install Systemd User Timer for OpenAlgo Healthcheck
+set -e
 
-mkdir -p ~/.config/systemd/user
-SCRIPT_DIR=$(cd $(dirname $0) && pwd)
-SCRIPT_PATH="$SCRIPT_DIR/healthcheck.py"
-PYTHON_EXEC=$(which python3)
+# Setup User Systemd Timer for OpenAlgo Monitoring
+USER_SYSTEMD_DIR="$HOME/.config/systemd/user"
+mkdir -p "$USER_SYSTEMD_DIR"
 
-SERVICE_FILE=~/.config/systemd/user/openalgo-health.service
-TIMER_FILE=~/.config/systemd/user/openalgo-health.timer
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MONITOR_SCRIPT="$REPO_ROOT/scripts/monitor.sh"
+SERVICE_NAME="openalgo-monitor"
 
-echo "Installing Systemd User Service..."
-
-cat <<EOF > $SERVICE_FILE
+# 1. Create Service Unit
+cat > "$USER_SYSTEMD_DIR/$SERVICE_NAME.service" <<EOF
 [Unit]
-Description=OpenAlgo Health Check
+Description=OpenAlgo Monitoring Service (Health + Alerts)
 
 [Service]
-ExecStart=$PYTHON_EXEC $SCRIPT_PATH
-WorkingDirectory=$SCRIPT_DIR
-StandardOutput=journal
-StandardError=journal
+Type=oneshot
+ExecStart=/bin/bash $MONITOR_SCRIPT
+WorkingDirectory=$REPO_ROOT
+Environment="PATH=$PATH"
+# Load environment (e.g. for TELEGRAM tokens)
+EnvironmentFile=-%h/.config/openalgo/openalgo.env
 
 [Install]
 WantedBy=default.target
 EOF
 
-cat <<EOF > $TIMER_FILE
+# 2. Create Timer Unit (Every 5 minutes)
+cat > "$USER_SYSTEMD_DIR/$SERVICE_NAME.timer" <<EOF
 [Unit]
-Description=Run OpenAlgo Health Check every 5 minutes
+Description=Run OpenAlgo Monitoring every 5 minutes
 
 [Timer]
 OnBootSec=5min
 OnUnitActiveSec=5min
-Unit=openalgo-health.service
+Unit=$SERVICE_NAME.service
 
 [Install]
 WantedBy=timers.target
 EOF
 
+# 3. Reload and Enable
 systemctl --user daemon-reload
-systemctl --user enable openalgo-health.timer
-systemctl --user start openalgo-health.timer
+systemctl --user enable --now "$SERVICE_NAME.timer"
 
-echo "✅ Systemd user timer installed and started."
-systemctl --user list-timers --all | grep openalgo
+echo "✅ Systemd Timer installed and started."
+systemctl --user list-timers --all | grep "$SERVICE_NAME"
