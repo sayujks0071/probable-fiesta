@@ -2,7 +2,7 @@ name: Daily Symbol Normalizer
 
 on:
   schedule:
-    - cron: '30 2 * * *' # 02:30 UTC
+    - cron: '30 2 * * *' # 02:30 UTC (08:00 IST)
   workflow_dispatch:
 
 permissions:
@@ -48,6 +48,7 @@ jobs:
       - name: Gate Check
         id: gate
         run: |
+          # Gate passes only if Pre-Check AND Post-Check were successful
           if [[ "${{ steps.precheck.outcome }}" == "success" && "${{ steps.postcheck.outcome }}" == "success" ]]; then
             echo "gate_ok=true" >> $GITHUB_OUTPUT
             echo "Gate passed."
