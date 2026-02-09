@@ -54,7 +54,7 @@ class MCXMomentumStrategy:
         logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
 
     def parse_expiry(self, symbol):
-        """Parse expiry date from MCX symbol (e.g., GOLD05FEB24FUT)."""
+        """Parse expiry date from MCX symbol (e.g., GOLD05FEB26FUT)."""
         try:
             if not symbol.endswith('FUT'): return None
             # Format: ...DDMMMYYFUT -> Last 7 chars before FUT are DDMMMYY
