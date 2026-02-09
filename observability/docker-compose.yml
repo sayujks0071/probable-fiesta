@@ -2,37 +2,29 @@ version: "3"
 
 services:
   loki:
-    image: grafana/loki:3.0.0
+    image: grafana/loki:2.9.2
     ports:
       - "3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
-    networks:
-      - openalgo-net
+    volumes:
+      - ./loki-data:/loki
+    restart: unless-stopped
 
   promtail:
-    image: grafana/promtail:3.0.0
+    image: grafana/promtail:2.9.2
     volumes:
-      - ./promtail.yaml:/etc/promtail/config.yaml
+      - ./promtail.yaml:/etc/promtail/config.yml
       - ../logs:/var/log/openalgo:ro
-    command: -config.file=/etc/promtail/config.yaml
-    networks:
-      - openalgo-net
+    command: -config.file=/etc/promtail/config.yml
+    restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:11.0.0
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_USERS_ALLOW_SIGN_UP=false
-    volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning
+    image: grafana/grafana:latest
     ports:
       - "3000:3000"
-    networks:
-      - openalgo-net
-    depends_on:
-      - loki
-
-networks:
-  openalgo-net:
-    driver: bridge
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    restart: unless-stopped

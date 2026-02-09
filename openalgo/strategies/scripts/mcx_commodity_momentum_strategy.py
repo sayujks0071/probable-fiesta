@@ -35,7 +35,12 @@ except ImportError:
             is_market_open = lambda: True
 
 # Setup Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+try:
+    from openalgo_observability.logging_setup import setup_logging
+    setup_logging()
+except ImportError:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 logger = logging.getLogger("MCX_Momentum")
 
 class MCXMomentumStrategy:

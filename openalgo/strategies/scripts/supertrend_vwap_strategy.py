@@ -404,6 +404,13 @@ class SuperTrendVWAPStrategy:
             time.sleep(60)
 
 def run_strategy():
+    # Setup Observability Logging
+    try:
+        from openalgo_observability.logging_setup import setup_logging
+        setup_logging()
+    except ImportError:
+        pass
+
     parser = argparse.ArgumentParser(description="SuperTrend VWAP Strategy")
     parser.add_argument("--symbol", type=str, help="Trading Symbol")
     parser.add_argument("--underlying", type=str, help="Underlying Asset (e.g. NIFTY)")

@@ -9,8 +9,6 @@ from pathlib import Path
 from datetime import datetime
 
 # Sensitive patterns to filter out
-# Format: (Regex Pattern, Replacement String)
-# Regex matches common secret characters: alphanumeric, dash, dot, plus, slash, equals
 SENSITIVE_PATTERNS = [
     (r'(api[_-]?key[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
     (r'(password[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
@@ -22,15 +20,14 @@ SENSITIVE_PATTERNS = [
     (r'(access_token[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
 ]
 
+# Module-level flag to prevent double setup within the SAME process
+_SETUP_DONE = False
+
 class SensitiveDataFilter(logging.Filter):
     """Filter to redact sensitive information from log messages."""
 
     def filter(self, record):
-        # We modify the record in place. This is generally accepted in logging filters
-        # attached to handlers or loggers where we want the modification to persist.
-
         # 1. Filter the main message (record.msg)
-        # Note: record.msg can be any object, usually a string.
         original_msg = str(record.msg)
         filtered_msg = original_msg
         for pattern, replacement in SENSITIVE_PATTERNS:
@@ -56,14 +53,11 @@ class SensitiveDataFilter(logging.Filter):
 class JsonFormatter(logging.Formatter):
     """Format logs as JSON lines."""
     def format(self, record):
-        # We assume the record has already been filtered by SensitiveDataFilter
-        # if the filter is attached to the handler.
-
         log_data = {
             "timestamp": datetime.fromtimestamp(record.created).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(), # Merges msg and args
+            "message": record.getMessage(),
             "module": record.module,
             "function": record.funcName,
             "line": record.lineno
@@ -76,9 +70,8 @@ class JsonFormatter(logging.Formatter):
 
 def setup_logging():
     """Configure structured logging with rotation and redaction."""
-
-    # Prevent double setup
-    if os.environ.get('OPENALGO_LOGGING_SETUP_DONE') == 'true':
+    global _SETUP_DONE
+    if _SETUP_DONE:
         return
 
     log_level_name = os.getenv('OPENALGO_LOG_LEVEL', 'INFO').upper()
@@ -90,7 +83,7 @@ def setup_logging():
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
 
-    # Clear existing handlers to avoid duplicates
+    # Clear existing handlers
     if root_logger.handlers:
         for handler in list(root_logger.handlers):
             root_logger.removeHandler(handler)
@@ -101,7 +94,6 @@ def setup_logging():
     if json_mode:
         formatter = JsonFormatter()
     else:
-        # Standard format
         fmt = '[%(asctime)s] %(levelname)s %(name)s: %(message)s'
         formatter = logging.Formatter(fmt)
 
@@ -112,9 +104,9 @@ def setup_logging():
     root_logger.addHandler(console_handler)
 
     # 2. File Handler
-    # Default to logs/openalgo.log in repo root
-    # We find repo root relative to this file: openalgo_observability/logging_setup.py -> ../
     try:
+        # Determine repo root relative to this file
+        # openalgo_observability/logging_setup.py -> ../
         repo_root = Path(__file__).resolve().parent.parent
         log_dir = repo_root / "logs"
         log_dir.mkdir(exist_ok=True)
@@ -133,7 +125,7 @@ def setup_logging():
 
         logging.info(f"Logging initialized. Level: {log_level_name}, JSON: {json_mode}, File: {log_file}")
     except Exception as e:
-        # Fallback to console only if file setup fails
+        # Fallback to console only
         logging.error(f"Failed to set up file logging: {e}")
 
     # Suppress noisy libs
@@ -142,5 +134,4 @@ def setup_logging():
     logging.getLogger('requests').setLevel(logging.WARNING)
     logging.getLogger('httpx').setLevel(logging.WARNING)
 
-    # Mark setup as done
-    os.environ['OPENALGO_LOGGING_SETUP_DONE'] = 'true'
+    _SETUP_DONE = True

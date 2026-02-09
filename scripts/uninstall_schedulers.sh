@@ -1,18 +1,21 @@
 #!/bin/bash
-# Remove Systemd User Timer for OpenAlgo Healthcheck
+set -e
 
-echo "Stopping Systemd User Service..."
-systemctl --user stop openalgo-health.timer
-systemctl --user disable openalgo-health.timer
-systemctl --user stop openalgo-health.service
-systemctl --user disable openalgo-health.service
-rm ~/.config/systemd/user/openalgo-health.timer
-rm ~/.config/systemd/user/openalgo-health.service
+# Remove Systemd Timer
+SERVICE_NAME="openalgo-monitor"
+USER_SYSTEMD_DIR="$HOME/.config/systemd/user"
+systemctl --user stop "$SERVICE_NAME.timer" 2>/dev/null || true
+systemctl --user disable "$SERVICE_NAME.timer" 2>/dev/null || true
+rm -f "$USER_SYSTEMD_DIR/$SERVICE_NAME.service"
+rm -f "$USER_SYSTEMD_DIR/$SERVICE_NAME.timer"
 systemctl --user daemon-reload
-echo "✅ Systemd user timer removed."
 
-echo "Removing Cron job..."
-crontab -l | grep -v "healthcheck.py" > /tmp/cron_backup
-crontab /tmp/cron_backup
-rm /tmp/cron_backup
+echo "✅ Systemd Timer removed."
+
+# Remove Cron Job
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MONITOR_SCRIPT="$REPO_ROOT/scripts/monitor.sh"
+
+(crontab -l 2>/dev/null | grep -v "$MONITOR_SCRIPT") | crontab -
+
 echo "✅ Cron job removed."

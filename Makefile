@@ -1,38 +1,39 @@
-# OpenAlgo Makefile
+# OpenAlgo Observability Makefile
 
-.PHONY: all obs-up obs-down obs-logs run status help
+.PHONY: obs-up obs-down obs-logs run status install-monitoring uninstall-monitoring
 
-all: help
-
-help:
-	@echo "OpenAlgo Management Commands"
-	@echo "----------------------------"
-	@echo "make obs-up       : Start Observability Stack (Loki, Promtail, Grafana)"
-	@echo "make obs-down     : Stop Observability Stack"
-	@echo "make obs-logs     : Tail Promtail logs and OpenAlgo app logs"
-	@echo "make run          : Run OpenAlgo daily startup"
-	@echo "make status       : Check health of OpenAlgo and Observability"
-	@echo "make install-obs  : Install healthcheck schedulers"
-
+# Observability Stack
 obs-up:
-	docker compose -f observability/docker-compose.yml up -d
-	@echo "Observability Stack Started. Grafana at http://localhost:3000"
+	@echo "Starting Observability Stack (Loki + Grafana + Promtail)..."
+	@cd observability && docker compose up -d
+	@echo "Grafana: http://localhost:3000 (admin/admin)"
+	@echo "Loki: http://localhost:3100"
 
 obs-down:
-	docker compose -f observability/docker-compose.yml down
+	@echo "Stopping Observability Stack..."
+	@cd observability && docker compose down
 
 obs-logs:
-	@echo "Tailing Promtail logs and App logs (Ctrl+C to stop)..."
-	@(trap 'kill 0' SIGINT; tail -f logs/openalgo.log & docker compose -f observability/docker-compose.yml logs -f promtail)
+	@echo "Tailing Promtail container logs..."
+	@cd observability && docker compose logs -f promtail
 
+# Application
 run:
-	python3 daily_startup.py
+	@echo "Running OpenAlgo..."
+	@python3 daily_startup.py
 
+# Status
 status:
-	@echo "--- Docker Services ---"
-	docker compose -f observability/docker-compose.yml ps
-	@echo "\n--- Health Check ---"
-	python3 scripts/healthcheck.py
+	@echo "=== OpenAlgo Process Status ==="
+	@pgrep -af openalgo || echo "No OpenAlgo process running."
+	@echo "\n=== Observability Containers ==="
+	@cd observability && docker compose ps
 
-install-obs:
-	./scripts/install_systemd_user_timers.sh
+# Monitoring Installation
+install-monitoring:
+	@echo "Installing Systemd Timers (Default)..."
+	@bash scripts/install_systemd_user_timers.sh
+
+uninstall-monitoring:
+	@echo "Uninstalling Monitoring..."
+	@bash scripts/uninstall_schedulers.sh
