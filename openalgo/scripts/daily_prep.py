@@ -238,12 +238,16 @@ def validate_symbols():
                 resolved_str = str(resolved)
                 valid_count += 1
 
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {resolved_str[:30]:<30} | {status}")
+            type_str = str(config.get('type', 'N/A'))
+            underlying_str = str(config.get('underlying', config.get('symbol', 'N/A')))
+            print(f"{strat_id:<25} | {type_str:<8} | {underlying_str:<15} | {resolved_str[:30]:<30} | {status}")
 
         except Exception as e:
             logger.error(f"Error validating {strat_id}: {e}")
             invalid_count += 1
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {'ERROR':<30} | 🔴 Error")
+            type_str = str(config.get('type', 'N/A'))
+            underlying_str = str(config.get('underlying', config.get('symbol', 'N/A')))
+            print(f"{strat_id:<25} | {type_str:<8} | {underlying_str:<15} | {'ERROR':<30} | 🔴 Error")
 
     print("-" * 95)
     if invalid_count > 0:

@@ -36,5 +36,15 @@
         "params": {
             "quantity": 1
         }
+    },
+    "GapFade_NIFTY": {
+        "strategy": "gap_fade_strategy",
+        "underlying": "NIFTY",
+        "type": "EQUITY",
+        "exchange": "NSE",
+        "params": {
+            "quantity": 50,
+            "gap_threshold": 0.5
+        }
     }
 }
