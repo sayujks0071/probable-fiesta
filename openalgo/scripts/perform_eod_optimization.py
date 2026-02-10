@@ -64,12 +64,19 @@ class StrategyOptimizer:
                     errors += 1
 
                 # Signal Detection
-                if "Signal" in line or "Crossover" in line:
+                if "Gap Fade" in strategy_name or "gap_fade" in strategy_name:
+                    if "Gap:" in line:
+                        signals += 1
+                elif "Signal" in line or "Crossover" in line:
                     signals += 1
 
                 # Entry Detection
-                if "BUY" in line or "SELL" in line:
-                    if "Signal" in line or "Crossover" in line: # Avoid double counting updates
+                if "BUY" in line.upper() or "SELL" in line.upper():
+                    if "Gap Fade" in strategy_name or "gap_fade" in strategy_name:
+                         # Gap Fade entries
+                         if "Signal" in line or "Executing" in line:
+                             entries += 1
+                    elif "Signal" in line or "Crossover" in line: # Avoid double counting updates
                         entries += 1
 
                 # Exit / PnL Detection
@@ -158,6 +165,19 @@ class StrategyOptimizer:
                         new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
                         changes.append(f"threshold: {current_val} -> {new_val} (Lowered due to Rejection {data['rejection']:.1f}%)")
                         modified = True
+                    else:
+                        # Check argparse (float or int)
+                        match = re.search(r"(parser\.add_argument\(['\"]--threshold['\"].*default=)(\d+\.?\d*)", content)
+                        if match:
+                             current_val = float(match.group(2))
+                             # Determine if int or float based on capture
+                             is_float = '.' in match.group(2)
+                             step = 0.05 if is_float and current_val < 1.0 else 5
+                             new_val = max(0, current_val - step)
+                             fmt = f"{new_val:.2f}" if is_float else f"{int(new_val)}"
+                             new_content = new_content.replace(match.group(0), f"{match.group(1)}{fmt}")
+                             changes.append(f"threshold: {current_val} -> {fmt} (Lowered due to Rejection {data['rejection']:.1f}%)")
+                             modified = True
 
             # 2. Low Win Rate (< 60%) -> Tighten Filters
             if data['wr'] < 60:

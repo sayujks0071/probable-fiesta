@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+
+# [Optimization 2026-02-10] Changes: threshold: 0.5 -> 0.45 (Lowered due to Rejection 80.0%)
 import sys
 import os
 import argparse
@@ -121,7 +123,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", default="NIFTY", help="Index Symbol")
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
-    parser.add_argument("--threshold", type=float, default=0.5, help="Gap Threshold %%")
+    parser.add_argument("--threshold", type=float, default=0.45, help="Gap Threshold %%")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
     args = parser.parse_args()
 
