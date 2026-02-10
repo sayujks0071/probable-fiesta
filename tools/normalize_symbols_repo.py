@@ -6,11 +6,18 @@ import re
 import json
 import pandas as pd
 from datetime import datetime
-from collections import defaultdict
 
 # Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+# Also add openalgo if needed
+OPENALGO_DIR = os.path.join(REPO_ROOT, 'openalgo')
+if OPENALGO_DIR not in sys.path:
+    sys.path.insert(0, OPENALGO_DIR)
+
+DATA_DIR = os.path.join(OPENALGO_DIR, 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
@@ -48,24 +55,28 @@ def scan_file(filepath, instruments, strict=False):
     normalized_content = ""
     changes_made = False
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except UnicodeDecodeError:
+        return "", False, []
 
     def replacement_handler(match):
         nonlocal changes_made
         original = match.group(0)
-        normalized = normalize_mcx_symbol(match)
 
         # Validation
         month = match.group(3).upper()
         if month not in MONTHS:
             issues.append({
-                "file": filepath,
+                "file": os.path.relpath(filepath, REPO_ROOT),
                 "symbol": original,
                 "error": f"Invalid month: {month}",
                 "status": "INVALID"
             })
             return original
+
+        normalized = normalize_mcx_symbol(match)
 
         if instruments is not None:
             if normalized not in instruments:
@@ -74,19 +85,19 @@ def scan_file(filepath, instruments, strict=False):
                      return original
 
                  issues.append({
-                    "file": filepath,
+                    "file": os.path.relpath(filepath, REPO_ROOT),
                     "symbol": original,
                     "normalized": normalized,
                     "error": "Symbol not found in instrument master",
                     "status": "MISSING"
                  })
-                 # If valid format but missing in master, we keep original but flag it
-                 return original
+                 # If missing, we still normalize format if needed, but flag it
+                 pass
 
         if original != normalized:
             changes_made = True
             issues.append({
-                "file": filepath,
+                "file": os.path.relpath(filepath, REPO_ROOT),
                 "symbol": original,
                 "normalized": normalized,
                 "status": "NORMALIZED"
@@ -108,9 +119,11 @@ def main():
     args = parser.parse_args()
 
     instruments = load_instruments()
+    msg = "Loaded" if instruments is not None else "Missing/Failed"
+
     if instruments is None:
         if args.strict:
-            print("Error: Instrument master missing or unreadable in strict mode.")
+            print("❌ Strict Mode: Instrument master missing or unreadable.")
             sys.exit(3)
         else:
             print("Warning: Instrument master missing. Validation will be limited.")
@@ -118,24 +131,28 @@ def main():
     audit_report = {
         "timestamp": datetime.now().isoformat(),
         "strict_mode": args.strict,
-        "instruments_loaded": instruments is not None,
+        "instrument_status": msg,
         "issues": []
     }
 
     files_to_scan = []
     # Walk openalgo/strategies
-    strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    strategies_dir = os.path.join(OPENALGO_DIR, 'strategies')
     for root, dirs, files in os.walk(strategies_dir):
         # Exclude tests directories
         if 'tests' in dirs:
             dirs.remove('tests')
         if 'test' in dirs:
             dirs.remove('test')
+        if '__pycache__' in dirs:
+            dirs.remove('__pycache__')
 
         for file in files:
             if file.endswith('.py') or file.endswith('.json'):
                 files_to_scan.append(os.path.join(root, file))
 
+
+    print(f"Scanning {len(files_to_scan)} files...")
 
     for filepath in files_to_scan:
         new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
@@ -146,7 +163,7 @@ def main():
             try:
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(new_content)
-                print(f"Fixed: {filepath}")
+                print(f"Fixed: {os.path.relpath(filepath, REPO_ROOT)}")
             except Exception as e:
                 print(f"Error writing {filepath}: {e}")
 
@@ -162,7 +179,7 @@ def main():
         f.write("# Symbol Audit Report\n\n")
         f.write(f"Date: {datetime.now()}\n")
         f.write(f"Strict Mode: {args.strict}\n")
-        f.write(f"Instruments Loaded: {instruments is not None}\n\n")
+        f.write(f"Instrument Status: {msg}\n\n")
 
         if not audit_report["issues"]:
              f.write("✅ No issues found.\n")
@@ -170,27 +187,37 @@ def main():
              f.write("| File | Symbol | Status | Details |\n")
              f.write("|---|---|---|---|\n")
              for issue in audit_report["issues"]:
-                 f.write(f"| {os.path.basename(issue['file'])} | {issue['symbol']} | {issue['status']} | {issue.get('error', issue.get('normalized', ''))} |\n")
+                 error = issue.get('error', '')
+                 normalized = issue.get('normalized', '')
+                 details = f"{error} {('(Normalized: ' + normalized + ')') if normalized else ''}"
+                 f.write(f"| {issue.get('file')} | {issue.get('symbol')} | {issue['status']} | {details} |\n")
+
+    print(f"Reports generated in {REPORTS_DIR}")
 
     # Check for strict failure
     invalid_symbols = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING')]
-
-    if args.strict and args.check:
-         # In strict check mode, fail if normalization is needed
-         normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
-         if normalized_count > 0:
-             print(f"❌ Found {normalized_count} symbols needing normalization.")
-             sys.exit(1)
+    normalized_needed = [i for i in audit_report["issues"] if i['status'] == 'NORMALIZED']
 
     if invalid_symbols:
         print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols.")
+        for issue in invalid_symbols:
+            print(f" - {issue['file']}: {issue['symbol']} [{issue['status']}] {issue.get('error','')}")
+
         if args.strict:
             sys.exit(1)
+
+    if args.strict and args.check:
+         # In strict check mode, fail if normalization is needed
+         if normalized_needed:
+             print(f"❌ Found {len(normalized_needed)} symbols needing normalization.")
+             sys.exit(1)
 
     if args.write:
          print("✅ Normalization complete.")
     else:
          print("✅ Check complete.")
+
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
