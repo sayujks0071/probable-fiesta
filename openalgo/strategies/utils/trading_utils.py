@@ -284,7 +284,10 @@ class APIClient:
     """
     Fallback API Client using httpx if openalgo package is missing.
     """
-    def __init__(self, api_key, host="http://127.0.0.1:5001"):
+    def __init__(self, api_key, host=None):
+        if host is None:
+            # Default to env var or localhost:5001
+            host = os.getenv("OPENALGO_API_URL", "http://127.0.0.1:5001")
         self.api_key = api_key
         self.host = host.rstrip('/')
 
