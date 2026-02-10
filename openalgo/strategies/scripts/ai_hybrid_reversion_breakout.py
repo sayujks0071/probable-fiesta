@@ -40,7 +40,7 @@ except ImportError:
             is_market_open = lambda: True
 
 class AIHybridStrategy:
-    def __init__(self, symbol, api_key, port, rsi_lower=30, rsi_upper=60, stop_pct=1.0, sector='NIFTY 50', earnings_date=None, logfile=None, time_stop_bars=12):
+    def __init__(self, symbol, api_key, port, rsi_lower=30, rsi_upper=60, stop_pct=1.0, sector='NIFTY 50', earnings_date=None, logfile=None, time_stop_bars=12, adx_threshold=25, risk_amount=1000.0):
         self.symbol = symbol
         self.host = f"http://127.0.0.1:{port}"
         self.client = APIClient(api_key=api_key, host=self.host)
@@ -69,6 +69,29 @@ class AIHybridStrategy:
         self.sector = sector
         self.earnings_date = earnings_date
         self.time_stop_bars = time_stop_bars
+        self.adx_threshold = adx_threshold
+        self.risk_amount = risk_amount
+
+    def calculate_adx(self, df, period=14):
+        try:
+            plus_dm = df['high'].diff()
+            minus_dm = df['low'].diff()
+            plus_dm[plus_dm < 0] = 0
+            minus_dm[minus_dm > 0] = 0
+
+            tr1 = df['high'] - df['low']
+            tr2 = (df['high'] - df['close'].shift(1)).abs()
+            tr3 = (df['low'] - df['close'].shift(1)).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+            atr = tr.rolling(period).mean()
+            plus_di = 100 * (plus_dm.ewm(alpha=1/period).mean() / atr)
+            minus_di = 100 * (minus_dm.abs().ewm(alpha=1/period).mean() / atr)
+            dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+            adx = dx.rolling(period).mean().iloc[-1]
+            return 0 if np.isnan(adx) else adx
+        except:
+            return 0
 
     def calculate_signal(self, df):
         """Calculate signal for a given dataframe (Backtesting support)."""
@@ -90,16 +113,19 @@ class AIHybridStrategy:
         # Regime Filter (SMA200)
         df['sma200'] = df['close'].rolling(200).mean()
 
+        # ADX Filter
+        adx = self.calculate_adx(df)
+
         last = df.iloc[-1]
 
         # Volatility Sizing (Target Risk)
-        # Robust Sizing: Risk 1% of Capital (1000) per trade
+        # Robust Sizing: Risk Amount per trade
         # Stop Loss distance is roughly 2 * ATR
         # Risk = Qty * 2 * ATR  => Qty = Risk / (2 * ATR)
 
         atr = df['high'].diff().abs().rolling(14).mean().iloc[-1] # Simple ATR approx
 
-        risk_amount = 1000.0 # 1% of 100k
+        risk_amount = self.risk_amount
 
         if atr > 0:
             qty = int(risk_amount / (2.0 * atr))
@@ -122,17 +148,17 @@ class AIHybridStrategy:
             if last['volume'] > avg_vol * 1.2:
                 # Reversion can trade against trend, so maybe ignore regime or be strict?
                 # Let's say Reversion is allowed in any regime if oversold enough.
-                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
 
         # Breakout Logic: RSI > 60 and Price > Upper BB
         elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             # Breakout needs significant volume (2x avg)
-            # Breakout ONLY in Bullish Regime
-            if last['volume'] > avg_vol * 2.0 and is_bullish_regime:
-                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+            # Breakout ONLY in Bullish Regime AND Strong Trend (ADX > Threshold)
+            if last['volume'] > avg_vol * 2.0 and is_bullish_regime and adx > self.adx_threshold:
+                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
 
-        return 'HOLD', 0.0, {}
+        return 'HOLD', 0.0, {'atr': atr}
 
     def get_market_context(self):
         # Fetch VIX
@@ -360,7 +386,10 @@ def generate_signal(df, client=None, symbol=None, params=None):
         'rsi_lower': 30.0,
         'rsi_upper': 60.0,
         'stop_pct': 1.0,
-        'sector': 'NIFTY 50'
+        'sector': 'NIFTY 50',
+        'adx_threshold': 25,
+        'risk_amount': 1000.0,
+        'time_stop_bars': 12
     }
     if params:
         strat_params.update(params)
@@ -372,45 +401,31 @@ def generate_signal(df, client=None, symbol=None, params=None):
         rsi_lower=float(strat_params.get('rsi_lower', 30.0)),
         rsi_upper=float(strat_params.get('rsi_upper', 60.0)),
         stop_pct=float(strat_params.get('stop_pct', 1.0)),
-        sector=strat_params.get('sector', 'NIFTY 50')
+        sector=strat_params.get('sector', 'NIFTY 50'),
+        adx_threshold=float(strat_params.get('adx_threshold', 25)),
+        risk_amount=float(strat_params.get('risk_amount', 1000.0)),
+        time_stop_bars=int(strat_params.get('time_stop_bars', 12))
     )
 
     # Silence logger for backtest
     strat.logger.handlers = []
     strat.logger.addHandler(logging.NullHandler())
 
-    # Set Time Stop (if using attribute injection for engine)
-    # The class sets it in __init__ but engine might look for it on instance or module?
-    # SimpleBacktestEngine checks: if strategy_module and hasattr(strategy_module, 'TIME_STOP_BARS')
-    # It checks the MODULE (passed as strategy_module).
-    # Wait, SimpleBacktestEngine receives `strategy_module` which is the python module.
-    # So `TIME_STOP_BARS` must be module-level attribute?
-    # The wrapper generates the signal.
-    # The engine loop:
-    # check_exits(..., strategy_module)
-    # def check_exits(..., strategy_module=None):
-    #    if strategy_module and hasattr(strategy_module, 'TIME_STOP_BARS'):
-
-    # So I need to set module level attribute dynamically? That's bad for concurrency.
-    # But for this simple engine, it's fine.
-    # Or better, I set it on the module object that 'run_leaderboard' loaded.
-
-    # However, 'generate_signal' is just a function.
-    # I can't easily change the module level attribute from here for the *current* backtest
-    # unless I know which module object is being used.
-    # But since params change, the Time Stop might change.
-
-    # For now, I will set it on the function object? No.
-    # I will assume fixed Time Stop for now or set it globally in module.
-
-    # Let's set it globally for this run.
+    # Set Time Stop and ATR Multiplier for Engine
     global TIME_STOP_BARS
-    TIME_STOP_BARS = getattr(strat, 'time_stop_bars', 12)
+    TIME_STOP_BARS = strat.time_stop_bars
+
+    # Also set risk params for engine
+    global ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER
+    ATR_SL_MULTIPLIER = 2.0 # Default for Hybrid
+    ATR_TP_MULTIPLIER = 4.0
 
     return strat.calculate_signal(df)
 
 # Global default for engine check
 TIME_STOP_BARS = 12
+ATR_SL_MULTIPLIER = 2.0
+ATR_TP_MULTIPLIER = 4.0
 
 if __name__ == "__main__":
     run_strategy()
