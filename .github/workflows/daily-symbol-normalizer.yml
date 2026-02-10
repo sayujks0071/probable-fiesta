@@ -23,7 +23,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install pandas httpx pytz
 
       - name: A) Sync Instruments
         id: sync
@@ -37,17 +37,19 @@ jobs:
       - name: C) Normalize Symbols
         id: normalize
         if: steps.precheck.outcome == 'success'
+        continue-on-error: true
         run: python3 tools/normalize_symbols_repo.py --write
 
       - name: D) Post-Check Strict Validation
         id: postcheck
-        if: steps.normalize.outcome == 'success'
+        if: steps.normalize.outcome == 'success' || steps.normalize.outcome == 'skipped'
         continue-on-error: true
         run: python3 tools/validate_symbols.py --strict --check
 
       - name: Gate Check
         id: gate
         run: |
+          # Gate passes only if Pre-Check AND Post-Check succeeded
           if [[ "${{ steps.precheck.outcome }}" == "success" && "${{ steps.postcheck.outcome }}" == "success" ]]; then
             echo "gate_ok=true" >> $GITHUB_OUTPUT
             echo "Gate passed."
