@@ -24,11 +24,22 @@ scrape_configs:
         level: level
         logger: logger
         timestamp: timestamp
+        message: message
+  # Attempt to parse Text lines (fallback)
+  # Matches: [2023-10-27 10:00:00,123] INFO logger: message
+  - regex:
+      expression: '^\[(?P<timestamp>.*?)\] (?P<level>\w+) (?P<logger>.*?): (?P<message>.*)$'
   # Set labels from extracted fields
   - labels:
       level:
       logger:
-  # Set timestamp from extracted field (if available)
+  # Set timestamp from extracted field (if available) - RFC3339 for JSON
   - timestamp:
       source: timestamp
       format: RFC3339
+      action_on_failure: skip
+  # Set timestamp from extracted field (if available) - Custom for Text
+  - timestamp:
+      source: timestamp
+      format: '2006-01-02 15:04:05,000'
+      action_on_failure: skip
