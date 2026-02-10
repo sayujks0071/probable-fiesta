@@ -14,6 +14,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+from openalgo.strategies.utils.risk_manager import RiskManager
 
 # Configure logging
 logging.basicConfig(
@@ -33,9 +34,16 @@ class GapFadeStrategy:
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
         self.pm = PositionManager(f"{symbol}_GapFade")
+        self.rm = RiskManager(f"GapFade_{symbol}", exchange="NSE", capital=100000)
 
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
+
+        # 0. Risk Check
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.warning(f"Risk Check Failed: {reason}")
+            return
 
         # 1. Get Previous Close
         # Using history API for last 2 days
@@ -62,6 +70,10 @@ class GapFadeStrategy:
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
         if not quote:
             logger.error("Could not fetch quote.")
+            return
+
+        if 'ltp' not in quote:
+            logger.error(f"Quote missing 'ltp': {quote}")
             return
 
         current_price = float(quote['ltp'])
@@ -115,7 +127,13 @@ class GapFadeStrategy:
         # 5. Place Order (Simulation)
         # self.client.placesmartorder(...)
         logger.info(f"Executing {option_type} Buy for {qty} qty.")
-        self.pm.update_position(qty, 100, "BUY") # Mock update
+
+        # Using correct update_position signature (qty, price, side)
+        # Assuming current_price is the execution price for simulation
+        self.pm.update_position(qty, current_price, "BUY")
+
+        # Register with Risk Manager
+        self.rm.register_entry(self.symbol, qty, current_price, "BUY")
 
 def main():
     parser = argparse.ArgumentParser()
