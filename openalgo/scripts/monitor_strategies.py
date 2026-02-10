@@ -12,14 +12,37 @@ from datetime import datetime
 # Adjust paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR) # openalgo/
-LOG_DIR = os.path.join(REPO_ROOT, "log", "strategies")
+# Search both legacy log dir and new strategy log dir
+LOG_DIRS = [
+    os.path.join(REPO_ROOT, "log", "strategies"),
+    os.path.join(REPO_ROOT, "strategies", "logs")
+]
+
+def find_log_file(script_name):
+    """Attempt to find the log file for a strategy."""
+    # Common patterns: script.log, script_strategy.log, script_name.log
+    base_name = script_name.replace(".py", "").replace("_strategy", "")
+    candidates = [
+        f"{base_name}.log",
+        f"{base_name}_strategy.log",
+        script_name.replace(".py", ".log")
+    ]
+
+    for log_dir in LOG_DIRS:
+        if not os.path.exists(log_dir): continue
+        for candidate in candidates:
+            log_path = os.path.join(log_dir, candidate)
+            if os.path.exists(log_path):
+                return log_path
+    return None
 
 def get_running_strategies():
     """Find running strategy processes."""
     strategies = []
     try:
         # pgrep -af returns PID and command line
-        cmd = ["pgrep", "-af", "strategies/scripts"]
+        # Use regex to match python executing files in strategies/scripts
+        cmd = ["pgrep", "-af", "python.*strategies/scripts"]
         output = subprocess.check_output(cmd).decode("utf-8")
 
         for line in output.splitlines():
@@ -44,7 +67,7 @@ def get_running_strategies():
 
             # Extract Logfile
             log_match = re.search(r'--logfile\s+([^\s]+)', cmdline)
-            logfile = log_match.group(1) if log_match else None
+            logfile = log_match.group(1) if log_match else find_log_file(script_name)
 
             strategies.append({
                 "pid": pid,
