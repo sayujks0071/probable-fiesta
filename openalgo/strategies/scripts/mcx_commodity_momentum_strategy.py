@@ -11,7 +11,7 @@ import logging
 import argparse
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 
 # Add repo root to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -95,6 +95,25 @@ class MCXMomentumStrategy:
         current = self.data.iloc[-1]
         prev = self.data.iloc[-2]
 
+        # Time Filter: Avoid first 30 mins and last 30 mins
+        # MCX: 09:00 - 23:30/23:55
+        try:
+            ts = current.name
+            if isinstance(ts, pd.Timestamp):
+                current_time = ts.time()
+                # 09:30
+                start_time = time(9, 30)
+                # 23:00
+                end_time = time(23, 0)
+
+                # Check if within trading window
+                # Simple check assuming same day
+                if current_time < start_time or current_time > end_time:
+                    return 'HOLD', 0.0, {'reason': 'Time Filter'}
+        except Exception as e:
+            # Fallback if timestamp issue
+            pass
+
         # Factors
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
 
@@ -108,13 +127,16 @@ class MCXMomentumStrategy:
         if current.get('atr', 0) < min_atr:
              return 'HOLD', 0.0, {'reason': 'Low Volatility'}
 
+        # Trend Following Logic
+        # BUY: Strong Trend (ADX), Bullish Momentum (RSI > 55), Price Action
         if (current['adx'] > self.params['adx_threshold'] and
-            current['rsi'] > 50 and
+            current['rsi'] > 55 and
             current['close'] > prev['close']):
             action = 'BUY'
 
+        # SELL: Strong Trend (ADX), Bearish Momentum (RSI < 45), Price Action
         elif (current['adx'] > self.params['adx_threshold'] and
-              current['rsi'] < 50 and
+              current['rsi'] < 45 and
               current['close'] < prev['close']):
             action = 'SELL'
 
@@ -351,6 +373,17 @@ def generate_signal(df, client=None, symbol=None, params=None):
     strat = MCXMomentumStrategy(symbol or "TEST", api_key, host, strat_params)
 
     # Set Time Stop for Engine
-    setattr(strat, 'TIME_STOP_BARS', 12) # 3 Hours (12 * 15m)
+    global TIME_STOP_BARS
+    TIME_STOP_BARS = 12 # 3 Hours (12 * 15m)
+
+    # Set ATR Limits
+    global ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER
+    ATR_SL_MULTIPLIER = 3.0
+    ATR_TP_MULTIPLIER = 6.0
 
     return strat.generate_signal(df)
+
+# Globals for engine
+TIME_STOP_BARS = 12
+ATR_SL_MULTIPLIER = 3.0
+ATR_TP_MULTIPLIER = 6.0

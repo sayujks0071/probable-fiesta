@@ -154,6 +154,11 @@ class SuperTrendVWAPStrategy:
         adx = self.calculate_adx(df, period=self.adx_period)
         is_strong_trend = adx > self.adx_threshold
 
+        # RSI Filter
+        df['rsi'] = self.calculate_rsi(df['close'])
+        rsi = df['rsi'].iloc[-1]
+        is_rsi_bullish = rsi > 50
+
         # Sector check (Mocked for backtest usually, or passed via client)
         sector_bullish = True
 
@@ -163,10 +168,11 @@ class SuperTrendVWAPStrategy:
             'vwap': last['vwap'],
             'atr': self.atr,
             'poc': poc_price,
-            'adx': adx
+            'adx': adx,
+            'rsi': rsi
         }
 
-        if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish and is_strong_trend and is_uptrend:
+        if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish and is_strong_trend and is_uptrend and is_rsi_bullish:
             return 'BUY', 1.0, details
 
         # Sell Logic (Inverse for completeness?)
@@ -467,12 +473,18 @@ def generate_signal(df, client=None, symbol=None, params=None):
         if 'adx_threshold' in params: strat.adx_threshold = params['adx_threshold']
 
     # Set Breakeven Trigger
-    setattr(strat, 'BREAKEVEN_TRIGGER_R', 1.5)
-    setattr(strat, 'ATR_SL_MULTIPLIER', 3.0)
-    setattr(strat, 'ATR_TP_MULTIPLIER', 5.0)
+    global BREAKEVEN_TRIGGER_R, ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER
+    BREAKEVEN_TRIGGER_R = 1.5
+    ATR_SL_MULTIPLIER = 3.0
+    ATR_TP_MULTIPLIER = 5.0
 
     action, score, details = strat.generate_signal(df)
     return action, score, details
+
+# Globals for engine
+BREAKEVEN_TRIGGER_R = 1.5
+ATR_SL_MULTIPLIER = 3.0
+ATR_TP_MULTIPLIER = 5.0
 
 if __name__ == "__main__":
     run_strategy()
