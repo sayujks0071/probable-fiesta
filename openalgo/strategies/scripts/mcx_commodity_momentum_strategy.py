@@ -2,7 +2,7 @@
 """
 MCX Commodity Momentum Strategy
 Momentum strategy using ADX and RSI with proper API integration.
-Enhanced with Multi-Factor inputs (USD/INR, Seasonality).
+Enhanced with Multi-Factor inputs (USD/INR, Seasonality, Global Correlation, Fundamentals).
 """
 import os
 import sys
@@ -52,6 +52,7 @@ class MCXMomentumStrategy:
         # Log active filters
         logger.info(f"Initialized Strategy for {symbol}")
         logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
+        logger.info(f"Filters: Global_Align={params.get('global_alignment_score', 'N/A')}, Fundamental={params.get('fundamental_score', 'N/A')}")
 
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
@@ -97,17 +98,19 @@ class MCXMomentumStrategy:
 
         # Factors
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
+        global_align_ok = self.params.get('global_alignment_score', 50) >= 40
+        fundamental_ok = self.params.get('fundamental_score', 50) >= 30
 
-        action = 'HOLD'
-
-        if not seasonality_ok:
-            return 'HOLD', 0.0, {'reason': 'Seasonality Weak'}
+        if not seasonality_ok: return 'HOLD', 0.0, {'reason': 'Seasonality Weak'}
+        if not global_align_ok: return 'HOLD', 0.0, {'reason': 'Global Alignment Weak'}
+        if not fundamental_ok: return 'HOLD', 0.0, {'reason': 'Fundamentals Weak'}
 
         # Volatility Filter
         min_atr = self.params.get('min_atr', 0)
         if current.get('atr', 0) < min_atr:
              return 'HOLD', 0.0, {'reason': 'Low Volatility'}
 
+        action = 'HOLD'
         if (current['adx'] > self.params['adx_threshold'] and
             current['rsi'] > 50 and
             current['close'] > prev['close']):
@@ -125,8 +128,6 @@ class MCXMomentumStrategy:
         if self.data.empty:
             return
 
-        # Optimization: If columns already exist and length matches, skip?
-        # But for now, we assume data is fresh.
         df = self.data.copy()
 
         # RSI
@@ -156,12 +157,11 @@ class MCXMomentumStrategy:
         df['plus_dm'] = plus_dm
         df['minus_dm'] = minus_dm
 
-        # Smooth (using simple moving average for simplicity as originally intended in simple mock)
+        # Smooth
         tr_smooth = true_range.rolling(window=self.params['period_adx']).mean()
         plus_dm_smooth = df['plus_dm'].rolling(window=self.params['period_adx']).mean()
         minus_dm_smooth = df['minus_dm'].rolling(window=self.params['period_adx']).mean()
 
-        # Avoid division by zero
         tr_smooth = tr_smooth.replace(0, np.nan)
 
         plus_di = 100 * (plus_dm_smooth / tr_smooth)
@@ -177,15 +177,11 @@ class MCXMomentumStrategy:
         if self.data.empty or 'adx' not in self.data.columns:
             return
 
-        # Ensure we have enough data
         if len(self.data) < 50:
             return
 
         current = self.data.iloc[-1]
         prev = self.data.iloc[-2]
-
-        # Log current state
-        # logger.info(f"Price: {current['close']:.2f}, RSI: {current['rsi']:.2f}, ADX: {current['adx']:.2f}")
 
         # Check Position
         has_position = False
@@ -195,13 +191,30 @@ class MCXMomentumStrategy:
         # Multi-Factor Checks
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
         global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
+        fundamental_ok = self.params.get('fundamental_score', 50) >= 30
         usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
+
+        # Expiry Check
+        expiry_days = self.params.get('contract_expiry_days', 30)
+        if expiry_days < 3 and not has_position:
+            logger.warning(f"⚠️ Contract expires in {expiry_days} days. Skipping new entries.")
+            return
 
         # Adjust Position Size
         base_qty = 1
+
+        # 1. USD Volatility Check
         if usd_vol_high:
-            logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size by 30%.")
-            base_qty = max(1, int(base_qty * 0.7)) # Reduce size, minimum 1
+            logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size.")
+            base_qty = max(1, int(base_qty * 0.7))
+
+        # 2. ATR Volatility Sizing (Dynamic)
+        # Assuming risk per trade is fixed (e.g., 2% of capital or fixed cash)
+        # Here we just reduce size if ATR is excessively high compared to recent history
+        atr_mean = self.data['atr'].rolling(50).mean().iloc[-1]
+        if current['atr'] > atr_mean * 1.5:
+             logger.warning(f"⚠️ High Volatility (ATR={current['atr']:.2f} > 1.5x Avg). Reducing size.")
+             base_qty = max(1, int(base_qty * 0.5))
 
         if not seasonality_ok and not has_position:
             logger.info("Seasonality Weak: Skipping new entries.")
@@ -211,9 +224,13 @@ class MCXMomentumStrategy:
             logger.info("Global Alignment Weak: Skipping new entries.")
             return
 
+        if not fundamental_ok and not has_position:
+            logger.info("Fundamentals Weak: Skipping new entries.")
+            return
+
         # Entry Logic
         if not has_position:
-            # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
+            # BUY Signal
             if (current['adx'] > self.params['adx_threshold'] and
                 current['rsi'] > 55 and
                 current['close'] > prev['close']):
@@ -222,7 +239,7 @@ class MCXMomentumStrategy:
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
-            # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
+            # SELL Signal
             elif (current['adx'] > self.params['adx_threshold'] and
                   current['rsi'] < 45 and
                   current['close'] < prev['close']):
@@ -233,12 +250,14 @@ class MCXMomentumStrategy:
 
         # Exit Logic
         elif has_position:
-            # Retrieve position details
             pos_qty = self.pm.position
-            entry_price = self.pm.entry_price
 
-            # Stop Loss / Take Profit Logic could be added here
-            # Simple Exit: Trend Fades (ADX < 20) or RSI Reversal
+            # Risk Management Exit (Expiry approaching)
+            if expiry_days <= 1:
+                logger.warning("⚠️ Contract expiring tomorrow! Force closing.")
+                if pos_qty > 0: self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                elif pos_qty < 0: self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                return
 
             if pos_qty > 0: # Long
                 if current['rsi'] < 45 or current['adx'] < 20:
@@ -271,9 +290,11 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
+    parser.add_argument('--fundamental_score', type=int, default=50, help='Fundamental Score (0-100)')
+    parser.add_argument('--contract_expiry_days', type=int, default=30, help='Days to Expiry')
 
     args = parser.parse_args()
 
@@ -288,7 +309,9 @@ if __name__ == "__main__":
         'usd_inr_trend': args.usd_inr_trend,
         'usd_inr_volatility': args.usd_inr_volatility,
         'seasonality_score': args.seasonality_score,
-        'global_alignment_score': args.global_alignment_score
+        'global_alignment_score': args.global_alignment_score,
+        'fundamental_score': args.fundamental_score,
+        'contract_expiry_days': args.contract_expiry_days
     }
 
     # Symbol Resolution
