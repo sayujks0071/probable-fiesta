@@ -3,13 +3,14 @@ import sys
 import os
 import argparse
 import logging
+import math
 from pathlib import Path
 
 # Add project root to path
 current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+    sys.path.insert(0, str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 from openalgo.strategies.utils.option_analytics import calculate_greeks, calculate_max_pain
@@ -36,7 +37,7 @@ class DeltaNeutralIronCondor:
 
     def get_vix(self):
         q = self.client.get_quote("INDIA VIX", "NSE")
-        return float(q['ltp']) if q else 15.0
+        return float(q['ltp']) if q and 'ltp' in q else 15.0
 
     def select_strikes(self, spot, vix, chain_data):
         """
@@ -58,7 +59,7 @@ class DeltaNeutralIronCondor:
         # Adjust Wing Width based on VIX
         wing_width = 200 # Default
         if vix >= 20:
-            wing_width = 400
+            wing_width = 300
             logger.info(f"High VIX ({vix}) -> Widening Wings to {wing_width}")
         elif vix < 12:
             wing_width = 100
@@ -70,17 +71,25 @@ class DeltaNeutralIronCondor:
         ce_short = None
         pe_short = None
 
+        ce_short_sym = None
+        pe_short_sym = None
+
         try:
             strikes = sorted([item for item in chain_data if 'strike' in item], key=lambda x: x['strike'])
             best_ce_diff = 1.0
             best_pe_diff = 1.0
 
             # Assumptions
-            T = 7/365.0
+            T = 7/365.0 # Assuming weekly expiry approx 7 days
             r = 0.06
 
             for item in strikes:
                 strike = item['strike']
+
+                # Extract Symbols
+                # Handle nested or flat
+                ce_sym = item.get('ce_symbol') or item.get('ce', {}).get('symbol')
+                pe_sym = item.get('pe_symbol') or item.get('pe', {}).get('symbol')
 
                 def get_iv(itm, type_key):
                     iv = itm.get(f'{type_key}_iv', 0)
@@ -97,6 +106,7 @@ class DeltaNeutralIronCondor:
                 if strike > spot and abs(ce_delta - target_delta) < best_ce_diff:
                     best_ce_diff = abs(ce_delta - target_delta)
                     ce_short = strike
+                    ce_short_sym = ce_sym
 
                 iv_pe = get_iv(item, 'pe')
                 pe_greeks = calculate_greeks(spot, strike, T, r, iv_pe, 'pe')
@@ -105,6 +115,7 @@ class DeltaNeutralIronCondor:
                 if strike < spot and abs(pe_delta - target_delta) < best_pe_diff:
                     best_pe_diff = abs(pe_delta - target_delta)
                     pe_short = strike
+                    pe_short_sym = pe_sym
 
             logger.info(f"Delta Search Results: CE Short {ce_short} (Diff: {best_ce_diff:.4f}), PE Short {pe_short} (Diff: {best_pe_diff:.4f})")
 
@@ -113,27 +124,50 @@ class DeltaNeutralIronCondor:
             ce_short = None
             pe_short = None
 
-        # Fallback to ATM + Width
+        # Fallback to ATM + Width if Delta failed
         atm = round(center_price / 50) * 50
 
         if not ce_short:
             ce_short = atm + wing_width
+            # Find symbol for this strike
+            for item in chain_data:
+                 if item['strike'] == ce_short:
+                      ce_short_sym = item.get('ce_symbol') or item.get('ce', {}).get('symbol')
+                      break
+
         if not pe_short:
             pe_short = atm - wing_width
+            for item in chain_data:
+                 if item['strike'] == pe_short:
+                      pe_short_sym = item.get('pe_symbol') or item.get('pe', {}).get('symbol')
+                      break
 
         # Longs (Wings)
         ce_long = ce_short + wing_width
         pe_long = pe_short - wing_width
 
+        ce_long_sym = None
+        pe_long_sym = None
+
+        for item in chain_data:
+             if item['strike'] == ce_long:
+                  ce_long_sym = item.get('ce_symbol') or item.get('ce', {}).get('symbol')
+             if item['strike'] == pe_long:
+                  pe_long_sym = item.get('pe_symbol') or item.get('pe', {}).get('symbol')
+
         return {
-            "ce_short": ce_short,
-            "pe_short": pe_short,
-            "ce_long": ce_long,
-            "pe_long": pe_long
+            "ce_short": {"strike": ce_short, "symbol": ce_short_sym},
+            "pe_short": {"strike": pe_short, "symbol": pe_short_sym},
+            "ce_long": {"strike": ce_long, "symbol": ce_long_sym},
+            "pe_long": {"strike": pe_long, "symbol": pe_long_sym}
         }
 
     def execute(self):
         logger.info(f"Starting execution for {self.symbol}")
+
+        if self.pm.has_position():
+             logger.info("Position already exists (Iron Condor). Skipping.")
+             return
 
         vix = self.get_vix()
         logger.info(f"Current VIX: {vix}")
@@ -143,22 +177,25 @@ class DeltaNeutralIronCondor:
             logger.warning(f"VIX {vix} < 12. Too low for Iron Condor (Low Premium/High Gamma Risk). Skipping.")
             return
 
+        qty = self.qty
         if vix > self.max_vix:
             logger.warning(f"VIX {vix} > {self.max_vix}. Reducing Quantity by 50%.")
-            self.qty = int(self.qty * 0.5)
+            qty = int(qty * 0.5)
 
         # Sentiment Filter
         if self.sentiment_score is not None:
             logger.info(f"Checking Sentiment Score: {self.sentiment_score}")
-            # Score 0 (Negative) to 1 (Positive), 0.5 Neutral
-            # Iron Condor is Neutral. Avoid if sentiment is extreme.
             dist_from_neutral = abs(self.sentiment_score - 0.5)
             if dist_from_neutral > 0.3: # < 0.2 or > 0.8
                 logger.warning(f"Sentiment Score {self.sentiment_score} is strongly directional. Iron Condor risk is high. Skipping.")
                 return
 
-        quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
-        spot = float(quote['ltp']) if quote else 0
+        search_symbol = self.symbol
+        if self.symbol == "NIFTY": search_symbol = "NIFTY 50"
+        elif self.symbol == "BANKNIFTY": search_symbol = "NIFTY BANK"
+
+        quote = self.client.get_quote(search_symbol, "NSE")
+        spot = float(quote['ltp']) if quote and 'ltp' in quote else 0
         if spot == 0:
             logger.error("Could not fetch spot price.")
             return
@@ -166,21 +203,57 @@ class DeltaNeutralIronCondor:
         logger.info(f"Spot: {spot}")
 
         # Fetch Chain
-        chain = self.client.get_option_chain(self.symbol)
+        opt_exchange = "NFO" if self.symbol != "SENSEX" else "BFO"
+        chain = self.client.get_option_chain(self.symbol, opt_exchange)
         if not chain:
             logger.error("Could not fetch option chain.")
             return
 
-        strikes = self.select_strikes(spot, vix, chain)
-        logger.info(f"Selected Strikes: {strikes}")
+        # Select Strikes
+        legs = self.select_strikes(spot, vix, chain)
+        logger.info(f"Selected Legs: {legs}")
 
-        # Place Orders (Mock)
-        logger.info(f"Placing orders for {self.qty} qty...")
+        # Verify symbols found
+        if not all(leg['symbol'] for leg in legs.values()):
+             logger.error("Could not find symbols for all legs. Aborting.")
+             return
 
-        # In real scenario:
-        # self.client.placesmartorder(...)
+        # Place Orders (4 Legs)
+        # Sell Short Legs, Buy Long Legs
+        # Order: Buy Wings First (Protection), then Sell Body
 
-        logger.info("Strategy execution completed (Simulation).")
+        orders = [
+             {"leg": "ce_long", "action": "BUY", "symbol": legs['ce_long']['symbol']},
+             {"leg": "pe_long", "action": "BUY", "symbol": legs['pe_long']['symbol']},
+             {"leg": "ce_short", "action": "SELL", "symbol": legs['ce_short']['symbol']},
+             {"leg": "pe_short", "action": "SELL", "symbol": legs['pe_short']['symbol']}
+        ]
+
+        logger.info(f"Placing orders for {qty} qty...")
+
+        success_count = 0
+        for order in orders:
+             resp = self.client.placesmartorder(
+                strategy="IronCondor",
+                symbol=order['symbol'],
+                action=order['action'],
+                exchange=opt_exchange,
+                price_type="MARKET",
+                product="MIS", # or NRML
+                quantity=qty,
+                position_size=qty
+            )
+             if resp.get('status') == 'success' or 'order_id' in resp:
+                  logger.info(f"Placed {order['action']} {order['symbol']}: {resp}")
+                  success_count += 1
+             else:
+                  logger.error(f"Failed {order['action']} {order['symbol']}: {resp}")
+
+        if success_count == 4:
+             logger.info("All 4 legs executed successfully.")
+             self.pm.update_position(qty, spot, "IC_ENTRY")
+        else:
+             logger.warning(f"Partial execution: {success_count}/4 legs filled.")
 
 def main():
     parser = argparse.ArgumentParser()
