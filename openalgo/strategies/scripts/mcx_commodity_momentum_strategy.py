@@ -20,19 +20,20 @@ utils_dir = os.path.join(strategies_dir, 'utils')
 sys.path.insert(0, utils_dir)
 
 try:
-    from trading_utils import APIClient, PositionManager, is_market_open
+    from trading_utils import APIClient, PositionManager, is_market_open, is_mcx_market_open
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.trading_utils import APIClient, PositionManager, is_market_open, is_mcx_market_open
     except ImportError:
         try:
-            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open, is_mcx_market_open
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
             is_market_open = lambda: True
+            is_mcx_market_open = lambda: True
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -52,6 +53,29 @@ class MCXMomentumStrategy:
         # Log active filters
         logger.info(f"Initialized Strategy for {symbol}")
         logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
+
+    def execute_trade(self, action, quantity):
+        """Execute trade - NOTE: strategy is REQUIRED first argument!"""
+        if not self.client:
+            logger.warning(f"No API Client. Simulating {action} {quantity} {self.symbol}")
+            return {'status': 'simulated'}
+
+        try:
+            order = self.client.placesmartorder(
+                strategy="MCX_Momentum",     # REQUIRED!
+                symbol=self.symbol,
+                action=action,
+                exchange="MCX",
+                price_type="MARKET",
+                product="MIS",
+                quantity=quantity,
+                position_size=quantity
+            )
+            logger.info(f"ORDER {action} {quantity}: {order}")
+            return order
+        except Exception as e:
+            logger.error(f"Trade failed: {e}")
+            return None
 
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
@@ -219,6 +243,7 @@ class MCXMomentumStrategy:
                 current['close'] > prev['close']):
 
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                self.execute_trade('BUY', base_qty)
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
@@ -228,6 +253,7 @@ class MCXMomentumStrategy:
                   current['close'] < prev['close']):
 
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                self.execute_trade('SELL', base_qty)
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
 
@@ -243,16 +269,25 @@ class MCXMomentumStrategy:
             if pos_qty > 0: # Long
                 if current['rsi'] < 45 or current['adx'] < 20:
                      logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                     self.execute_trade('SELL', abs(pos_qty))
                      self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
             elif pos_qty < 0: # Short
                 if current['rsi'] > 55 or current['adx'] < 20:
                      logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                     self.execute_trade('BUY', abs(pos_qty))
                      self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
         while True:
-            if not is_market_open():
+            is_open = False
+            # Check market hours based on symbol or explicit exchange check
+            if "FUT" in self.symbol:
+                 is_open = is_mcx_market_open()
+            else:
+                 is_open = is_market_open()
+
+            if not is_open:
                 logger.info("Market is closed. Sleeping...")
                 time.sleep(300)
                 continue
