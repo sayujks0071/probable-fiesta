@@ -18,17 +18,29 @@ scrape_configs:
       env: local
       __path__: /var/log/openalgo/*.log
   pipeline_stages:
-  # Attempt to parse JSON lines
+  # Try to parse as JSON first
   - json:
       expressions:
         level: level
         logger: logger
         timestamp: timestamp
-  # Set labels from extracted fields
+        message: message
+  # If JSON parsing works, these labels are set.
   - labels:
       level:
       logger:
-  # Set timestamp from extracted field (if available)
+  # If timestamp was extracted from JSON
   - timestamp:
       source: timestamp
       format: RFC3339
+      action_on_failure: fudge
+  # Fallback for standard logs: [2024-05-20 10:00:00,123] INFO Logger: Message
+  - regex:
+      expression: '^\[(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})\] (?P<level>\w+) (?P<logger>[\w\.]+): (?P<message>.*)$'
+  - labels:
+      level:
+      logger:
+  - timestamp:
+      source: timestamp
+      format: '2006-01-02 15:04:05,000'
+      action_on_failure: fudge

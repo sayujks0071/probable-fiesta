@@ -24,8 +24,13 @@ except ImportError:
 # Add repo root to path for imports
 script_dir = Path(__file__).parent
 strategies_dir = script_dir.parent
+openalgo_dir = strategies_dir.parent
+repo_root = openalgo_dir.parent
 utils_dir = strategies_dir / 'utils'
+
 sys.path.insert(0, str(utils_dir))
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 
 try:
     from trading_utils import APIClient, is_market_open
@@ -50,7 +55,12 @@ STRATEGY_TEMPLATES = {
 }
 
 # Setup Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+try:
+    from openalgo_observability.logging_setup import setup_logging
+    setup_logging()
+except ImportError:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 logger = logging.getLogger("MCX_Advanced_Strategy")
 
 class AdvancedMCXStrategy:

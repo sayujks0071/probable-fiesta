@@ -22,14 +22,16 @@ from openalgo.strategies.utils.trading_utils import APIClient, is_market_open
 from openalgo.strategies.utils.option_analytics import calculate_pcr, calculate_max_pain, calculate_greeks
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(project_root / "openalgo" / "strategies" / "logs" / "options_ranker.log")
-    ]
-)
+try:
+    from openalgo_observability.logging_setup import setup_logging
+    setup_logging()
+except ImportError:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+
 logger = logging.getLogger("AdvancedOptionsRanker")
 
 class AdvancedOptionsRanker:

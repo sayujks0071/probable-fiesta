@@ -6,6 +6,11 @@ SCRIPT_DIR=$(cd $(dirname $0) && pwd)
 SCRIPT_PATH="$SCRIPT_DIR/healthcheck.py"
 PYTHON_EXEC=$(which python3)
 
+if [ -z "$PYTHON_EXEC" ]; then
+    echo "Error: python3 not found."
+    exit 1
+fi
+
 SERVICE_FILE=~/.config/systemd/user/openalgo-health.service
 TIMER_FILE=~/.config/systemd/user/openalgo-health.timer
 

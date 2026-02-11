@@ -3,6 +3,7 @@ version: "3"
 services:
   loki:
     image: grafana/loki:3.0.0
+    container_name: openalgo-loki
     ports:
       - "3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
@@ -11,6 +12,7 @@ services:
 
   promtail:
     image: grafana/promtail:3.0.0
+    container_name: openalgo-promtail
     volumes:
       - ./promtail.yaml:/etc/promtail/config.yaml
       - ../logs:/var/log/openalgo:ro
@@ -20,6 +22,7 @@ services:
 
   grafana:
     image: grafana/grafana:11.0.0
+    container_name: openalgo-grafana
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
