@@ -21,17 +21,21 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from risk_manager import RiskManager
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.risk_manager import RiskManager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.risk_manager import RiskManager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            RiskManager = None
             is_market_open = lambda: True
 
 # Setup Logging
@@ -47,6 +51,7 @@ class MCXMomentumStrategy:
 
         self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
         self.pm = PositionManager(symbol) if PositionManager else None
+        self.rm = RiskManager(f"MCX_Momentum_{symbol}", exchange="MCX", capital=500000) if RiskManager else None
         self.data = pd.DataFrame()
 
         # Log active filters
@@ -177,6 +182,22 @@ class MCXMomentumStrategy:
         if self.data.empty or 'adx' not in self.data.columns:
             return
 
+        # Risk Checks
+        if self.rm:
+            # EOD Check
+            if self.rm.should_square_off_eod():
+                 if self.pm and self.pm.has_position():
+                     # Should implement close here, but for now just logging
+                     logger.warning("EOD Square-off active.")
+                 return
+
+            # Entry Gates
+            if not (self.pm and self.pm.has_position()):
+                can_trade, reason = self.rm.can_trade()
+                if not can_trade:
+                    logger.warning(f"Risk Check Failed: {reason}")
+                    return
+
         # Ensure we have enough data
         if len(self.data) < 50:
             return
@@ -221,6 +242,8 @@ class MCXMomentumStrategy:
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
+                if self.rm:
+                    self.rm.register_entry(self.symbol, base_qty, current['close'], 'LONG')
 
             # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
             elif (current['adx'] > self.params['adx_threshold'] and
@@ -230,6 +253,8 @@ class MCXMomentumStrategy:
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
+                if self.rm:
+                    self.rm.register_entry(self.symbol, base_qty, current['close'], 'SHORT')
 
         # Exit Logic
         elif has_position:
@@ -237,17 +262,30 @@ class MCXMomentumStrategy:
             pos_qty = self.pm.position
             entry_price = self.pm.entry_price
 
-            # Stop Loss / Take Profit Logic could be added here
+            # Stop Loss Check via RiskManager
+            if self.rm:
+                 stop_hit, reason = self.rm.check_stop_loss(self.symbol, current['close'])
+                 if stop_hit:
+                     logger.info(reason)
+                     qty_to_close = abs(pos_qty)
+                     action = 'SELL' if pos_qty > 0 else 'BUY'
+                     self.pm.update_position(qty_to_close, current['close'], action)
+                     self.rm.register_exit(self.symbol, current['close'], qty_to_close)
+                     return
+
             # Simple Exit: Trend Fades (ADX < 20) or RSI Reversal
 
             if pos_qty > 0: # Long
                 if current['rsi'] < 45 or current['adx'] < 20:
                      logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                     if self.rm: self.rm.register_exit(self.symbol, current['close'], abs(pos_qty))
+
             elif pos_qty < 0: # Short
                 if current['rsi'] > 55 or current['adx'] < 20:
                      logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                     if self.rm: self.rm.register_exit(self.symbol, current['close'], abs(pos_qty))
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")

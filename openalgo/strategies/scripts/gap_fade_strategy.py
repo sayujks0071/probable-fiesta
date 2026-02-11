@@ -14,6 +14,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+from openalgo.strategies.utils.risk_manager import RiskManager
 
 # Configure logging
 logging.basicConfig(
@@ -33,42 +34,48 @@ class GapFadeStrategy:
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
         self.pm = PositionManager(f"{symbol}_GapFade")
+        self.rm = RiskManager(f"GapFade_{symbol}", exchange="NSE")
 
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
 
+        # Risk Check
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+             logger.warning(f"Risk Check Failed: {reason}")
+             return
+
         # 1. Get Previous Close
-        # Using history API for last 2 days
-        today = datetime.now()
-        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d") # Go back enough to get prev day
-        end_date = today.strftime("%Y-%m-%d")
+        prev_close = 0.0
+        current_price = 0.0
 
-        # Get daily candles
-        df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
-
-        if df.empty or len(df) < 1:
-            logger.error("Could not fetch history for previous close.")
-            return
-
-        # Assuming the last completed row is previous day, or if market just opened, we might have today's open
-        # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
-
-        prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
-
+        # Try Quote First (Real-time and reliable for OHLC)
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
-        if not quote:
-            logger.error("Could not fetch quote.")
-            return
 
-        current_price = float(quote['ltp'])
+        if quote:
+            current_price = float(quote.get('ltp', 0))
+            # 'close' in quote is typically previous close
+            if 'close' in quote and quote['close'] > 0:
+                prev_close = float(quote['close'])
+            elif 'ohlc' in quote and 'close' in quote['ohlc']:
+                prev_close = float(quote['ohlc']['close'])
 
-        # Some APIs provide 'close' in quote which is prev_close
-        if 'close' in quote and quote['close'] > 0:
-            prev_close = float(quote['close'])
+        # Fallback to History if Prev Close is missing
+        if prev_close == 0:
+            today = datetime.now()
+            start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
+            end_date = today.strftime("%Y-%m-%d")
+            df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
+
+            if not df.empty and len(df) >= 1:
+                # If last candle is today (check timestamp if available), take previous
+                # Simplified: Take last closed candle (assuming history returns completed candles or we check time)
+                # Ideally check df index date vs today.
+                prev_close = df.iloc[-1]['close'] # Fallback
+
+        if prev_close == 0 or current_price == 0:
+             logger.error(f"Could not determine prices. Prev: {prev_close}, Curr: {current_price}")
+             return
 
         logger.info(f"Prev Close: {prev_close}, Current: {current_price}")
 
@@ -116,6 +123,7 @@ class GapFadeStrategy:
         # self.client.placesmartorder(...)
         logger.info(f"Executing {option_type} Buy for {qty} qty.")
         self.pm.update_position(qty, 100, "BUY") # Mock update
+        self.rm.register_entry(f"{self.symbol}_{option_type}", qty, 100, "LONG") # Mock entry
 
 def main():
     parser = argparse.ArgumentParser()
