@@ -4,6 +4,8 @@ MCX Commodity Momentum Strategy
 Momentum strategy using ADX and RSI with proper API integration.
 Enhanced with Multi-Factor inputs (USD/INR, Seasonality).
 """
+
+# [Optimization 2026-02-11] Changes: risk_per_trade: 0.02 -> 0.018 (Tightened due to R:R 0.80)
 import os
 import sys
 import time
