@@ -24,18 +24,26 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+    from risk_manager import RiskManager
+    from market_data import MarketDataManager
 except ImportError:
     try:
         # Try absolute import
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+        from utils.risk_manager import RiskManager
+        from utils.market_data import MarketDataManager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+            from openalgo.strategies.utils.risk_manager import RiskManager
+            from openalgo.strategies.utils.market_data import MarketDataManager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            RiskManager = None
+            MarketDataManager = None
             normalize_symbol = lambda s: s
             is_market_open = lambda: True
 
@@ -62,6 +70,10 @@ class AIHybridStrategy:
             self.logger.addHandler(fh)
 
         self.pm = PositionManager(symbol) if PositionManager else None
+
+        # Risk Manager & Market Data
+        self.rm = RiskManager(f"AIHybrid_{symbol}", exchange="NSE", capital=100000) if RiskManager else None
+        self.md = MarketDataManager(self.client) if MarketDataManager else None
 
         self.rsi_lower = rsi_lower
         self.rsi_upper = rsi_upper
@@ -135,35 +147,12 @@ class AIHybridStrategy:
         return 'HOLD', 0.0, {}
 
     def get_market_context(self):
-        # Fetch VIX
-        vix = 15.0
-        try:
-            vix_df = self.client.history("INDIA VIX", exchange="NSE_INDEX", interval="day",
-                                       start_date=(datetime.now()-timedelta(days=5)).strftime("%Y-%m-%d"),
-                                       end_date=datetime.now().strftime("%Y-%m-%d"))
-            if not vix_df.empty:
-                vix = vix_df['close'].iloc[-1]
-        except Exception as e:
-            self.logger.warning(f"VIX fetch failed: {e}")
-
-        # Fetch Breadth (Placeholder for now, usually requires full market scan or index internals)
-        # We can use NIFTY Trend as a proxy for breadth health
-        breadth = 1.2
-        try:
-            nifty = self.client.history("NIFTY 50", exchange="NSE_INDEX", interval="day",
-                                      start_date=(datetime.now()-timedelta(days=5)).strftime("%Y-%m-%d"),
-                                      end_date=datetime.now().strftime("%Y-%m-%d"))
-            if not nifty.empty and nifty['close'].iloc[-1] > nifty['open'].iloc[-1]:
-                breadth = 1.5 # Bullish proxy
-            elif not nifty.empty:
-                breadth = 0.8 # Bearish proxy
-        except:
-            pass
-
-        return {
-            'vix': vix,
-            'breadth_ad_ratio': breadth
-        }
+        if self.md:
+            return {
+                'vix': self.md.get_vix(),
+                'breadth_ad_ratio': self.md.get_breadth()
+            }
+        return {'vix': 15.0, 'breadth_ad_ratio': 1.0}
 
     def check_earnings(self):
         """Check if earnings are near (within 2 days)."""
@@ -191,30 +180,9 @@ class AIHybridStrategy:
         return False
 
     def check_sector_strength(self):
-        try:
-            sector_symbol = normalize_symbol(self.sector)
-            
-            # Use NSE_INDEX for index symbols
-            exchange = "NSE_INDEX" if "NIFTY" in sector_symbol.upper() else "NSE"
-            # Request 60 days to ensure we have at least 20 trading days (accounting for weekends/holidays)
-            df = self.client.history(symbol=sector_symbol, interval="D", exchange=exchange,
-                                start_date=(datetime.now()-timedelta(days=60)).strftime("%Y-%m-%d"),
-                                end_date=datetime.now().strftime("%Y-%m-%d"))
-            if df.empty or len(df) < 20:
-                self.logger.warning(f"Insufficient data for sector strength check ({len(df)} rows). Defaulting to allow trades.")
-                return True
-            df['sma20'] = df['close'].rolling(20).mean()
-            last_close = df.iloc[-1]['close']
-            last_sma20 = df.iloc[-1]['sma20']
-            if pd.isna(last_sma20):
-                self.logger.warning(f"SMA20 is NaN for {sector_symbol}. Defaulting to allow trades.")
-                return True
-            is_strong = last_close > last_sma20
-            self.logger.debug(f"Sector {sector_symbol} strength: Close={last_close:.2f}, SMA20={last_sma20:.2f}, Strong={is_strong}")
-            return is_strong
-        except Exception as e:
-            self.logger.warning(f"Error checking sector strength: {e}. Defaulting to allow trades.")
-            return True
+        if self.md:
+            return self.md.get_sector_strength(normalize_symbol(self.sector))
+        return True
 
     def run(self):
         self.symbol = normalize_symbol(self.symbol)
@@ -226,6 +194,23 @@ class AIHybridStrategy:
                 continue
 
             try:
+                # 0. Risk Checks
+                if self.rm:
+                    can_trade, reason = self.rm.can_trade()
+                    if not can_trade:
+                        self.logger.warning(f"Risk Check Failed: {reason}")
+                        time.sleep(300)
+                        continue
+
+                    if self.rm.should_square_off_eod():
+                        self.logger.info("EOD Square-off time.")
+                        if self.pm and self.pm.has_position():
+                            # Close position
+                            pass # Will close in loop below or EOD handler
+                        else:
+                            time.sleep(60)
+                            continue
+
                 context = self.get_market_context()
 
                 # 1. Earnings Filter
@@ -279,17 +264,39 @@ class AIHybridStrategy:
 
                 # Manage Position
                 if self.pm and self.pm.has_position():
+                    # Check Risk Manager Stop Loss
+                    if self.rm:
+                        stop_hit, reason = self.rm.check_stop_loss(self.symbol, current_price)
+                        if stop_hit:
+                            self.logger.info(reason)
+                            qty = abs(self.pm.position)
+                            action = 'SELL' if self.pm.position > 0 else 'BUY'
+                            self.pm.update_position(qty, current_price, action)
+                            self.rm.register_exit(self.symbol, current_price, qty)
+                            continue
+
+                        # Trailing Stop
+                        new_stop = self.rm.update_trailing_stop(self.symbol, current_price)
+                        if new_stop:
+                            self.logger.debug(f"Trailing Stop Updated: {new_stop:.2f}")
+
                     pnl = self.pm.get_pnl(current_price)
                     entry = self.pm.entry_price
 
-                    if (self.pm.position > 0 and current_price < entry * (1 - self.stop_pct/100)) or \
-                       (self.pm.position < 0 and current_price > entry * (1 + self.stop_pct/100)):
-                        self.logger.info(f"Stop Loss Hit. PnL: {pnl}")
-                        self.pm.update_position(abs(self.pm.position), current_price, 'SELL' if self.pm.position > 0 else 'BUY')
+                    # Fallback internal stop if RM not present (for back compatibility)
+                    if not self.rm:
+                        if (self.pm.position > 0 and current_price < entry * (1 - self.stop_pct/100)) or \
+                           (self.pm.position < 0 and current_price > entry * (1 + self.stop_pct/100)):
+                            self.logger.info(f"Stop Loss Hit. PnL: {pnl}")
+                            self.pm.update_position(abs(self.pm.position), current_price, 'SELL' if self.pm.position > 0 else 'BUY')
+                            continue
 
-                    elif (self.pm.position > 0 and current_price > last['sma20']):
+                    # Target Exit
+                    if (self.pm.position > 0 and current_price > last['sma20']):
                         self.logger.info(f"Reversion Target Hit (SMA20). PnL: {pnl}")
-                        self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                        qty = abs(self.pm.position)
+                        self.pm.update_position(qty, current_price, 'SELL')
+                        if self.rm: self.rm.register_exit(self.symbol, current_price, qty)
 
                     time.sleep(60)
                     continue
@@ -302,6 +309,7 @@ class AIHybridStrategy:
                         qty = int(100 * size_multiplier)
                         self.logger.info("Oversold Reversion Signal (RSI<30, <LowerBB, Vol>1.2x). BUY.")
                         self.pm.update_position(qty, current_price, 'BUY')
+                        if self.rm: self.rm.register_entry(self.symbol, qty, current_price, 'LONG')
 
                 # Breakout Logic: RSI > 60 and Price > Upper BB
                 elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
@@ -311,6 +319,7 @@ class AIHybridStrategy:
                          qty = int(100 * size_multiplier)
                          self.logger.info("Breakout Signal (RSI>60, >UpperBB, Vol>2x). BUY.")
                          self.pm.update_position(qty, current_price, 'BUY')
+                         if self.rm: self.rm.register_entry(self.symbol, qty, current_price, 'LONG')
 
             except Exception as e:
                 self.logger.error(f"Error in AI Hybrid strategy for {self.symbol}: {e}", exc_info=True)
