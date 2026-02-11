@@ -40,7 +40,7 @@ except ImportError:
             is_market_open = lambda: True
 
 class AIHybridStrategy:
-    def __init__(self, symbol, api_key, port, rsi_lower=30, rsi_upper=60, stop_pct=1.0, sector='NIFTY 50', earnings_date=None, logfile=None, time_stop_bars=12):
+    def __init__(self, symbol, api_key, port, rsi_lower=30, rsi_upper=60, stop_pct=1.0, sector='NIFTY 50', earnings_date=None, logfile=None, time_stop_bars=12, adx_period=14, adx_threshold=25):
         self.symbol = symbol
         self.host = f"http://127.0.0.1:{port}"
         self.client = APIClient(api_key=api_key, host=self.host)
@@ -69,10 +69,12 @@ class AIHybridStrategy:
         self.sector = sector
         self.earnings_date = earnings_date
         self.time_stop_bars = time_stop_bars
+        self.adx_period = adx_period
+        self.adx_threshold = adx_threshold
 
     def calculate_signal(self, df):
         """Calculate signal for a given dataframe (Backtesting support)."""
-        if df.empty or len(df) < 20:
+        if df.empty or len(df) < 50:
             return 'HOLD', 0.0, {}
 
         # Indicators
@@ -87,10 +89,34 @@ class AIHybridStrategy:
         df['upper'] = df['sma20'] + (2 * df['std'])
         df['lower'] = df['sma20'] - (2 * df['std'])
 
+        # ADX for Regime
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift()).abs()
+        low_close = (df['low'] - df['close'].shift()).abs()
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+
+        up = df['high'] - df['high'].shift(1)
+        down = df['low'].shift(1) - df['low']
+        plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+        minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+
+        tr_smooth = true_range.rolling(window=self.adx_period).mean()
+        plus_dm_smooth = pd.Series(plus_dm).rolling(window=self.adx_period).mean()
+        minus_dm_smooth = pd.Series(minus_dm).rolling(window=self.adx_period).mean()
+
+        # Fill NaN
+        tr_smooth = tr_smooth.replace(0, np.nan)
+        plus_di = 100 * (plus_dm_smooth / tr_smooth)
+        minus_di = 100 * (minus_dm_smooth / tr_smooth)
+        dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
+        df['adx'] = dx.rolling(window=self.adx_period).mean()
+
         # Regime Filter (SMA200)
         df['sma200'] = df['close'].rolling(200).mean()
 
         last = df.iloc[-1]
+        adx_val = last.get('adx', 0)
 
         # Volatility Sizing (Target Risk)
         # Robust Sizing: Risk 1% of Capital (1000) per trade
@@ -115,22 +141,29 @@ class AIHybridStrategy:
         if not pd.isna(last.get('sma200')) and last['close'] < last['sma200']:
             is_bullish_regime = False
 
-        # Reversion Logic: RSI < 30 and Price < Lower BB (Oversold)
-        if last['rsi'] < self.rsi_lower and last['close'] < last['lower']:
-            avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-            # Enhanced Volume Confirmation (Stricter than average)
-            if last['volume'] > avg_vol * 1.2:
-                # Reversion can trade against trend, so maybe ignore regime or be strict?
-                # Let's say Reversion is allowed in any regime if oversold enough.
-                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+        # Regime Switch using ADX
+        # ADX > Threshold => Trend (Breakouts)
+        # ADX < Threshold => Range (Reversion)
 
-        # Breakout Logic: RSI > 60 and Price > Upper BB
+        is_trend_regime = adx_val > self.adx_threshold
+        is_range_regime = adx_val < (self.adx_threshold - 5) # Hysteresis/Buffer
+
+        avg_vol = df['volume'].rolling(20).mean().iloc[-1]
+
+        # Reversion Logic: RSI < Lower and Price < Lower BB (Oversold)
+        # Only in Range Regime or Deep Pullback in Trend
+        if last['rsi'] < self.rsi_lower and last['close'] < last['lower']:
+            if is_range_regime or (is_trend_regime and is_bullish_regime):
+                 if last['volume'] > avg_vol * 1.2:
+                    # Return ATR for SL calculation in engine
+                    return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
+
+        # Breakout Logic: RSI > Upper and Price > Upper BB
+        # Only in Trend Regime
         elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
-            avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-            # Breakout needs significant volume (2x avg)
-            # Breakout ONLY in Bullish Regime
-            if last['volume'] > avg_vol * 2.0 and is_bullish_regime:
-                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+            if is_trend_regime and is_bullish_regime:
+                 if last['volume'] > avg_vol * 2.0:
+                     return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
 
         return 'HOLD', 0.0, {}
 
@@ -360,7 +393,9 @@ def generate_signal(df, client=None, symbol=None, params=None):
         'rsi_lower': 30.0,
         'rsi_upper': 60.0,
         'stop_pct': 1.0,
-        'sector': 'NIFTY 50'
+        'sector': 'NIFTY 50',
+        'adx_period': 14,
+        'adx_threshold': 25
     }
     if params:
         strat_params.update(params)
@@ -372,7 +407,9 @@ def generate_signal(df, client=None, symbol=None, params=None):
         rsi_lower=float(strat_params.get('rsi_lower', 30.0)),
         rsi_upper=float(strat_params.get('rsi_upper', 60.0)),
         stop_pct=float(strat_params.get('stop_pct', 1.0)),
-        sector=strat_params.get('sector', 'NIFTY 50')
+        sector=strat_params.get('sector', 'NIFTY 50'),
+        adx_period=int(strat_params.get('adx_period', 14)),
+        adx_threshold=float(strat_params.get('adx_threshold', 25))
     )
 
     # Silence logger for backtest

@@ -108,17 +108,51 @@ class MCXMomentumStrategy:
         if current.get('atr', 0) < min_atr:
              return 'HOLD', 0.0, {'reason': 'Low Volatility'}
 
+        # Trend Filter (SMA)
+        trend_sma_period = self.params.get('trend_filter_sma', 0)
+        trend_ok = True
+        if trend_sma_period > 0:
+            sma = df['close'].rolling(trend_sma_period).mean().iloc[-1]
+            if current['close'] > sma:
+                # Bullish Trend
+                pass
+            else:
+                # Bearish Trend
+                pass
+            # We filter: BUY only if > SMA, SELL only if < SMA
+
+        # BUY Signal
         if (current['adx'] > self.params['adx_threshold'] and
             current['rsi'] > 50 and
             current['close'] > prev['close']):
-            action = 'BUY'
 
+            if trend_sma_period > 0:
+                sma = df['close'].rolling(trend_sma_period).mean().iloc[-1]
+                if current['close'] > sma:
+                    action = 'BUY'
+            else:
+                action = 'BUY'
+
+        # SELL Signal
         elif (current['adx'] > self.params['adx_threshold'] and
               current['rsi'] < 50 and
               current['close'] < prev['close']):
-            action = 'SELL'
 
-        return action, 1.0, {'atr': current.get('atr', 0)}
+            if trend_sma_period > 0:
+                sma = df['close'].rolling(trend_sma_period).mean().iloc[-1]
+                if current['close'] < sma:
+                    action = 'SELL'
+            else:
+                action = 'SELL'
+
+        # Sizing: Risk 1% of 100k = 1000. Qty = 1000 / (SL_Dist). SL_Dist = 1.5 * ATR
+        atr = current.get('atr', 0)
+        qty = 1
+        if atr > 0:
+            sl_dist = 1.5 * atr
+            qty = max(1, int(1000 / sl_dist))
+
+        return action, 1.0, {'atr': atr, 'quantity': qty}
 
     def calculate_indicators(self):
         """Calculate technical indicators."""
@@ -337,6 +371,7 @@ DEFAULT_PARAMS = {
     'adx_threshold': 25,
     'min_atr': 10,
     'risk_per_trade': 0.02,
+    'trend_filter_sma': 0, # Default disabled
 }
 
 def generate_signal(df, client=None, symbol=None, params=None):
