@@ -72,7 +72,7 @@ export TELEGRAM_CHAT_ID="your_chat_id"
 To install the scheduled health check:
 ```bash
 # Install as Systemd User Timer (Recommended)
-./scripts/install_systemd_user_timers.sh
+make install-obs
 
 # Or Install as Cron job
 ./scripts/install_cron.sh

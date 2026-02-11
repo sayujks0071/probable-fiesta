@@ -86,12 +86,12 @@
       },
       "targets": [
         {
-          "expr": "count_over_time({job=\"openalgo\"} |= \"Order Placed\" [5m])",
-          "legendFormat": "Orders Placed",
+          "expr": "count_over_time({job=\"openalgo\"} |= \"Order\" [5m])",
+          "legendFormat": "Orders",
           "refId": "A"
         }
       ],
-      "title": "Orders Placed (5m)",
+      "title": "Order Events (5m)",
       "type": "stat"
     },
     {
