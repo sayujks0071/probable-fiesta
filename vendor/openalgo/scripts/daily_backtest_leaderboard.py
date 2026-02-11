@@ -146,8 +146,16 @@ def run_leaderboard():
                     pass
                 wrapper = ModuleWrapper()
                 wrapper.generate_signal = wrapped_gen
-                wrapper.ATR_SL_MULTIPLIER = getattr(module, 'ATR_SL_MULTIPLIER', 1.5)
-                wrapper.ATR_TP_MULTIPLIER = getattr(module, 'ATR_TP_MULTIPLIER', 2.5)
+
+                # Copy all constants/settings from original module
+                for attr_name in dir(module):
+                    if attr_name.isupper() or attr_name == 'check_exit':
+                        setattr(wrapper, attr_name, getattr(module, attr_name))
+
+                # Ensure defaults if missing
+                if not hasattr(wrapper, 'ATR_SL_MULTIPLIER'): wrapper.ATR_SL_MULTIPLIER = 1.5
+                if not hasattr(wrapper, 'ATR_TP_MULTIPLIER'): wrapper.ATR_TP_MULTIPLIER = 2.5
+
                 target_module = wrapper
             else:
                 target_module = module

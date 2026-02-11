@@ -9,7 +9,8 @@ logger = logging.getLogger("SymbolResolver")
 class SymbolResolver:
     def __init__(self, instruments_path=None):
         if instruments_path is None:
-            # Default to openalgo/data/instruments.csv
+            # Default to relative path from this file
+            # vendor/openalgo/strategies/utils/symbol_resolver.py -> vendor/openalgo/data/instruments.csv
             base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../data'))
             instruments_path = os.path.join(base_path, 'instruments.csv')
 
@@ -29,6 +30,10 @@ class SymbolResolver:
                 if 'instrument_type' not in self.df.columns and 'segment' in self.df.columns:
                      # Map segment to instrument_type if missing (fallback)
                      self.df['instrument_type'] = self.df['segment'].apply(lambda x: 'FUT' if 'FUT' in str(x) else ('OPT' if 'OPT' in str(x) else 'EQ'))
+
+                # Ensure lot_size is numeric
+                if 'lot_size' in self.df.columns:
+                    self.df['lot_size'] = pd.to_numeric(self.df['lot_size'], errors='coerce').fillna(0)
 
                 logger.info(f"Loaded {len(self.df)} instruments from {self.instruments_path}")
             except Exception as e:
@@ -94,7 +99,9 @@ class SymbolResolver:
         if self.df.empty: return f"{underlying}FUT"
 
         now = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
         # Filter for Futures of this underlying
+        # Match name exactly first
         mask = (self.df['name'] == underlying) & \
                (self.df['instrument_type'] == 'FUT') & \
                (self.df['exchange'] == exchange) & \
@@ -103,7 +110,7 @@ class SymbolResolver:
         matches = self.df[mask].sort_values('expiry')
 
         if matches.empty:
-            # Try searching by symbol if name match fails
+            # Try searching by symbol starts with if name match fails
             mask_sym = (self.df['symbol'].str.startswith(underlying)) & \
                        (self.df['instrument_type'] == 'FUT') & \
                        (self.df['exchange'] == exchange) & \
@@ -116,26 +123,68 @@ class SymbolResolver:
 
         # MCX MINI Logic
         if exchange == 'MCX':
-            # Priority:
-            # 1. Symbol contains 'MINI'
-            # 2. Symbol matches Name + 'M' + Date (e.g., SILVERM...) vs SILVER...
+            logger.info(f"Resolving MCX Future for {underlying}. Preference: MINI")
 
-            # Check for explicitly 'MINI' or 'M' suffix on underlying name
-            # Use non-capturing group to avoid pandas UserWarning
-            mini_pattern = r'(?:{}M|{}MINI)'.format(underlying, underlying)
+            # Find nearest expiry date
+            nearest_expiry = matches.iloc[0]['expiry']
 
-            mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
+            # Filter for contracts expiring on nearest expiry (or close to it)
+            # Sometimes MINI and Big expire on different days.
+            # So let's look at all valid future contracts and prioritize.
 
-            if not mini_matches.empty:
-                logger.info(f"Found MCX MINI contract for {underlying}: {mini_matches.iloc[0]['symbol']}")
-                return mini_matches.iloc[0]['symbol']
+            candidates = matches.copy()
 
-            # Also check if the symbol itself ends with 'M' before some digits (less reliable but possible)
-            # e.g. CRUDEOILM23NOV...
+            # Identify MINI contracts:
+            # 1. Symbol contains 'MINI' or 'M' + Date pattern
+            # 2. Lot size is smaller than others?
 
-            logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
+            # Add 'is_mini' flag
+            # Regex: Name + 'M' (e.g. SILVERM) or 'MINI'
+            mini_pattern = r'({}M|{}MINI)'.format(underlying, underlying)
+            candidates['is_mini'] = candidates['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)
 
-        # Return nearest expiry
+            if 'lot_size' in candidates.columns:
+                # If lot sizes vary, the smaller one is likely MINI
+                min_lot = candidates['lot_size'].min()
+                max_lot = candidates['lot_size'].max()
+                if min_lot < max_lot:
+                    candidates['is_small_lot'] = candidates['lot_size'] == min_lot
+                else:
+                    candidates['is_small_lot'] = False
+            else:
+                candidates['is_small_lot'] = False
+
+            # Sort priority:
+            # 1. Expiry (Nearest)
+            # 2. Is Mini / Small Lot (True first)
+
+            # But wait, we prefer MINI even if expiry is slightly different?
+            # Usually we want the *front month* contract.
+            # Let's group by expiry month?
+            # Simplified: Filter for nearest available expiry month.
+
+            first_expiry = candidates.iloc[0]['expiry']
+            # Allow some buffer (e.g. 5 days) if MINI expires slightly differently
+            expiry_threshold = first_expiry + timedelta(days=10)
+
+            front_month_candidates = candidates[candidates['expiry'] <= expiry_threshold].copy()
+
+            if front_month_candidates.empty:
+                 front_month_candidates = candidates.head(1)
+
+            # Now inside front month, pick MINI
+            minis = front_month_candidates[front_month_candidates['is_mini'] | front_month_candidates['is_small_lot']]
+
+            if not minis.empty:
+                chosen = minis.iloc[0]['symbol']
+                logger.info(f"Selected MINI/Small contract: {chosen}")
+                return chosen
+            else:
+                chosen = front_month_candidates.iloc[0]['symbol']
+                logger.info(f"No MINI found, selected standard: {chosen}")
+                return chosen
+
+        # Return nearest expiry for non-MCX
         return matches.iloc[0]['symbol']
 
     def _resolve_option(self, config):
@@ -152,7 +201,7 @@ class SymbolResolver:
                (self.df['exchange'] == exchange) & \
                (self.df['expiry'] >= now)
 
-        # Pre-filter by Option Type if possible (though we might need both for straddles, here we resolve for specific type)
+        # Pre-filter by Option Type
         if option_type:
              mask &= self.df['symbol'].str.endswith(option_type)
 
@@ -184,7 +233,7 @@ class SymbolResolver:
         return {
             'status': 'valid',
             'expiry': selected_expiry.strftime('%Y-%m-%d'),
-            'sample_symbol': matches.iloc[0]['symbol'],
+            'sample_symbol': matches.iloc[0]['symbol'], # Just a sample
             'count': len(matches)
         }
 
@@ -200,6 +249,10 @@ class SymbolResolver:
         elif expiry_pref == 'MONTHLY':
             # Logic: Select the last expiry of the *current month cycle*.
             # If nearest_expiry is in Oct, find the last expiry in Oct.
+
+            # Check if nearest_expiry is strictly "current month" or "next month"
+            # We want the Monthly contract associated with the current trading cycle.
+            # Usually, that means the last Thursday of the month of the nearest expiry.
 
             target_year = nearest_expiry.year
             target_month = nearest_expiry.month
@@ -247,14 +300,8 @@ class SymbolResolver:
             return None
 
         # Extract Strike Price
-        # Assuming symbol format or having a 'strike' column.
-        # If 'strike' column doesn't exist, we must parse symbol or assume 'strike' exists in master.
-        # OpenAlgo/Kite master usually has 'strike'.
-
         if 'strike' not in chain.columns:
             # Try to parse strike from symbol (e.g. NIFTY23OCT19500CE)
-            # This is brittle but a fallback.
-            # Regex: look for digits before CE/PE
             def parse_strike(sym):
                 m = re.search(r'(\d+)(CE|PE)$', sym)
                 return float(m.group(1)) if m else 0
@@ -271,7 +318,7 @@ class SymbolResolver:
 
         selected_strike = atm_strike
 
-        # Adjust for ITM/OTM (Simple 1-step logic, can be enhanced)
+        # Adjust for ITM/OTM
         strikes = sorted(chain['strike'].unique())
         atm_index = strikes.index(atm_strike)
 

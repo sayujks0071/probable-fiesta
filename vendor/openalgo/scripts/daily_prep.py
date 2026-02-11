@@ -95,14 +95,26 @@ def check_auth():
         # Run the health check script
         result = subprocess.run([sys.executable, script_path], capture_output=True, text=True)
         if result.returncode != 0:
-            logger.error("Authentication check failed!")
+            logger.error("Authentication check failed (Non-zero exit)!")
             logger.error(result.stderr)
-            # In a strict environment, we might exit here:
-            # sys.exit(1)
+            sys.exit(1)
+
+        # Check for explicit success message in output
+        if "System Ready" in result.stdout:
+             logger.info("Authentication check passed: System Ready.")
         else:
-            logger.info("Authentication check passed.")
+             logger.warning("Authentication check finished but System might not be Ready.")
+             logger.warning(result.stdout)
+             # We allow proceeding but with warning, or strict fail?
+             # User said: "If login fails: stop immediately"
+             # So we should probably fail if issues are detected.
+             if "ISSUES DETECTED" in result.stdout and "None" not in result.stdout.split("ISSUES DETECTED:")[1].split("\n")[0]:
+                 logger.error("Critical Auth Issues Detected. Stopping.")
+                 sys.exit(1)
+
     except Exception as e:
         logger.error(f"Failed to run auth check: {e}")
+        sys.exit(1)
 
 def fetch_instruments():
     logger.info("Fetching Instruments...")
@@ -251,9 +263,27 @@ def validate_symbols():
         sys.exit(1)
     else:
         logger.info("All symbols valid. Ready to trade.")
+        # Create Success Marker
+        marker_path = os.path.join(repo_root, 'daily_prep_passed.json')
+        try:
+            with open(marker_path, 'w') as f:
+                json.dump({
+                    "timestamp": datetime.now().isoformat(),
+                    "status": "passed",
+                    "valid_count": valid_count
+                }, f)
+            logger.info(f"Created success marker: {marker_path}")
+        except Exception as e:
+            logger.error(f"Failed to create success marker: {e}")
 
 def main():
     print("🚀 DAILY PREP STARTED")
+
+    # Remove old marker if exists
+    marker_path = os.path.join(repo_root, 'daily_prep_passed.json')
+    if os.path.exists(marker_path):
+        os.remove(marker_path)
+
     check_env()
     purge_stale_state()
     check_auth()
