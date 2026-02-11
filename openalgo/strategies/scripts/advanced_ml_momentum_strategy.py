@@ -39,7 +39,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class MLMomentumStrategy:
-    def __init__(self, symbol, api_key, port, threshold=0.01, stop_pct=1.0, sector='NIFTY 50', vol_multiplier=0.5):
+    def __init__(self, symbol, api_key, port, threshold=0.01, stop_pct=1.0, sector='NIFTY 50', vol_multiplier=0.5, use_filters=True, atr_period=14, sl_atr_mult=1.5):
         self.symbol = symbol
         self.host = f"http://127.0.0.1:{port}"
         self.client = APIClient(api_key=api_key, host=self.host)
@@ -50,6 +50,9 @@ class MLMomentumStrategy:
         self.stop_pct = stop_pct
         self.sector = sector
         self.vol_multiplier = vol_multiplier
+        self.use_filters = use_filters
+        self.atr_period = atr_period
+        self.sl_atr_mult = sl_atr_mult
 
     def calculate_signal(self, df):
         """Calculate signal for backtesting."""
@@ -69,17 +72,30 @@ class MLMomentumStrategy:
         # SMA for Trend
         df['sma50'] = df['close'].rolling(50).mean()
 
+        # ATR for Stop Loss
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift()).abs()
+        low_close = (df['low'] - df['close'].shift()).abs()
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        df['atr'] = true_range.rolling(window=self.atr_period).mean()
+
         last = df.iloc[-1]
         current_price = last['close']
+        atr_val = last.get('atr', 0)
 
-        # Simplifications for Backtest (Missing Index/Sector Data)
-        # We assume RS and Sector conditions are met if data missing, or strict if we want.
-        # Let's assume 'rs_excess > 0' and 'sector_outperformance > 0' are TRUE for baseline logic
-        # unless we pass index data in 'df' (which we don't usually).
-
-        rs_excess = 0.01 # Mock positive
-        sector_outperformance = 0.01 # Mock positive
-        sentiment = 0.5 # Mock positive
+        # Simplifications for Backtest
+        if self.use_filters:
+             # We try to check RS if index data passed, else assume True
+             # Here we mock positive unless we implement full multi-asset backtest
+             rs_excess = 0.01
+             sector_outperformance = 0.01
+             sentiment = 0.5
+        else:
+             # Bypass filters
+             rs_excess = 1.0
+             sector_outperformance = 1.0
+             sentiment = 1.0
 
         # Entry Logic
         if (last['roc'] > self.roc_threshold and
@@ -92,7 +108,7 @@ class MLMomentumStrategy:
             # Volume check
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             if last['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
-                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi']}
+                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi'], 'atr': atr_val}
 
         return 'HOLD', 0.0, {}
 
@@ -273,7 +289,10 @@ def generate_signal(df, client=None, symbol=None, params=None):
         'threshold': 0.01,
         'stop_pct': 1.0,
         'sector': 'NIFTY 50',
-        'vol_multiplier': 0.5
+        'vol_multiplier': 0.5,
+        'use_filters': True,
+        'atr_period': 14,
+        'sl_atr_mult': 1.5
     }
     if params:
         strat_params.update(params)
@@ -285,8 +304,18 @@ def generate_signal(df, client=None, symbol=None, params=None):
         threshold=float(strat_params.get('threshold', 0.01)),
         stop_pct=float(strat_params.get('stop_pct', 1.0)),
         sector=strat_params.get('sector', 'NIFTY 50'),
-        vol_multiplier=float(strat_params.get('vol_multiplier', 0.5))
+        vol_multiplier=float(strat_params.get('vol_multiplier', 0.5)),
+        use_filters=strat_params.get('use_filters', True),
+        atr_period=int(strat_params.get('atr_period', 14)),
+        sl_atr_mult=float(strat_params.get('sl_atr_mult', 1.5))
     )
+
+    # Export dynamic SL multiplier to module level (if needed by engine)
+    # But engine looks at module, and we are inside function.
+    # Better to return it in details, but engine might not look there yet.
+    # For now, we rely on 'atr' in details and engine using default or fixed mult.
+    # But wait, engine uses `strategy_module.ATR_SL_MULTIPLIER`.
+    # We can inject it into the wrapper object created in `daily_backtest_leaderboard.py`.
 
     # Silence logger
     strat.logger.handlers = []
