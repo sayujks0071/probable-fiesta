@@ -13,7 +13,8 @@ project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+from openalgo.strategies.utils.trading_utils import APIClient, is_market_open
+from openalgo.strategies.utils.risk_manager import RiskManager
 
 # Configure logging
 logging.basicConfig(
@@ -27,37 +28,22 @@ logging.basicConfig(
 logger = logging.getLogger("GapFadeStrategy")
 
 class GapFadeStrategy:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5, gap_pct=None):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
-        self.pm = PositionManager(f"{symbol}_GapFade")
+        self.external_gap_pct = gap_pct
+        self.rm = RiskManager(f"{symbol}_GapFade", exchange="NSE", capital=100000)
 
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
 
-        # 1. Get Previous Close
-        # Using history API for last 2 days
-        today = datetime.now()
-        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d") # Go back enough to get prev day
-        end_date = today.strftime("%Y-%m-%d")
-
-        # Get daily candles
-        df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
-
-        if df.empty or len(df) < 1:
-            logger.error("Could not fetch history for previous close.")
+        # Check Risk Manager
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.warning(f"Risk Manager blocked trade: {reason}")
             return
-
-        # Assuming the last completed row is previous day, or if market just opened, we might have today's open
-        # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
-
-        prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
 
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
         if not quote:
@@ -66,14 +52,34 @@ class GapFadeStrategy:
 
         current_price = float(quote['ltp'])
 
-        # Some APIs provide 'close' in quote which is prev_close
-        if 'close' in quote and quote['close'] > 0:
-            prev_close = float(quote['close'])
+        # Determine Gap
+        today = datetime.now()
+        if self.external_gap_pct is not None:
+             gap_pct = self.external_gap_pct
+             logger.info(f"Using external Gap: {gap_pct:.2f}%")
+        else:
+            # Internal calculation
+            # Using history API for last 2 days
+            start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
+            end_date = today.strftime("%Y-%m-%d")
 
-        logger.info(f"Prev Close: {prev_close}, Current: {current_price}")
+            # Get daily candles
+            df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
+            prev_close = 0
 
-        gap_pct = ((current_price - prev_close) / prev_close) * 100
-        logger.info(f"Gap: {gap_pct:.2f}%")
+            if not df.empty and len(df) >= 1:
+                 prev_close = df.iloc[-1]['close']
+
+            if 'close' in quote and quote['close'] > 0:
+                prev_close = float(quote['close'])
+
+            if prev_close == 0:
+                logger.error("Could not determine previous close.")
+                return
+
+            logger.info(f"Prev Close: {prev_close}, Current: {current_price}")
+            gap_pct = ((current_price - prev_close) / prev_close) * 100
+            logger.info(f"Gap: {gap_pct:.2f}%")
 
         if abs(gap_pct) < self.gap_threshold:
             logger.info(f"Gap {gap_pct:.2f}% < Threshold {self.gap_threshold}%. No trade.")
@@ -115,7 +121,18 @@ class GapFadeStrategy:
         # 5. Place Order (Simulation)
         # self.client.placesmartorder(...)
         logger.info(f"Executing {option_type} Buy for {qty} qty.")
-        self.pm.update_position(qty, 100, "BUY") # Mock update
+
+        # Register Entry with Risk Manager
+        price = 100.0 # Mock option price
+        sl_price = self.rm.calculate_stop_loss(price, "LONG", stop_pct=10.0)
+
+        self.rm.register_entry(
+            symbol=f"{self.symbol}_{atm}_{option_type}",
+            qty=qty,
+            entry_price=price,
+            side="LONG",
+            stop_loss=sl_price
+        )
 
 def main():
     parser = argparse.ArgumentParser()
@@ -123,10 +140,11 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--threshold", type=float, default=0.5, help="Gap Threshold %%")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
-    args = parser.parse_args()
+    parser.add_argument("--gap_pct", type=float, default=None, help="External Gap Pct")
+    args, unknown = parser.parse_known_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold)
+    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold, gap_pct=args.gap_pct)
     strategy.execute()
 
 if __name__ == "__main__":
