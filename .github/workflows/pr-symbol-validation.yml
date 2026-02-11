@@ -4,9 +4,13 @@ on:
   pull_request:
     paths:
       - "openalgo/strategies/**"
-      - "openalgo/configs/**"
-      - "openalgo/data/instruments/**"
+      - "openalgo/data/**"
       - "tools/**"
+      - "configs/**"
+      # Include user specified paths as fallback
+      - "trading/**"
+      - "strategies/**"
+      - "data/instruments/**"
 
 permissions:
   contents: read
@@ -15,25 +19,26 @@ jobs:
   validate-symbols:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install -r openalgo/requirements.txt
 
       - name: Sync Instruments
         run: python3 tools/sync_instruments.py
 
-      - name: Run Strict Validation
+      - name: Strict Validation
         run: python3 tools/validate_symbols.py --strict --check
 
       - name: Upload Report
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: symbol-validation-report

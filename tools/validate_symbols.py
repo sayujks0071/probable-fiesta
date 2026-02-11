@@ -5,7 +5,7 @@ import argparse
 import time
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Add repo root to path
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -17,7 +17,17 @@ INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 CONFIG_FILE = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategies.json')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
-# Regex for MCX Symbols
+# Import mcx_utils and SymbolResolver
+try:
+    from openalgo.strategies.utils.mcx_utils import normalize_mcx_string
+    from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+except ImportError:
+    # Handle environment where openalgo isn't installed as package
+    sys.path.insert(0, os.path.join(REPO_ROOT, 'openalgo'))
+    from strategies.utils.mcx_utils import normalize_mcx_string
+    from strategies.utils.symbol_resolver import SymbolResolver
+
+# Regex for MCX Symbols - Strict
 MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
@@ -81,56 +91,71 @@ def scan_files_for_hardcoded_symbols(instruments):
     issues = []
     strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
 
-    for root, dirs, files in os.walk(strategies_dir):
-        # Exclude tests
-        if 'tests' in dirs:
-            dirs.remove('tests')
-        if 'test' in dirs:
-            dirs.remove('test')
+    scan_dirs = [strategies_dir]
+    configs_dir = os.path.join(REPO_ROOT, 'configs')
+    if os.path.exists(configs_dir):
+        scan_dirs.append(configs_dir)
 
-        for file in files:
-            if file.endswith('.py'):
-                filepath = os.path.join(root, file)
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                except UnicodeDecodeError:
-                    continue # Skip binary/bad files
+    for start_dir in scan_dirs:
+        for root, dirs, files in os.walk(start_dir):
+            # Exclude tests
+            if 'tests' in dirs:
+                dirs.remove('tests')
+            if 'test' in dirs:
+                dirs.remove('test')
 
-                for match in MCX_PATTERN.finditer(content):
-                    symbol_str = match.group(0)
-                    parts = match.groups() # (Symbol, Day, Month, Year)
+            # Exclude virtual envs or hidden dirs
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
 
-                    # Validate Month
-                    if parts[2].upper() not in MONTHS:
-                        issues.append({
-                            "source": os.path.basename(filepath),
-                            "symbol": symbol_str,
-                            "error": f"Invalid month: {parts[2]}",
-                            "status": "INVALID"
-                        })
+            for file in files:
+                if file.endswith('.py') or file.endswith('.json') or file.endswith('.yaml'):
+                    filepath = os.path.join(root, file)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                    except UnicodeDecodeError:
+                        continue # Skip binary/bad files
+                    except Exception:
                         continue
 
-                    # Normalized form:
-                    normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
+                    for match in MCX_PATTERN.finditer(content):
+                        symbol_str = match.group(0)
+                        parts = match.groups() # (Symbol, Day, Month, Year)
 
-                    if symbol_str != normalized:
-                         issues.append({
-                            "source": os.path.basename(filepath),
-                            "symbol": symbol_str,
-                            "normalized": normalized,
-                            "error": "Symbol is malformed (needs normalization)",
-                            "status": "MALFORMED"
-                        })
+                        # Validate Month
+                        if parts[2].upper() not in MONTHS:
+                            issues.append({
+                                "source": os.path.relpath(filepath, REPO_ROOT),
+                                "symbol": symbol_str,
+                                "error": f"Invalid month: {parts[2]}",
+                                "status": "INVALID"
+                            })
+                            continue
 
-                    if normalized not in instruments:
-                        issues.append({
-                            "source": os.path.basename(filepath),
-                            "symbol": symbol_str,
-                            "normalized": normalized,
-                            "error": "Symbol not found in master",
-                            "status": "MISSING"
-                        })
+                        # Use centralized normalization
+                        try:
+                            normalized = normalize_mcx_string(symbol_str)
+                        except Exception:
+                            # Fallback if normalize fails (shouldn't given match)
+                            normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
+
+                        if symbol_str != normalized:
+                             issues.append({
+                                "source": os.path.relpath(filepath, REPO_ROOT),
+                                "symbol": symbol_str,
+                                "normalized": normalized,
+                                "error": "Symbol is malformed (needs normalization)",
+                                "status": "MALFORMED"
+                            })
+
+                        if normalized not in instruments:
+                            issues.append({
+                                "source": os.path.relpath(filepath, REPO_ROOT),
+                                "symbol": symbol_str,
+                                "normalized": normalized,
+                                "error": "Symbol not found in master",
+                                "status": "MISSING"
+                            })
 
     return issues
 
@@ -150,15 +175,9 @@ def main():
         else:
             print("Warning: proceeding with stale data.")
 
-    # Load resolver
+    # Load resolver and instruments
     try:
-        # Check if openalgo package is importable
-        try:
-            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
-        except ImportError:
-            sys.path.insert(0, os.path.join(REPO_ROOT, 'openalgo'))
-            from strategies.utils.symbol_resolver import SymbolResolver
-
+        # Force reloading from file to be safe
         resolver = SymbolResolver(INSTRUMENTS_FILE)
         instruments = set(resolver.df['symbol'].unique()) if not resolver.df.empty else set()
     except Exception as e:
