@@ -2,7 +2,7 @@ name: Daily Symbol Normalizer
 
 on:
   schedule:
-    - cron: '30 2 * * *' # 02:30 UTC
+    - cron: '30 02 * * *' # 02:30 UTC
   workflow_dispatch:
 
 permissions:
@@ -14,16 +14,17 @@ jobs:
   normalize-and-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install -r openalgo/requirements.txt
 
       - name: A) Sync Instruments
         id: sync
@@ -41,19 +42,21 @@ jobs:
 
       - name: D) Post-Check Strict Validation
         id: postcheck
-        if: steps.normalize.outcome == 'success'
+        if: steps.precheck.outcome == 'success'
         continue-on-error: true
         run: python3 tools/validate_symbols.py --strict --check
 
       - name: Gate Check
         id: gate
+        if: always()
         run: |
+          # Gate passes ONLY if precheck and postcheck (if run) were successful
           if [[ "${{ steps.precheck.outcome }}" == "success" && "${{ steps.postcheck.outcome }}" == "success" ]]; then
             echo "gate_ok=true" >> $GITHUB_OUTPUT
-            echo "Gate passed."
+            echo "✅ Gate passed."
           else
             echo "gate_ok=false" >> $GITHUB_OUTPUT
-            echo "Gate failed."
+            echo "❌ Gate failed."
           fi
 
       - name: Generate Reports Artifact
@@ -65,7 +68,7 @@ jobs:
 
       - name: Create Pull Request
         if: steps.gate.outputs.gate_ok == 'true'
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v6
         with:
           branch: chore/symbols-daily
           title: "chore: Daily Symbol Normalization"
@@ -73,8 +76,8 @@ jobs:
             Daily symbol normalization report.
             See attached audit report for details.
 
-            [Audit Report](reports/symbol_audit.md)
-          commit-message: "chore: normalize symbols"
+            Strict validation passed.
+          commit-message: "chore: normalize symbols [strict]"
           add-paths: |
             openalgo/strategies/**/*.py
             reports/symbol_audit.md
@@ -82,22 +85,20 @@ jobs:
 
       - name: Create Issue on Failure
         if: steps.gate.outputs.gate_ok == 'false'
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             let body = "Daily symbol audit failed. Please check the attached artifacts.\n\n";
             try {
-              // Read report if exists
               if (fs.existsSync('reports/symbol_audit.md')) {
                 const report = fs.readFileSync('reports/symbol_audit.md', 'utf8');
-                body += report;
+                body += "\n" + report;
               }
             } catch (e) {
               body += "Could not read audit report.";
             }
 
-            // Create Issue
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
