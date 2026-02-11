@@ -68,22 +68,22 @@ class MCXGlobalArbitrageStrategy:
         if not self.api_client:
             logger.error("❌ CRITICAL: No API client available. Strategy requires API client.")
             return False
-        
+
         try:
             logger.info(f"Fetching data for {self.symbol} vs {self.global_symbol}...")
 
             # 1. Fetch MCX Price from Kite API
             mcx_quote = self.api_client.get_quote(self.symbol, exchange="MCX")
-            
+
             if not mcx_quote or 'ltp' not in mcx_quote:
                 logger.warning(f"Failed to fetch MCX price for {self.symbol}. Retrying...")
                 return False
-            
+
             mcx_price = float(mcx_quote['ltp'])
 
             # 2. Fetch Global Price
             global_price = None
-            
+
             # Try fetching from Kite if it looks like a Kite symbol (no '=')
             if '=' not in self.global_symbol:
                 try:
@@ -92,7 +92,7 @@ class MCXGlobalArbitrageStrategy:
                         global_price = float(global_quote['ltp'])
                 except Exception:
                     pass
-            
+
             # Fallback to yfinance
             if global_price is None and yf:
                 try:
@@ -147,15 +147,15 @@ class MCXGlobalArbitrageStrategy:
         divergence_pct = mcx_change_pct - global_change_pct
 
         logger.info(f"MCX Chg: {mcx_change_pct:.2f}% | Global Chg: {global_change_pct:.2f}% | Divergence: {divergence_pct:.2f}%")
-        
+
         # Entry Logic
         current_time = time.time()
         time_since_last_trade = current_time - self.last_trade_time
-        
+
         if self.position == 0:
             if time_since_last_trade < self.cooldown_seconds:
                 return
-            
+
             # MCX is Overpriced -> Sell MCX
             if divergence_pct > self.params['divergence_threshold']:
                 self.entry("SELL", current['mcx_price'], f"MCX Premium > {self.params['divergence_threshold']}% (Rel to Global)")
@@ -173,7 +173,7 @@ class MCXGlobalArbitrageStrategy:
 
     def entry(self, side, price, reason):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
-        
+
         order_placed = False
         if self.api_client:
             try:
@@ -193,14 +193,14 @@ class MCXGlobalArbitrageStrategy:
                 logger.error(f"[ENTRY] Order placement failed: {e}")
         else:
             logger.warning(f"[ENTRY] No API client available - signal logged but order not placed")
-        
+
         if order_placed or not self.api_client: # Assume success if no client (testing)
             self.position = 1 if side == "BUY" else -1
             self.last_trade_time = time.time()
 
     def exit(self, side, price, reason):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
-        
+
         order_placed = False
         if self.api_client:
             try:
@@ -220,14 +220,14 @@ class MCXGlobalArbitrageStrategy:
                 logger.error(f"[EXIT] Order placement failed: {e}")
         else:
             logger.warning(f"[EXIT] No API client available - signal logged but order not placed")
-        
+
         if order_placed or not self.api_client:
             self.position = 0
             self.last_trade_time = time.time()
 
     def run(self):
         logger.info(f"Starting MCX Global Arbitrage Strategy for {self.symbol} vs {self.global_symbol}")
-        
+
         while True:
             if self.fetch_data():
                 self.check_signals()
@@ -245,13 +245,13 @@ if __name__ == "__main__":
     # Use command-line args or env vars
     if args.symbol: SYMBOL = args.symbol
     elif os.getenv('SYMBOL'): SYMBOL = os.getenv('SYMBOL')
-    
+
     if args.global_symbol: GLOBAL_SYMBOL = args.global_symbol
     elif os.getenv('GLOBAL_SYMBOL'): GLOBAL_SYMBOL = os.getenv('GLOBAL_SYMBOL')
-    
+
     if args.port: API_HOST = f"http://127.0.0.1:{args.port}"
     elif os.getenv('OPENALGO_PORT'): API_HOST = f"http://127.0.0.1:{os.getenv('OPENALGO_PORT')}"
-    
+
     if args.api_key: API_KEY = args.api_key
     else: API_KEY = os.getenv('OPENALGO_APIKEY', API_KEY)
 

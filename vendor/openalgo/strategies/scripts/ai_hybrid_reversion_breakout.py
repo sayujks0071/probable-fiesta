@@ -193,7 +193,7 @@ class AIHybridStrategy:
     def check_sector_strength(self):
         try:
             sector_symbol = normalize_symbol(self.sector)
-            
+
             # Use NSE_INDEX for index symbols
             exchange = "NSE_INDEX" if "NIFTY" in sector_symbol.upper() else "NSE"
             # Request 60 days to ensure we have at least 20 trading days (accounting for weekends/holidays)
