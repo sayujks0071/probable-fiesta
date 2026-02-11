@@ -23,13 +23,16 @@ if str(utils_path) not in sys.path:
 try:
     from trading_utils import APIClient
     from symbol_resolver import SymbolResolver
+    from risk_manager import RiskManager
 except ImportError:
     try:
         from openalgo.strategies.utils.trading_utils import APIClient
         from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+        from openalgo.strategies.utils.risk_manager import RiskManager
     except ImportError:
         APIClient = None
         SymbolResolver = None
+        RiskManager = None
 
 # Configuration
 SYMBOL = os.getenv('SYMBOL', None)
@@ -58,6 +61,20 @@ class MCXGlobalArbitrageStrategy:
         self.api_client = api_client
         self.last_trade_time = 0
         self.cooldown_seconds = 300
+
+        # Risk Manager
+        self.rm = None
+        if RiskManager:
+             self.rm = RiskManager(
+                strategy_name=f"MCX_Arbitrage_{symbol}",
+                exchange="MCX",
+                capital=200000,
+                config={
+                    'max_daily_loss_pct': 3.0,
+                    'max_loss_per_trade_pct': 2.0,
+                    'mcx_eod_square_off_time': '23:15'
+                }
+            )
 
         # Session Reference Points (Opening Price of the session/day)
         self.session_ref_mcx = None
@@ -126,6 +143,10 @@ class MCXGlobalArbitrageStrategy:
             if len(self.data) > 100:
                 self.data = self.data.iloc[-100:]
 
+            # Risk Update Trailing Stop
+            if self.rm and self.position != 0:
+                self.rm.update_trailing_stop(self.symbol, mcx_price)
+
             return True
 
         except Exception as e:
@@ -138,6 +159,24 @@ class MCXGlobalArbitrageStrategy:
             return
 
         current = self.data.iloc[-1]
+        mcx_price = current['mcx_price']
+
+        # Risk Management: Stop Loss Check
+        if self.rm:
+            stop_hit, reason = self.rm.check_stop_loss(self.symbol, mcx_price)
+            if stop_hit:
+                logger.warning(reason)
+                if self.position != 0:
+                    side = "BUY" if self.position == -1 else "SELL" # Close position
+                    self.exit(side, mcx_price, "Risk Manager Stop Loss")
+                return
+
+            if self.rm.should_square_off_eod():
+                 if self.position != 0:
+                    side = "BUY" if self.position == -1 else "SELL"
+                    self.exit(side, mcx_price, "Risk Manager EOD Square Off")
+                 return
+
 
         # Calculate Percentage Change from Session Start
         mcx_change_pct = ((current['mcx_price'] - self.session_ref_mcx) / self.session_ref_mcx) * 100
@@ -155,6 +194,13 @@ class MCXGlobalArbitrageStrategy:
         if self.position == 0:
             if time_since_last_trade < self.cooldown_seconds:
                 return
+
+            # Risk Check
+            if self.rm:
+                can_trade, reason = self.rm.can_trade()
+                if not can_trade:
+                    logger.warning(f"Risk Manager Blocked Trade: {reason}")
+                    return
             
             # MCX is Overpriced -> Sell MCX
             if divergence_pct > self.params['divergence_threshold']:
@@ -197,6 +243,8 @@ class MCXGlobalArbitrageStrategy:
         if order_placed or not self.api_client: # Assume success if no client (testing)
             self.position = 1 if side == "BUY" else -1
             self.last_trade_time = time.time()
+            if self.rm:
+                self.rm.register_entry(self.symbol, 1, price, "LONG" if side=="BUY" else "SHORT")
 
     def exit(self, side, price, reason):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
@@ -224,6 +272,8 @@ class MCXGlobalArbitrageStrategy:
         if order_placed or not self.api_client:
             self.position = 0
             self.last_trade_time = time.time()
+            if self.rm:
+                self.rm.register_exit(self.symbol, price)
 
     def run(self):
         logger.info(f"Starting MCX Global Arbitrage Strategy for {self.symbol} vs {self.global_symbol}")

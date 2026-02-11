@@ -2,7 +2,7 @@
 """
 MCX Commodity Momentum Strategy
 Momentum strategy using ADX and RSI with proper API integration.
-Enhanced with Multi-Factor inputs (USD/INR, Seasonality).
+Enhanced with Multi-Factor inputs (USD/INR, Seasonality) and Risk Manager.
 """
 import os
 import sys
@@ -21,17 +21,21 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from risk_manager import RiskManager
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.risk_manager import RiskManager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.risk_manager import RiskManager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            RiskManager = None
             is_market_open = lambda: True
 
 # Setup Logging
@@ -47,6 +51,22 @@ class MCXMomentumStrategy:
 
         self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
         self.pm = PositionManager(symbol) if PositionManager else None
+
+        # Initialize Risk Manager
+        self.rm = None
+        if RiskManager:
+            self.rm = RiskManager(
+                strategy_name=f"MCX_Momentum_{symbol}",
+                exchange="MCX",
+                capital=200000, # Default capital, could be param
+                config={
+                    'max_daily_loss_pct': 3.0,
+                    'max_loss_per_trade_pct': 1.5,
+                    'trailing_stop_enabled': True,
+                    'mcx_eod_square_off_time': '23:15'
+                }
+            )
+
         self.data = pd.DataFrame()
 
         # Log active filters
@@ -97,11 +117,16 @@ class MCXMomentumStrategy:
 
         # Factors
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
+        global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
 
         action = 'HOLD'
+        reason = ''
 
         if not seasonality_ok:
             return 'HOLD', 0.0, {'reason': 'Seasonality Weak'}
+
+        if not global_alignment_ok:
+            return 'HOLD', 0.0, {'reason': 'Global Alignment Weak'}
 
         # Volatility Filter
         min_atr = self.params.get('min_atr', 0)
@@ -125,8 +150,6 @@ class MCXMomentumStrategy:
         if self.data.empty:
             return
 
-        # Optimization: If columns already exist and length matches, skip?
-        # But for now, we assume data is fresh.
         df = self.data.copy()
 
         # RSI
@@ -153,13 +176,14 @@ class MCXMomentumStrategy:
         # -DM: if down > up and down > 0
         minus_dm = np.where((down > up) & (down > 0), down, 0.0)
 
-        df['plus_dm'] = plus_dm
-        df['minus_dm'] = minus_dm
+        # Need Series for rolling
+        plus_dm_s = pd.Series(plus_dm, index=df.index)
+        minus_dm_s = pd.Series(minus_dm, index=df.index)
 
-        # Smooth (using simple moving average for simplicity as originally intended in simple mock)
+        # Smooth
         tr_smooth = true_range.rolling(window=self.params['period_adx']).mean()
-        plus_dm_smooth = df['plus_dm'].rolling(window=self.params['period_adx']).mean()
-        minus_dm_smooth = df['minus_dm'].rolling(window=self.params['period_adx']).mean()
+        plus_dm_smooth = plus_dm_s.rolling(window=self.params['period_adx']).mean()
+        minus_dm_smooth = minus_dm_s.rolling(window=self.params['period_adx']).mean()
 
         # Avoid division by zero
         tr_smooth = tr_smooth.replace(0, np.nan)
@@ -184,8 +208,36 @@ class MCXMomentumStrategy:
         current = self.data.iloc[-1]
         prev = self.data.iloc[-2]
 
-        # Log current state
-        # logger.info(f"Price: {current['close']:.2f}, RSI: {current['rsi']:.2f}, ADX: {current['adx']:.2f}")
+        # Risk Checks
+        if self.rm:
+            # 1. Update Trailing Stop
+            self.rm.update_trailing_stop(self.symbol, current['close'])
+
+            # 2. Check Stop Loss
+            sl_hit, reason = self.rm.check_stop_loss(self.symbol, current['close'])
+            if sl_hit:
+                logger.warning(reason)
+                # Execute Exit
+                if self.pm:
+                    pos_qty = self.pm.position
+                    if pos_qty != 0:
+                        side = "SELL" if pos_qty > 0 else "BUY"
+                        # Place Order Logic Here (Simplified)
+                        self.pm.update_position(abs(pos_qty), current['close'], side)
+                        self.rm.register_exit(self.symbol, current['close'])
+                return
+
+            # 3. Check EOD
+            if self.rm.should_square_off_eod():
+                logger.warning("EOD Square-off time reached.")
+                 # Execute Exit Logic
+                if self.pm and self.pm.has_position():
+                    pos_qty = self.pm.position
+                    side = "SELL" if pos_qty > 0 else "BUY"
+                    self.pm.update_position(abs(pos_qty), current['close'], side)
+                    self.rm.register_exit(self.symbol, current['close'])
+                return
+
 
         # Check Position
         has_position = False
@@ -204,16 +256,23 @@ class MCXMomentumStrategy:
             base_qty = max(1, int(base_qty * 0.7)) # Reduce size, minimum 1
 
         if not seasonality_ok and not has_position:
-            logger.info("Seasonality Weak: Skipping new entries.")
+            logger.debug("Seasonality Weak: Skipping new entries.")
             return
 
         if not global_alignment_ok and not has_position:
-            logger.info("Global Alignment Weak: Skipping new entries.")
+            logger.debug("Global Alignment Weak: Skipping new entries.")
             return
+
+        # Risk Manager: Can Trade?
+        if not has_position and self.rm:
+            can_trade, reason = self.rm.can_trade()
+            if not can_trade:
+                logger.warning(f"Risk Manager Blocked Trade: {reason}")
+                return
 
         # Entry Logic
         if not has_position:
-            # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
+            # BUY Signal
             if (current['adx'] > self.params['adx_threshold'] and
                 current['rsi'] > 55 and
                 current['close'] > prev['close']):
@@ -221,8 +280,10 @@ class MCXMomentumStrategy:
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
+                    if self.rm:
+                        self.rm.register_entry(self.symbol, base_qty, current['close'], 'LONG')
 
-            # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
+            # SELL Signal
             elif (current['adx'] > self.params['adx_threshold'] and
                   current['rsi'] < 45 and
                   current['close'] < prev['close']):
@@ -230,37 +291,43 @@ class MCXMomentumStrategy:
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
+                    if self.rm:
+                        self.rm.register_entry(self.symbol, base_qty, current['close'], 'SHORT')
 
-        # Exit Logic
+        # Exit Logic (Technical Exit)
         elif has_position:
-            # Retrieve position details
             pos_qty = self.pm.position
-            entry_price = self.pm.entry_price
-
-            # Stop Loss / Take Profit Logic could be added here
-            # Simple Exit: Trend Fades (ADX < 20) or RSI Reversal
 
             if pos_qty > 0: # Long
                 if current['rsi'] < 45 or current['adx'] < 20:
                      logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                     if self.rm:
+                         self.rm.register_exit(self.symbol, current['close'])
+
             elif pos_qty < 0: # Short
                 if current['rsi'] > 55 or current['adx'] < 20:
                      logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                     if self.rm:
+                         self.rm.register_exit(self.symbol, current['close'])
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
         while True:
-            if not is_market_open():
-                logger.info("Market is closed. Sleeping...")
+            # Check market open only if real trading
+            if not is_market_open("MCX"):
+                logger.info("MCX Market is closed. Sleeping...")
                 time.sleep(300)
                 continue
 
             self.fetch_data()
             self.calculate_indicators()
             self.check_signals()
-            time.sleep(900) # 15 minutes
+
+            # Sleep 1 minute before next check (not 15 mins, as we want to monitor stops/signals inside the bar if possible,
+            # though candles update every 15m. Ideally this should be ticker based. For this script, 60s is fine check)
+            time.sleep(60)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='MCX Commodity Momentum Strategy')
@@ -271,7 +338,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
