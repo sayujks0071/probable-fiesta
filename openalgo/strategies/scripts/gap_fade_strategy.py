@@ -14,6 +14,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+from openalgo.strategies.utils.risk_manager import RiskManager
 
 # Configure logging
 logging.basicConfig(
@@ -34,8 +35,25 @@ class GapFadeStrategy:
         self.gap_threshold = gap_threshold # Percentage
         self.pm = PositionManager(f"{symbol}_GapFade")
 
+        # Initialize Risk Manager
+        self.rm = RiskManager(
+            strategy_name="GapFadeStrategy",
+            exchange="NSE",
+            capital=100000,  # Default capital assignment
+            config={
+                'max_loss_per_trade_pct': 2.0,
+                'max_daily_loss_pct': 5.0
+            }
+        )
+
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
+
+        # Risk Check: Can we trade?
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.error(f"Risk Check Failed: {reason}")
+            return
 
         # 1. Get Previous Close
         # Using history API for last 2 days
@@ -114,8 +132,27 @@ class GapFadeStrategy:
 
         # 5. Place Order (Simulation)
         # self.client.placesmartorder(...)
+
+        # Risk Check: Position limit
+        if self.pm.has_position():
+             logger.warning("Already have a position. Skipping.")
+             return
+
         logger.info(f"Executing {option_type} Buy for {qty} qty.")
-        self.pm.update_position(qty, 100, "BUY") # Mock update
+
+        # Simulate Fill Price (Current Price)
+        fill_price = current_price # Placeholder for option price
+
+        # Register with Risk Manager
+        self.rm.register_entry(
+            symbol=strike_symbol,
+            qty=qty,
+            entry_price=fill_price,
+            side="LONG", # Options buying is always Long Risk (premium paid)
+        )
+
+        # Update Position Manager (Legacy)
+        self.pm.update_position(qty, fill_price, "BUY")
 
 def main():
     parser = argparse.ArgumentParser()
