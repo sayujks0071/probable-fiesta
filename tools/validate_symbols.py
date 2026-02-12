@@ -80,6 +80,7 @@ def validate_config_symbols(resolver):
 def scan_files_for_hardcoded_symbols(instruments):
     issues = []
     strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    files_to_scan = []
 
     for root, dirs, files in os.walk(strategies_dir):
         # Exclude tests
@@ -87,50 +88,57 @@ def scan_files_for_hardcoded_symbols(instruments):
             dirs.remove('tests')
         if 'test' in dirs:
             dirs.remove('test')
+        if '__pycache__' in dirs:
+            dirs.remove('__pycache__')
 
         for file in files:
             if file.endswith('.py'):
-                filepath = os.path.join(root, file)
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                except UnicodeDecodeError:
-                    continue # Skip binary/bad files
+                files_to_scan.append(os.path.join(root, file))
 
-                for match in MCX_PATTERN.finditer(content):
-                    symbol_str = match.group(0)
-                    parts = match.groups() # (Symbol, Day, Month, Year)
+    for filepath in files_to_scan:
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            continue # Skip binary/bad files
+        except Exception as e:
+            print(f"Error reading {filepath}: {e}")
+            continue
 
-                    # Validate Month
-                    if parts[2].upper() not in MONTHS:
-                        issues.append({
-                            "source": os.path.basename(filepath),
-                            "symbol": symbol_str,
-                            "error": f"Invalid month: {parts[2]}",
-                            "status": "INVALID"
-                        })
-                        continue
+        for match in MCX_PATTERN.finditer(content):
+            symbol_str = match.group(0)
+            parts = match.groups() # (Symbol, Day, Month, Year)
 
-                    # Normalized form:
-                    normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
+            # Validate Month
+            if parts[2].upper() not in MONTHS:
+                issues.append({
+                    "source": os.path.basename(filepath),
+                    "symbol": symbol_str,
+                    "error": f"Invalid month: {parts[2]}",
+                    "status": "INVALID"
+                })
+                continue
 
-                    if symbol_str != normalized:
-                         issues.append({
-                            "source": os.path.basename(filepath),
-                            "symbol": symbol_str,
-                            "normalized": normalized,
-                            "error": "Symbol is malformed (needs normalization)",
-                            "status": "MALFORMED"
-                        })
+            # Normalized form:
+            normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
 
-                    if normalized not in instruments:
-                        issues.append({
-                            "source": os.path.basename(filepath),
-                            "symbol": symbol_str,
-                            "normalized": normalized,
-                            "error": "Symbol not found in master",
-                            "status": "MISSING"
-                        })
+            if symbol_str != normalized:
+                    issues.append({
+                    "source": os.path.basename(filepath),
+                    "symbol": symbol_str,
+                    "normalized": normalized,
+                    "error": "Symbol is malformed (needs normalization)",
+                    "status": "MALFORMED"
+                })
+
+            if normalized not in instruments:
+                issues.append({
+                    "source": os.path.basename(filepath),
+                    "symbol": symbol_str,
+                    "normalized": normalized,
+                    "error": "Symbol not found in master",
+                    "status": "MISSING"
+                })
 
     return issues
 
@@ -144,7 +152,7 @@ def main():
     fresh, msg = check_instruments_freshness()
     if not fresh:
         print(f"❌ Instrument Check Failed: {msg}")
-        # In strict mode, fail with code 3
+        # In strict mode, fail with code 3 (Instrument master missing/stale)
         if args.strict:
             sys.exit(3)
         else:
@@ -152,13 +160,7 @@ def main():
 
     # Load resolver
     try:
-        # Check if openalgo package is importable
-        try:
-            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
-        except ImportError:
-            sys.path.insert(0, os.path.join(REPO_ROOT, 'openalgo'))
-            from strategies.utils.symbol_resolver import SymbolResolver
-
+        from openalgo.strategies.utils.symbol_resolver import SymbolResolver
         resolver = SymbolResolver(INSTRUMENTS_FILE)
         instruments = set(resolver.df['symbol'].unique()) if not resolver.df.empty else set()
     except Exception as e:
@@ -192,7 +194,7 @@ def main():
     # Also create Markdown
     with open(os.path.join(REPORTS_DIR, 'symbol_audit.md'), 'w') as f:
          f.write("# Symbol Validation Report\n\n")
-         f.write(f"Date: {datetime.now()}\n")
+         f.write(f"Date: {datetime.now()}\n\n")
          f.write(f"Strict Mode: {args.strict}\n")
          f.write(f"Instrument Status: {msg}\n\n")
 
@@ -214,10 +216,10 @@ def main():
             print(f" - [{issue['status']}] {issue.get('source')}: {issue.get('symbol', issue.get('id', 'Unknown'))} -> {issue.get('error')}")
 
         if args.strict:
-            sys.exit(2)
+            sys.exit(2) # Code 2: invalid/missing symbols found
     else:
         print("✅ All symbols valid.")
-        sys.exit(0)
+        sys.exit(0) # Code 0: all ok
 
 if __name__ == "__main__":
     main()

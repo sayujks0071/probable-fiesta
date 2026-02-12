@@ -4,12 +4,9 @@ on:
   pull_request:
     paths:
       - "openalgo/strategies/**"
-      - "openalgo/configs/**"
-      - "openalgo/data/instruments/**"
+      - "openalgo/data/**"
       - "tools/**"
-
-permissions:
-  contents: read
+      - ".github/workflows/pr-symbol-validation.yml"
 
 jobs:
   validate-symbols:
@@ -20,21 +17,21 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install pandas requests
 
       - name: Sync Instruments
-        run: python3 tools/sync_instruments.py
+        run: python tools/sync_instruments.py
 
-      - name: Run Strict Validation
-        run: python3 tools/validate_symbols.py --strict --check
+      - name: Run Strict Validator
+        run: python tools/validate_symbols.py --strict --check
 
-      - name: Upload Report
-        if: failure()
-        uses: actions/upload-artifact@v4
+      - name: Upload Audit Reports
+        if: always()
+        uses: actions/upload-artifact@v3
         with:
-          name: symbol-validation-report
+          name: symbol-audit-reports
           path: reports/

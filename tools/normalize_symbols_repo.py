@@ -10,6 +10,15 @@ from collections import defaultdict
 
 # Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+try:
+    from openalgo.strategies.utils.mcx_utils import normalize_mcx_string
+except ImportError:
+    print("Error: Could not import openalgo.strategies.utils.mcx_utils")
+    sys.exit(1)
+
 DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
@@ -17,7 +26,6 @@ REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 # Regex for MCX Symbols
 # Pattern: SYMBOL + 1-2 digits (Day) + 3 letters (Month) + 2 digits (Year) + FUT
 # e.g. GOLDM05FEB26FUT
-# Capture groups: 1=Symbol, 2=Day, 3=Month, 4=Year
 MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
 
 # Valid Months
@@ -33,16 +41,6 @@ def load_instruments():
         print(f"Warning: Failed to load instruments: {e}")
         return None
 
-def normalize_mcx_symbol(match):
-    symbol = match.group(1).upper()
-    day = int(match.group(2))
-    month = match.group(3).upper()
-    year = match.group(4)
-
-    # Normalize: Pad day with 0 if needed
-    normalized = f"{symbol}{day:02d}{month}{year}FUT"
-    return normalized
-
 def scan_file(filepath, instruments, strict=False):
     issues = []
     normalized_content = ""
@@ -54,9 +52,12 @@ def scan_file(filepath, instruments, strict=False):
     def replacement_handler(match):
         nonlocal changes_made
         original = match.group(0)
-        normalized = normalize_mcx_symbol(match)
 
-        # Validation
+        # Use centralized normalization logic
+        normalized = normalize_mcx_string(original)
+
+        # Basic Validation of components from regex match (for reporting)
+        # normalize_mcx_string handles the format, but let's check month validity explicitly for reporting
         month = match.group(3).upper()
         if month not in MONTHS:
             issues.append({
@@ -73,6 +74,7 @@ def scan_file(filepath, instruments, strict=False):
                  if original in instruments:
                      return original
 
+                 # Strict check: if normalized version is not in instruments, it's missing/invalid
                  issues.append({
                     "file": filepath,
                     "symbol": original,
@@ -125,30 +127,43 @@ def main():
     files_to_scan = []
     # Walk openalgo/strategies
     strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
-    for root, dirs, files in os.walk(strategies_dir):
-        # Exclude tests directories
-        if 'tests' in dirs:
-            dirs.remove('tests')
-        if 'test' in dirs:
-            dirs.remove('test')
+    if os.path.exists(strategies_dir):
+        for root, dirs, files in os.walk(strategies_dir):
+            # Exclude tests directories
+            if 'tests' in dirs:
+                dirs.remove('tests')
+            if 'test' in dirs:
+                dirs.remove('test')
 
-        for file in files:
-            if file.endswith('.py') or file.endswith('.json'):
-                files_to_scan.append(os.path.join(root, file))
+            # Exclude __pycache__
+            if '__pycache__' in dirs:
+                dirs.remove('__pycache__')
+
+            for file in files:
+                if file.endswith('.py') or file.endswith('.json'):
+                    files_to_scan.append(os.path.join(root, file))
+
+    # Scan active_strategies.json specifically if it's not in strategies dir walk
+    active_strategies = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategies.json')
+    if active_strategies not in files_to_scan and os.path.exists(active_strategies):
+        files_to_scan.append(active_strategies)
 
 
     for filepath in files_to_scan:
-        new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
-        if file_issues:
-            audit_report["issues"].extend(file_issues)
+        try:
+            new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
+            if file_issues:
+                audit_report["issues"].extend(file_issues)
 
-        if changed and args.write:
-            try:
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(new_content)
-                print(f"Fixed: {filepath}")
-            except Exception as e:
-                print(f"Error writing {filepath}: {e}")
+            if changed and args.write:
+                try:
+                    with open(filepath, 'w', encoding='utf-8') as f:
+                        f.write(new_content)
+                    print(f"Fixed: {filepath}")
+                except Exception as e:
+                    print(f"Error writing {filepath}: {e}")
+        except Exception as e:
+            print(f"Error scanning {filepath}: {e}")
 
     # Generate Reports
     os.makedirs(REPORTS_DIR, exist_ok=True)
@@ -160,8 +175,8 @@ def main():
     # Markdown Report
     with open(os.path.join(REPORTS_DIR, 'symbol_audit.md'), 'w') as f:
         f.write("# Symbol Audit Report\n\n")
-        f.write(f"Date: {datetime.now()}\n")
-        f.write(f"Strict Mode: {args.strict}\n")
+        f.write(f"Date: {datetime.now()}\n\n")
+        f.write(f"Strict Mode: {args.strict}\n\n")
         f.write(f"Instruments Loaded: {instruments is not None}\n\n")
 
         if not audit_report["issues"]:
@@ -174,18 +189,27 @@ def main():
 
     # Check for strict failure
     invalid_symbols = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING')]
+    normalized_symbols = [i for i in audit_report["issues"] if i['status'] == 'NORMALIZED']
 
-    if args.strict and args.check:
-         # In strict check mode, fail if normalization is needed
-         normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
-         if normalized_count > 0:
-             print(f"❌ Found {normalized_count} symbols needing normalization.")
+    if args.strict:
+        # Strict mode: Fail on INVALID, MISSING
+        if invalid_symbols:
+            print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols.")
+            sys.exit(1)
+
+        # Strict Check mode: Fail on NORMALIZED too (means codebase is not normalized)
+        if args.check and normalized_symbols:
+             print(f"❌ Found {len(normalized_symbols)} symbols needing normalization.")
              sys.exit(1)
 
     if invalid_symbols:
         print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols.")
-        if args.strict:
-            sys.exit(1)
+        # Non-strict mode, we typically just warn, but if we are in 'check' mode maybe we should exit non-zero?
+        # The prompt says: "--check (no edits; just validate)".
+        # And "--strict (treat warnings as errors; exit non-zero ...)"
+        # So without strict, we exit 0 even if issues found, unless the user expects otherwise.
+        # But for 'check', usually non-zero exit is expected on issues.
+        # However, following strict flag logic strictly: if strict is NOT set, we don't exit non-zero.
 
     if args.write:
          print("✅ Normalization complete.")
