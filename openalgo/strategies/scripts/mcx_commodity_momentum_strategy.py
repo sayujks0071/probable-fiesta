@@ -20,19 +20,20 @@ utils_dir = os.path.join(strategies_dir, 'utils')
 sys.path.insert(0, utils_dir)
 
 try:
-    from trading_utils import APIClient, PositionManager, is_market_open
+    from trading_utils import APIClient, PositionManager, is_market_open, is_mcx_market_open
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.trading_utils import APIClient, PositionManager, is_market_open, is_mcx_market_open
     except ImportError:
         try:
-            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open, is_mcx_market_open
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
             is_market_open = lambda: True
+            is_mcx_market_open = lambda: True
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -44,6 +45,9 @@ class MCXMomentumStrategy:
         self.api_key = api_key
         self.host = host
         self.params = params
+
+        # Determine exchange from symbol
+        self.exchange = "MCX" if "FUT" in symbol else "NSE"
 
         self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
         self.pm = PositionManager(symbol) if PositionManager else None
@@ -68,7 +72,7 @@ class MCXMomentumStrategy:
             df = self.client.history(
                 symbol=self.symbol,
                 interval="15m",
-                exchange="MCX",
+                exchange=self.exchange,
                 start_date=start_date,
                 end_date=end_date
             )
@@ -172,6 +176,28 @@ class MCXMomentumStrategy:
 
         self.data = df
 
+    def execute_trade(self, action, quantity, reason):
+        """Execute trade with strategy parameter."""
+        if not self.client:
+            logger.warning(f"No API Client. Simulation: {action} {quantity} ({reason})")
+            return
+
+        try:
+            logger.info(f"Executing {action} {quantity}: {reason}")
+            order = self.client.placesmartorder(
+                strategy="MCX Momentum",  # REQUIRED first argument
+                symbol=self.symbol,
+                action=action,
+                exchange=self.exchange,
+                price_type="MARKET",
+                product="MIS",
+                quantity=quantity,
+                position_size=quantity
+            )
+            logger.info(f"Order Placed: {order}")
+        except Exception as e:
+            logger.error(f"Order Execution Failed: {e}")
+
     def check_signals(self):
         """Check entry and exit conditions."""
         if self.data.empty or 'adx' not in self.data.columns:
@@ -219,6 +245,7 @@ class MCXMomentumStrategy:
                 current['close'] > prev['close']):
 
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                self.execute_trade('BUY', base_qty, "Entry Signal")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
@@ -228,6 +255,7 @@ class MCXMomentumStrategy:
                   current['close'] < prev['close']):
 
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                self.execute_trade('SELL', base_qty, "Entry Signal")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
 
@@ -243,19 +271,28 @@ class MCXMomentumStrategy:
             if pos_qty > 0: # Long
                 if current['rsi'] < 45 or current['adx'] < 20:
                      logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                     self.execute_trade('SELL', abs(pos_qty), "Exit Signal")
                      self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
             elif pos_qty < 0: # Short
                 if current['rsi'] > 55 or current['adx'] < 20:
                      logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                     self.execute_trade('BUY', abs(pos_qty), "Exit Signal")
                      self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
         while True:
-            if not is_market_open():
-                logger.info("Market is closed. Sleeping...")
-                time.sleep(300)
-                continue
+            # Use correct market hours check!
+            if self.exchange == "MCX":
+                if not is_mcx_market_open():
+                    logger.info("MCX market closed. Sleeping...")
+                    time.sleep(300)
+                    continue
+            else:
+                if not is_market_open():
+                    logger.info("NSE market closed. Sleeping...")
+                    time.sleep(300)
+                    continue
 
             self.fetch_data()
             self.calculate_indicators()
