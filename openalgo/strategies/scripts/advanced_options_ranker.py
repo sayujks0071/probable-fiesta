@@ -16,7 +16,7 @@ import subprocess
 current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+    sys.path.insert(0, str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, is_market_open
 from openalgo.strategies.utils.option_analytics import calculate_pcr, calculate_max_pain, calculate_greeks
@@ -46,16 +46,10 @@ class AdvancedOptionsRanker:
         self.script_map = {
             "Iron Condor": "delta_neutral_iron_condor_nifty.py",
             "Gap Fade": "gap_fade_strategy.py",
-            # Others not yet implemented as scripts
+            "Sentiment Reversal": "sentiment_reversal_strategy.py",
         }
 
-        # Thresholds
-        self.vix_high_threshold = 20
-        self.vix_extreme_threshold = 30
-        self.vix_low_threshold = 12
-        self.liquidity_oi_threshold = 100000  # Minimum OI
-
-        # Weights
+        # Weights from Prompt
         self.weights = {
             "iv_rank": 0.25,
             "greeks": 0.20,
@@ -68,11 +62,9 @@ class AdvancedOptionsRanker:
 
     def _fetch_gift_nifty_proxy(self, nifty_spot):
         try:
-            # Deterministic: Return 0 gap if no data.
-            # In production, fetch specific symbol.
-            # For now, we assume if we are running before market, we might check last close
-            # But without history, we can't do much.
-            # Returning 0.0 ensures deterministic behavior for tests.
+            # In a real scenario, we would fetch GIFT Nifty from a data provider.
+            # Here we mock it or use Nifty Spot as a proxy with some random noise if needed,
+            # but for deterministic behavior we'll just assume a small gap if not available.
             return nifty_spot, 0.0
         except Exception as e:
             logger.warning(f"Error fetching GIFT Nifty proxy: {e}")
@@ -143,6 +135,8 @@ class AdvancedOptionsRanker:
             chain = self.client.get_option_chain(index, exchange)
             if chain:
                 data['chains'][index] = chain
+            else:
+                logger.warning(f"No option chain for {index}")
 
         return data
 
@@ -169,6 +163,11 @@ class AdvancedOptionsRanker:
         vix = market_data.get('vix', 15)
         spot = market_data.get('nifty_spot', 0) if index == "NIFTY" else 0
 
+        # If spot is 0, try to estimate from chain ATM
+        if spot == 0 and chain_data:
+             # Just take first strike
+             spot = chain_data[0]['strike']
+
         pcr = calculate_pcr(chain_data)
         sentiment = market_data.get('sentiment_score', 0.5)
         gap = market_data.get('gap_pct', 0)
@@ -176,68 +175,104 @@ class AdvancedOptionsRanker:
         scores = {}
         details = {}
 
-        # 1. IV Rank
+        # 1. IV Rank Score
         iv_rank = self.calculate_iv_rank(index, vix)
         details['iv_rank'] = iv_rank
 
+        # IV Rank Scoring Logic
         if strategy_type in ["Iron Condor", "Credit Spread", "Straddle"]:
+            # Selling Premium -> Like High IV
             scores['iv_rank'] = iv_rank
         elif strategy_type in ["Debit Spread", "Calendar Spread", "Gap Fade", "Sentiment Reversal"]:
+            # Buying Premium -> Like Low IV
             scores['iv_rank'] = 100 - iv_rank
 
-        # 2. VIX Regime
+        # 2. VIX Regime Score
         vix_score = 50
-        if strategy_type in ["Iron Condor", "Credit Spread"]:
-             if vix > 20: vix_score = 100
-             elif vix < 12: vix_score = 20
+        if strategy_type in ["Iron Condor", "Credit Spread", "Straddle"]:
+             if vix > 20: vix_score = 100      # Excellent for selling
+             elif vix < 12: vix_score = 20     # Too low premium
              else: vix_score = 60
         elif strategy_type in ["Calendar Spread"]:
-             if vix < 13: vix_score = 90
+             if vix < 13: vix_score = 90       # Low VIX good for calendars (expecting rise)
              elif vix > 20: vix_score = 10
-        elif strategy_type in ["Debit Spread"]:
-             if vix < 15: vix_score = 80
-             else: vix_score = 40
+        elif strategy_type in ["Debit Spread", "Sentiment Reversal", "Gap Fade"]:
+             if vix < 15: vix_score = 80       # Cheap options
+             elif vix > 25: vix_score = 20     # Expensive options
+             else: vix_score = 50
         scores['vix_regime'] = vix_score
 
-        # 3. Liquidity
-        scores['liquidity'] = 90
+        # 3. Liquidity Score
+        # Check total OI or volume
+        total_oi = sum(x.get('ce_oi', 0) + x.get('pe_oi', 0) for x in chain_data)
+        if total_oi > 1000000:
+            scores['liquidity'] = 100
+        elif total_oi > 100000:
+            scores['liquidity'] = 70
+        else:
+            scores['liquidity'] = 30
 
-        # 4. PCR / OI
+        # 4. PCR/OI Pattern Score
         pcr_score = 50
-        if strategy_type == "Iron Condor":
+        if strategy_type == "Iron Condor" or strategy_type == "Straddle":
+             # Neutral strategies prefer balanced PCR (near 1.0)
              dist_from_1 = abs(pcr - 1.0)
              if dist_from_1 < 0.2: pcr_score = 90
              else: pcr_score = max(0, 100 - dist_from_1 * 100)
+        elif strategy_type == "Credit Spread":
+             # Directional: If Bull Put Spread (Bullish), want PCR > 1 (Bullish sentiment? No, PCR > 1 is usually bearish bets but contrarian is bullish?
+             # High PCR often signals support. Low PCR signals resistance.
+             # Simplification: Neutral-ish is safe.
+             pcr_score = 60
+        elif strategy_type == "Sentiment Reversal":
+             # If Sentiment Reversal (Contrarian), we want extreme PCR to fade?
+             # High PCR (>1.5) -> Overbought Puts -> Reversal Up
+             if pcr > 1.5 or pcr < 0.5: pcr_score = 90
+             else: pcr_score = 40
 
         scores['pcr_oi'] = pcr_score
         details['pcr'] = pcr
 
-        # 5. Greeks Alignment
+        # 5. Greeks Alignment Score
         greeks_score = 50
+        # Calculate Greeks for ATM
+        # Just use VIX and Sentiment as proxies for Greeks favorability here
+        # Iron Condor likes High Theta (Time Decay) and Short Vega (IV Crush)
         if strategy_type in ["Iron Condor", "Credit Spread"]:
+             # High VIX implies potential for IV Crush (Vega profit)
              if vix > 18: greeks_score += 20
              if vix > 25: greeks_score += 10
-        scores['greeks'] = greeks_score
+             # Theta is always positive for selling, but better if DTE is optimized (not checked here)
+        elif strategy_type == "Calendar Spread":
+             # Long Vega
+             if vix < 13: greeks_score += 30
 
-        # 6. GIFT Nifty Bias
+        scores['greeks'] = min(100, greeks_score)
+
+        # 6. GIFT Nifty Bias Score
         gift_score = 50
         if strategy_type == "Gap Fade":
+             # We want a significant gap to fade
              if abs(gap) > 0.5: gift_score = 100
              elif abs(gap) > 0.3: gift_score = 70
              else: gift_score = 20
-        elif strategy_type == "Iron Condor":
+        elif strategy_type in ["Iron Condor", "Straddle"]:
+             # We want small gap (stability)
              if abs(gap) < 0.2: gift_score = 100
              else: gift_score = max(0, 100 - abs(gap)*200)
 
         scores['gift_nifty'] = gift_score
 
-        # 7. Sentiment
+        # 7. Sentiment Score
         sent_score = 50
         if strategy_type == "Sentiment Reversal":
+             # We need extreme sentiment
              dist = abs(sentiment - 0.5)
-             if dist > 0.3: sent_score = 90
+             if dist > 0.3: sent_score = 100 # >0.8 or <0.2
+             elif dist > 0.15: sent_score = 60
              else: sent_score = 20
-        elif strategy_type == "Iron Condor":
+        elif strategy_type in ["Iron Condor", "Straddle"]:
+             # Neutral sentiment preferred
              dist = abs(sentiment - 0.5)
              if dist < 0.1: sent_score = 100
              else: sent_score = max(0, 100 - dist * 200)
@@ -249,6 +284,7 @@ class AdvancedOptionsRanker:
         details['score'] = round(final_score, 1)
         details['gap_pct'] = gap
         details['sentiment_val'] = sentiment
+        details['scores'] = scores # Detailed breakdown
 
         return details
 
@@ -284,9 +320,10 @@ class AdvancedOptionsRanker:
         # Rank by score
         opportunities.sort(key=lambda x: x['score'], reverse=True)
 
-        for i, opp in enumerate(opportunities[:5], 1):
+        for i, opp in enumerate(opportunities[:7], 1): # Top 7
             print(f"\n{i}. {opp['strategy']} - {opp['index']} - Score: {opp['score']}/100")
             print(f"   - IV Rank: {opp.get('iv_rank', 0):.1f}% | PCR: {opp.get('pcr', 0)}")
+            print(f"   - Breakdown: {opp.get('scores')}")
             print(f"   - Rationale: Multi-factor score (VIX, Greeks, Sentiment, Gap)")
 
             # Risk Warning Checks
@@ -304,16 +341,16 @@ class AdvancedOptionsRanker:
         print("- [Gap Fade]: Gap Threshold Filters")
 
         print("\n💡 NEW STRATEGIES CREATED:")
-        print("- Gap Fade Strategy: Targets reversal of overnight gaps > 0.5%")
         print("- Sentiment Reversal: Targets mean reversion on extreme sentiment")
 
         print("\n🚀 DEPLOYMENT PLAN:")
+        # Deploy top 3 if score > 70
         to_deploy = [opp for opp in opportunities if opp['score'] >= 70][:3]
         if to_deploy:
              print(f"- Deploy: {', '.join([f'{x['strategy']} ({x['index']})' for x in to_deploy])}")
              return to_deploy
         else:
-             print("- Deploy: None (No strategy met score threshold > 70)")
+             print("- Deploy: None (No strategy met score threshold >= 70)")
              return []
 
     def deploy_strategies(self, top_strategies):
@@ -325,7 +362,7 @@ class AdvancedOptionsRanker:
             script = self.script_map.get(strategy_name)
 
             if not script:
-                logger.warning(f"No script mapped for strategy '{strategy_name}'. Skipping deployment.")
+                logger.info(f"Strategy '{strategy_name}' selected but no script mapped. Skipping deployment.")
                 continue
 
             script_path = project_root / "openalgo" / "strategies" / "scripts" / script
@@ -333,18 +370,17 @@ class AdvancedOptionsRanker:
                 logger.warning(f"Script file {script_path} not found.")
                 continue
 
-            cmd = [sys.executable, str(script_path), "--symbol", strat['index'], "--port", str(5002)]
+            cmd = [sys.executable, str(script_path), "--symbol", strat['index'], "--port", str(self.host.split(':')[-1])]
 
             # Pass extra args
-            if strategy_name == "Iron Condor":
+            if strategy_name in ["Iron Condor", "Sentiment Reversal"]:
                 cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
+            elif strategy_name == "Gap Fade":
+                cmd.extend(["--threshold", "0.5"]) # Default threshold
 
             logger.info(f"Executing: {' '.join(cmd)}")
 
             try:
-                # Run in background or wait? Usually deployment triggers and returns.
-                # Here we use Popen to run detached or run and wait.
-                # We'll run and log output
                 subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 print(f"✅ Deployed: {strategy_name} on {strat['index']}")
             except Exception as e:

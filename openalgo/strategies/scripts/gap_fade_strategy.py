@@ -11,7 +11,7 @@ from pathlib import Path
 current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+    sys.path.insert(0, str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 
@@ -108,9 +108,9 @@ class GapFadeStrategy:
         vix = float(vix_quote['ltp']) if vix_quote else 15
 
         qty = self.qty
-        if vix > 30:
+        if vix > 30 or vix < 10:
             qty = int(qty * 0.5)
-            logger.info(f"High VIX {vix}. Reduced Qty to {qty}")
+            logger.info(f"Extreme VIX {vix}. Reduced Qty to {qty}")
 
         # 5. Place Order (Simulation)
         # self.client.placesmartorder(...)

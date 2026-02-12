@@ -9,7 +9,7 @@ from pathlib import Path
 current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+    sys.path.insert(0, str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 from openalgo.strategies.utils.option_analytics import calculate_greeks, calculate_max_pain
@@ -26,12 +26,13 @@ logging.basicConfig(
 logger = logging.getLogger("DeltaNeutralIronCondor")
 
 class DeltaNeutralIronCondor:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None, gap_pct=0.0):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.max_vix = max_vix
         self.sentiment_score = sentiment_score
+        self.gap_pct = gap_pct
         self.pm = PositionManager(f"{symbol}_IC")
 
     def get_vix(self):
@@ -40,7 +41,7 @@ class DeltaNeutralIronCondor:
 
     def select_strikes(self, spot, vix, chain_data):
         """
-        Select strikes based on Delta and VIX.
+        Select strikes based on Delta and VIX, adjusted for Gap.
         """
         # Calculate Max Pain
         max_pain = calculate_max_pain(chain_data)
@@ -51,6 +52,12 @@ class DeltaNeutralIronCondor:
         if max_pain and abs(spot - max_pain) < (spot * 0.01):
             logger.info("Using Max Pain as Center Price for Strike Selection")
             center_price = max_pain
+
+        # Adjust Center based on Gap
+        if abs(self.gap_pct) > 0.5:
+            shift = spot * (self.gap_pct / 100) * 0.5 # Shift center by half of gap
+            logger.info(f"Significant Gap ({self.gap_pct:.2f}%). Shifting center by {shift:.2f}")
+            center_price += shift
 
         # Target Delta for Shorts
         target_delta = 0.20
@@ -94,7 +101,7 @@ class DeltaNeutralIronCondor:
                 ce_greeks = calculate_greeks(spot, strike, T, r, iv_ce, 'ce')
                 ce_delta = ce_greeks.get('delta', 0.5)
 
-                if strike > spot and abs(ce_delta - target_delta) < best_ce_diff:
+                if strike > center_price and abs(ce_delta - target_delta) < best_ce_diff:
                     best_ce_diff = abs(ce_delta - target_delta)
                     ce_short = strike
 
@@ -102,7 +109,7 @@ class DeltaNeutralIronCondor:
                 pe_greeks = calculate_greeks(spot, strike, T, r, iv_pe, 'pe')
                 pe_delta = abs(pe_greeks.get('delta', -0.5))
 
-                if strike < spot and abs(pe_delta - target_delta) < best_pe_diff:
+                if strike < center_price and abs(pe_delta - target_delta) < best_pe_diff:
                     best_pe_diff = abs(pe_delta - target_delta)
                     pe_short = strike
 
@@ -157,6 +164,11 @@ class DeltaNeutralIronCondor:
                 logger.warning(f"Sentiment Score {self.sentiment_score} is strongly directional. Iron Condor risk is high. Skipping.")
                 return
 
+        # Gap Filter for Safety
+        if abs(self.gap_pct) > 1.5:
+             logger.warning(f"Gap {self.gap_pct}% is too large for Iron Condor. Skipping.")
+             return
+
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
         spot = float(quote['ltp']) if quote else 0
         if spot == 0:
@@ -177,6 +189,9 @@ class DeltaNeutralIronCondor:
         # Place Orders (Mock)
         logger.info(f"Placing orders for {self.qty} qty...")
 
+        # Log details for testing
+        logger.info(f"EXECUTION_DETAILS: Short CE {strikes['ce_short']}, Short PE {strikes['pe_short']}")
+
         # In real scenario:
         # self.client.placesmartorder(...)
 
@@ -188,10 +203,11 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
     parser.add_argument("--sentiment_score", type=float, default=None, help="External Sentiment Score (0.0-1.0)")
+    parser.add_argument("--gap_pct", type=float, default=0.0, help="Overnight Gap Percent")
     args = parser.parse_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score)
+    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score, gap_pct=args.gap_pct)
     strategy.execute()
 
 if __name__ == "__main__":
