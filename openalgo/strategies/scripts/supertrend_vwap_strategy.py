@@ -77,6 +77,7 @@ class SuperTrendVWAPStrategy:
         self.stop_pct = 1.8
         self.adx_threshold = 20  # Added ADX Filter
         self.adx_period = 14
+        self.vol_std_mult = 1.5
 
         # State
         self.trailing_stop = 0.0
@@ -144,7 +145,7 @@ class SuperTrendVWAPStrategy:
 
         vol_mean = df['volume'].rolling(20).mean().iloc[-1]
         vol_std = df['volume'].rolling(20).std().iloc[-1]
-        dynamic_threshold = vol_mean + (1.5 * vol_std)
+        dynamic_threshold = vol_mean + (self.vol_std_mult * vol_std)
         is_volume_spike = last['volume'] > dynamic_threshold
 
         is_above_poc = last['close'] > poc_price
@@ -355,7 +356,7 @@ class SuperTrendVWAPStrategy:
                 # Dynamic Volume Threshold (Mean + 1.5 StdDev)
                 vol_mean = df['volume'].rolling(20).mean().iloc[-1]
                 vol_std = df['volume'].rolling(20).std().iloc[-1]
-                dynamic_threshold = vol_mean + (1.5 * vol_std)
+                dynamic_threshold = vol_mean + (self.vol_std_mult * vol_std)
                 is_volume_spike = last['volume'] > dynamic_threshold
 
                 # Volume Profile Logic: Price must be above Point of Control to confirm value migration up
@@ -452,19 +453,38 @@ def run_strategy():
     strategy.run()
 
 # Module level wrapper for SimpleBacktestEngine
-def generate_signal(df, client=None, symbol=None, params=None):
-    # Instantiate strategy with dummy params
-    strat = SuperTrendVWAPStrategy(symbol=symbol or "TEST", quantity=1, api_key="test", host="test", client=client)
+_STRAT_CACHE = {}
 
-    # Silence logger for backtest to avoid handler explosion
-    strat.logger.handlers = []
-    strat.logger.addHandler(logging.NullHandler())
+def generate_signal(df, client=None, symbol=None, params=None):
+    global _STRAT_CACHE
+    symbol = symbol or "TEST"
+
+    if symbol not in _STRAT_CACHE:
+        # Instantiate strategy with dummy params
+        strat = SuperTrendVWAPStrategy(symbol=symbol, quantity=1, api_key="test", host="test", client=client)
+
+        # Silence logger for backtest to avoid handler explosion
+        strat.logger.handlers = []
+        strat.logger.addHandler(logging.NullHandler())
+
+        # Mock Sector Check for Backtest
+        strat.check_sector_correlation = lambda: True
+
+        _STRAT_CACHE[symbol] = strat
+
+    strat = _STRAT_CACHE[symbol]
+
+    # Reset state if new backtest likely started (short dataframe)
+    if len(df) <= 60:
+        strat.trailing_stop = 0.0
+        strat.atr = 0.0
 
     # Apply params if provided
     if params:
         if 'threshold' in params: strat.threshold = params['threshold']
         if 'stop_pct' in params: strat.stop_pct = params['stop_pct']
         if 'adx_threshold' in params: strat.adx_threshold = params['adx_threshold']
+        if 'vol_std_mult' in params: strat.vol_std_mult = params['vol_std_mult']
 
     # Set Breakeven Trigger
     setattr(strat, 'BREAKEVEN_TRIGGER_R', 1.5)

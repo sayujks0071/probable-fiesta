@@ -110,12 +110,12 @@ class MCXMomentumStrategy:
 
         if (current['adx'] > self.params['adx_threshold'] and
             current['rsi'] > 50 and
-            current['close'] > prev['close']):
+            current['close'] > prev['high']):  # Breakout Entry
             action = 'BUY'
 
         elif (current['adx'] > self.params['adx_threshold'] and
               current['rsi'] < 50 and
-              current['close'] < prev['close']):
+              current['close'] < prev['low']):  # Breakdown Entry
             action = 'SELL'
 
         return action, 1.0, {'atr': current.get('atr', 0)}
@@ -335,9 +335,15 @@ DEFAULT_PARAMS = {
     'period_rsi': 14,
     'period_atr': 14,
     'adx_threshold': 25,
-    'min_atr': 10,
+    'min_atr': 0.0, # Set to 0 for backtest compatibility with low prices
     'risk_per_trade': 0.02,
 }
+
+# Module Level Constants for Backtest Engine
+ATR_SL_MULTIPLIER = 2.0
+ATR_TP_MULTIPLIER = 4.0
+
+_STRAT_CACHE = {}
 
 def generate_signal(df, client=None, symbol=None, params=None):
     # Merge default params with provided params
@@ -348,9 +354,15 @@ def generate_signal(df, client=None, symbol=None, params=None):
     api_key = client.api_key if client and hasattr(client, 'api_key') else "BACKTEST"
     host = client.host if client and hasattr(client, 'host') else "http://127.0.0.1:5001"
 
-    strat = MCXMomentumStrategy(symbol or "TEST", api_key, host, strat_params)
+    global _STRAT_CACHE
+    symbol = symbol or "TEST"
 
-    # Set Time Stop for Engine
-    setattr(strat, 'TIME_STOP_BARS', 12) # 3 Hours (12 * 15m)
+    if symbol not in _STRAT_CACHE:
+        strat = MCXMomentumStrategy(symbol, api_key, host, strat_params)
+        setattr(strat, 'TIME_STOP_BARS', 12)
+        _STRAT_CACHE[symbol] = strat
+
+    strat = _STRAT_CACHE[symbol]
+    strat.params = strat_params
 
     return strat.generate_signal(df)

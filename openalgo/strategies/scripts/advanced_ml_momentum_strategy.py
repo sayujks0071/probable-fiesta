@@ -69,8 +69,32 @@ class MLMomentumStrategy:
         # SMA for Trend
         df['sma50'] = df['close'].rolling(50).mean()
 
+        # ADX Calculation
+        df['high_low'] = df['high'] - df['low']
+        df['high_close'] = (df['high'] - df['close'].shift()).abs()
+        df['low_close'] = (df['low'] - df['close'].shift()).abs()
+        df['tr'] = df[['high_low', 'high_close', 'low_close']].max(axis=1)
+
+        df['up_move'] = df['high'] - df['high'].shift(1)
+        df['down_move'] = df['low'].shift(1) - df['low']
+
+        df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0)
+        df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0)
+
+        # Smooth
+        df['tr14'] = df['tr'].rolling(14).mean()
+        df['plus_di14'] = 100 * (df['plus_dm'].rolling(14).mean() / df['tr14'])
+        df['minus_di14'] = 100 * (df['minus_dm'].rolling(14).mean() / df['tr14'])
+        df['dx'] = 100 * abs(df['plus_di14'] - df['minus_di14']) / (df['plus_di14'] + df['minus_di14'])
+        df['adx'] = df['dx'].rolling(14).mean()
+
         last = df.iloc[-1]
         current_price = last['close']
+        atr = last.get('tr14', 0)
+
+        # Risk Sizing
+        risk_per_trade = 1000.0
+        qty = int(risk_per_trade / (2.0 * atr)) if atr > 0 else 50
 
         # Simplifications for Backtest (Missing Index/Sector Data)
         # We assume RS and Sector conditions are met if data missing, or strict if we want.
@@ -84,6 +108,7 @@ class MLMomentumStrategy:
         # Entry Logic
         if (last['roc'] > self.roc_threshold and
             last['rsi'] > 55 and
+            last.get('adx', 0) > 20 and
             rs_excess > 0 and
             sector_outperformance > 0 and
             current_price > last['sma50'] and
@@ -92,9 +117,9 @@ class MLMomentumStrategy:
             # Volume check
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             if last['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
-                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi']}
+                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi'], 'quantity': qty, 'atr': atr}
 
-        return 'HOLD', 0.0, {}
+        return 'HOLD', 0.0, {'atr': atr}
 
     def calculate_relative_strength(self, df, index_df):
         if index_df.empty: return 1.0
@@ -268,31 +293,41 @@ def run_strategy():
     strategy.run()
 
 # Module level wrapper for SimpleBacktestEngine
+_STRAT_CACHE = {}
+
 def generate_signal(df, client=None, symbol=None, params=None):
-    strat_params = {
-        'threshold': 0.01,
-        'stop_pct': 1.0,
-        'sector': 'NIFTY 50',
-        'vol_multiplier': 0.5
-    }
+    global _STRAT_CACHE
+    symbol = symbol or "TEST"
+
+    if symbol not in _STRAT_CACHE:
+        strat = MLMomentumStrategy(
+            symbol=symbol,
+            api_key="dummy",
+            port=5001,
+            threshold=0.01,
+            stop_pct=1.0,
+            sector='NIFTY 50',
+            vol_multiplier=0.5
+        )
+        # Silence logger
+        strat.logger.handlers = []
+        strat.logger.addHandler(logging.NullHandler())
+        _STRAT_CACHE[symbol] = strat
+
+    strat = _STRAT_CACHE[symbol]
+
+    # Update params
     if params:
-        strat_params.update(params)
-
-    strat = MLMomentumStrategy(
-        symbol=symbol or "TEST",
-        api_key="dummy",
-        port=5001,
-        threshold=float(strat_params.get('threshold', 0.01)),
-        stop_pct=float(strat_params.get('stop_pct', 1.0)),
-        sector=strat_params.get('sector', 'NIFTY 50'),
-        vol_multiplier=float(strat_params.get('vol_multiplier', 0.5))
-    )
-
-    # Silence logger
-    strat.logger.handlers = []
-    strat.logger.addHandler(logging.NullHandler())
+        if 'threshold' in params: strat.roc_threshold = float(params['threshold'])
+        if 'stop_pct' in params: strat.stop_pct = float(params['stop_pct'])
+        if 'sector' in params: strat.sector = params['sector']
+        if 'vol_multiplier' in params: strat.vol_multiplier = float(params['vol_multiplier'])
 
     return strat.calculate_signal(df)
+
+# Module Level Constants for Backtest Engine
+ATR_SL_MULTIPLIER = 2.0
+ATR_TP_MULTIPLIER = 4.0
 
 if __name__ == "__main__":
     run_strategy()
