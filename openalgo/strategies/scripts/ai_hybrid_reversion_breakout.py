@@ -87,6 +87,25 @@ class AIHybridStrategy:
         df['upper'] = df['sma20'] + (2 * df['std'])
         df['lower'] = df['sma20'] - (2 * df['std'])
 
+        # ADX Calculation
+        df['high_low'] = df['high'] - df['low']
+        df['high_close'] = (df['high'] - df['close'].shift()).abs()
+        df['low_close'] = (df['low'] - df['close'].shift()).abs()
+        df['tr'] = df[['high_low', 'high_close', 'low_close']].max(axis=1)
+
+        df['up_move'] = df['high'] - df['high'].shift(1)
+        df['down_move'] = df['low'].shift(1) - df['low']
+
+        df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0)
+        df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0)
+
+        # Smooth
+        df['tr14'] = df['tr'].rolling(14).mean()
+        df['plus_di14'] = 100 * (df['plus_dm'].rolling(14).mean() / df['tr14'])
+        df['minus_di14'] = 100 * (df['minus_dm'].rolling(14).mean() / df['tr14'])
+        df['dx'] = 100 * abs(df['plus_di14'] - df['minus_di14']) / (df['plus_di14'] + df['minus_di14'])
+        df['adx'] = df['dx'].rolling(14).mean()
+
         # Regime Filter (SMA200)
         df['sma200'] = df['close'].rolling(200).mean()
 
@@ -97,7 +116,9 @@ class AIHybridStrategy:
         # Stop Loss distance is roughly 2 * ATR
         # Risk = Qty * 2 * ATR  => Qty = Risk / (2 * ATR)
 
-        atr = df['high'].diff().abs().rolling(14).mean().iloc[-1] # Simple ATR approx
+        atr = last.get('tr14', 0)
+        if atr == 0:
+            atr = df['high'].diff().abs().rolling(14).mean().iloc[-1] # Fallback
 
         risk_amount = 1000.0 # 1% of 100k
 
@@ -115,24 +136,27 @@ class AIHybridStrategy:
         if not pd.isna(last.get('sma200')) and last['close'] < last['sma200']:
             is_bullish_regime = False
 
-        # Reversion Logic: RSI < 30 and Price < Lower BB (Oversold)
-        if last['rsi'] < self.rsi_lower and last['close'] < last['lower']:
+        # ADX Regime Filter
+        adx = last.get('adx', 0)
+
+        # Reversion Logic: RSI < 30 and Price < Lower BB (Oversold) AND ADX < 20 (Range Regime)
+        if adx < 20 and last['rsi'] < self.rsi_lower and last['close'] < last['lower']:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             # Enhanced Volume Confirmation (Stricter than average)
             if last['volume'] > avg_vol * 1.2:
                 # Reversion can trade against trend, so maybe ignore regime or be strict?
                 # Let's say Reversion is allowed in any regime if oversold enough.
-                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
 
-        # Breakout Logic: RSI > 60 and Price > Upper BB
-        elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
+        # Breakout Logic: RSI > 60 and Price > Upper BB AND ADX > 25 (Trend Regime)
+        elif adx > 25 and last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             # Breakout needs significant volume (2x avg)
             # Breakout ONLY in Bullish Regime
             if last['volume'] > avg_vol * 2.0 and is_bullish_regime:
-                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
 
-        return 'HOLD', 0.0, {}
+        return 'HOLD', 0.0, {'atr': atr}
 
     def get_market_context(self):
         # Fetch VIX
@@ -355,62 +379,44 @@ def run_strategy():
     strategy.run()
 
 # Module level wrapper for SimpleBacktestEngine
+_STRAT_CACHE = {}
+
 def generate_signal(df, client=None, symbol=None, params=None):
-    strat_params = {
-        'rsi_lower': 30.0,
-        'rsi_upper': 60.0,
-        'stop_pct': 1.0,
-        'sector': 'NIFTY 50'
-    }
+    global _STRAT_CACHE
+    symbol = symbol or "TEST"
+
+    if symbol not in _STRAT_CACHE:
+        strat = AIHybridStrategy(
+            symbol=symbol,
+            api_key="dummy",
+            port=5001,
+            rsi_lower=30.0,
+            rsi_upper=60.0,
+            stop_pct=1.0,
+            sector='NIFTY 50'
+        )
+        # Silence logger for backtest
+        strat.logger.handlers = []
+        strat.logger.addHandler(logging.NullHandler())
+        _STRAT_CACHE[symbol] = strat
+
+    strat = _STRAT_CACHE[symbol]
+
+    # Apply params
     if params:
-        strat_params.update(params)
-
-    strat = AIHybridStrategy(
-        symbol=symbol or "TEST",
-        api_key="dummy",
-        port=5001,
-        rsi_lower=float(strat_params.get('rsi_lower', 30.0)),
-        rsi_upper=float(strat_params.get('rsi_upper', 60.0)),
-        stop_pct=float(strat_params.get('stop_pct', 1.0)),
-        sector=strat_params.get('sector', 'NIFTY 50')
-    )
-
-    # Silence logger for backtest
-    strat.logger.handlers = []
-    strat.logger.addHandler(logging.NullHandler())
-
-    # Set Time Stop (if using attribute injection for engine)
-    # The class sets it in __init__ but engine might look for it on instance or module?
-    # SimpleBacktestEngine checks: if strategy_module and hasattr(strategy_module, 'TIME_STOP_BARS')
-    # It checks the MODULE (passed as strategy_module).
-    # Wait, SimpleBacktestEngine receives `strategy_module` which is the python module.
-    # So `TIME_STOP_BARS` must be module-level attribute?
-    # The wrapper generates the signal.
-    # The engine loop:
-    # check_exits(..., strategy_module)
-    # def check_exits(..., strategy_module=None):
-    #    if strategy_module and hasattr(strategy_module, 'TIME_STOP_BARS'):
-
-    # So I need to set module level attribute dynamically? That's bad for concurrency.
-    # But for this simple engine, it's fine.
-    # Or better, I set it on the module object that 'run_leaderboard' loaded.
-
-    # However, 'generate_signal' is just a function.
-    # I can't easily change the module level attribute from here for the *current* backtest
-    # unless I know which module object is being used.
-    # But since params change, the Time Stop might change.
-
-    # For now, I will set it on the function object? No.
-    # I will assume fixed Time Stop for now or set it globally in module.
-
-    # Let's set it globally for this run.
-    global TIME_STOP_BARS
-    TIME_STOP_BARS = getattr(strat, 'time_stop_bars', 12)
+        if 'rsi_lower' in params: strat.rsi_lower = float(params['rsi_lower'])
+        if 'rsi_upper' in params: strat.rsi_upper = float(params['rsi_upper'])
+        if 'stop_pct' in params: strat.stop_pct = float(params['stop_pct'])
+        if 'sector' in params: strat.sector = params['sector']
+        # If time_stop_bars passed in params?
+        # Assuming fixed for now
 
     return strat.calculate_signal(df)
 
 # Global default for engine check
 TIME_STOP_BARS = 12
+ATR_SL_MULTIPLIER = 2.0
+ATR_TP_MULTIPLIER = 4.0
 
 if __name__ == "__main__":
     run_strategy()
