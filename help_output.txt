@@ -1,0 +1,8 @@
+[2026-02-11 22:52:45,463] INFO root: Logging initialized. Level: INFO, JSON: False, File: /app/logs/openalgo.log
+usage: daily_startup.py [-h] [--backtest]
+
+OpenAlgo Daily Startup Routine
+
+options:
+  -h, --help  show this help message and exit
+  --backtest  Run backtest and leaderboard generation after prep

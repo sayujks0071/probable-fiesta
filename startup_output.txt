@@ -1,0 +1,17 @@
+[2026-02-11 23:36:06,428] INFO root: Logging initialized. Level: INFO, JSON: False, File: /app/logs/openalgo.log
+[2026-02-11 23:36:06,434] INFO root: === DAILY STARTUP ROUTINE ===
+[2026-02-11 23:36:06,434] INFO root: Directory 'vendor/openalgo' exists.
+[2026-02-11 23:36:06,435] INFO root: Executing Daily Prep (vendor/openalgo/scripts/daily_prep.py)...
+OPENALGO_APIKEY not set. Using default 'demo_key'.
+Error validating AI_Hybrid_RELIANCE: unsupported format string passed to NoneType.__format__
+Found 1 invalid symbols! Trading Halted.
+🚀 DAILY PREP STARTED
+
+--- SYMBOL VALIDATION REPORT ---
+STRATEGY                  | TYPE     | INPUT           | RESOLVED                       | STATUS
+-----------------------------------------------------------------------------------------------
+ORB_NIFTY                 | EQUITY   | NIFTY           | NIFTY                          | ✅ Valid
+SuperTrend_NIFTY          | EQUITY   | NIFTY           | NIFTY                          | ✅ Valid
+MCX_SILVER                | FUT      | SILVER          | SILVERMIC26NOVFUT              | ✅ Valid
+-----------------------------------------------------------------------------------------------
+[2026-02-11 23:36:07,592] ERROR root: ❌ Daily Prep Failed with exit code 1

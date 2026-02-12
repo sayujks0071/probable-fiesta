@@ -7,12 +7,14 @@ import logging
 from openalgo_observability.logging_setup import setup_logging
 
 REPO_URL = "https://github.com/dheerajw7/OpenAlgo.git"
-TARGET_DIR = "openalgo"
+TARGET_DIR = "vendor/openalgo"
 
 def check_and_clone():
     if not os.path.exists(TARGET_DIR):
         logging.info(f"Directory '{TARGET_DIR}' not found. Cloning from {REPO_URL}...")
         try:
+            # Create vendor if not exists
+            os.makedirs("vendor", exist_ok=True)
             subprocess.check_call(["git", "clone", REPO_URL, TARGET_DIR])
             logging.info("Cloning successful.")
         except subprocess.CalledProcessError as e:
@@ -29,10 +31,13 @@ def run_script(script_path, description):
     logging.info(f"Executing {description} ({script_path})...")
     try:
         env = os.environ.copy()
-        env['PYTHONPATH'] = os.getcwd() + ":" + env.get('PYTHONPATH', '')
+        # Add root and vendor to PYTHONPATH
+        # root needed for openalgo_observability (if running from root)
+        # vendor needed for 'import openalgo'
+        env['PYTHONPATH'] = os.getcwd() + ":" + os.path.join(os.getcwd(), 'vendor') + ":" + env.get('PYTHONPATH', '')
 
         # Use venv if exists, else system python
-        venv_python = os.path.join("openalgo", "venv", "bin", "python3")
+        venv_python = os.path.join("vendor", "openalgo", "venv", "bin", "python3")
         python_exec = venv_python if os.path.exists(venv_python) else sys.executable
 
         subprocess.check_call([python_exec, script_path], env=env)
@@ -55,12 +60,12 @@ def main():
     check_and_clone()
 
     # 2. Daily Prep
-    prep_script = os.path.join("openalgo", "scripts", "daily_prep.py")
+    prep_script = os.path.join("vendor", "openalgo", "scripts", "daily_prep.py")
     run_script(prep_script, "Daily Prep")
 
     # 3. Backtest (Optional)
     if args.backtest:
-        backtest_script = os.path.join("openalgo", "scripts", "daily_backtest_leaderboard.py")
+        backtest_script = os.path.join("vendor", "openalgo", "scripts", "daily_backtest_leaderboard.py")
         run_script(backtest_script, "Daily Backtest & Leaderboard")
 
     logging.info("=== DAILY ROUTINE COMPLETE ===")
