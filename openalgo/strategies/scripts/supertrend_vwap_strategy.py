@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-
 # [Optimization 2026-01-31] Changes: threshold: 155 -> 150 (Lowered due to Rejection 100.0%)
+# [Refactor 2026-02-01] Integrated RiskManager and Unified Logic
 SuperTrend VWAP Strategy
 VWAP mean reversion with volume profile analysis, Enhanced Sector RSI Filter, and Dynamic Risk.
 """
@@ -15,50 +15,25 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # Add repo root to path to allow imports
+# This is handled by daily_startup.py usually, but for standalone run:
 script_dir = os.path.dirname(os.path.abspath(__file__))
 strategies_dir = os.path.dirname(script_dir)
-utils_dir = os.path.join(strategies_dir, 'utils')
-
-# Add utils directory to path for imports
-sys.path.insert(0, utils_dir)
+# utils_dir = os.path.join(strategies_dir, 'utils') # Removed in favor of absolute imports
 
 try:
-    from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-    from symbol_resolver import SymbolResolver
+    from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, APIClient, normalize_symbol
+    from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+    from openalgo.strategies.utils.risk_manager import RiskManager
 except ImportError:
+    # Fallback for development/testing when package is not installed
     try:
         sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+        from utils.trading_utils import is_market_open, calculate_intraday_vwap, APIClient, normalize_symbol
         from utils.symbol_resolver import SymbolResolver
+        from utils.risk_manager import RiskManager
     except ImportError:
-        try:
-            from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
-        except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            SymbolResolver = None
-            normalize_symbol = lambda s: s
-            is_market_open = lambda: True
-            def calculate_intraday_vwap(df):
-                df = df.copy()
-                if 'datetime' not in df.columns:
-                    if isinstance(df.index, pd.DatetimeIndex):
-                        df['datetime'] = df.index
-                    elif 'timestamp' in df.columns:
-                        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-                    else:
-                        df['datetime'] = pd.to_datetime(df.index)
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df['date'] = df['datetime'].dt.date
-                typical_price = (df['high'] + df['low'] + df['close']) / 3
-                df['pv'] = typical_price * df['volume']
-                df['cum_pv'] = df.groupby('date')['pv'].cumsum()
-                df['cum_vol'] = df.groupby('date')['volume'].cumsum()
-                df['vwap'] = df['cum_pv'] / df['cum_vol']
-                df['vwap_dev'] = (df['close'] - df['vwap']) / df['vwap']
-                return df
+        print("CRITICAL: Failed to import OpenAlgo utilities.")
+        sys.exit(1)
 
 class SuperTrendVWAPStrategy:
     def __init__(self, symbol, quantity, api_key=None, host=None, ignore_time=False, sector_benchmark='NIFTY BANK', logfile=None, client=None):
@@ -66,7 +41,9 @@ class SuperTrendVWAPStrategy:
         self.quantity = quantity
         self.api_key = api_key or os.getenv('OPENALGO_APIKEY')
         if not self.api_key and not client:
-            raise ValueError("API Key must be provided via --api_key or OPENALGO_APIKEY env var")
+            # Allow "test" key for backtesting
+            if api_key != "test":
+                 raise ValueError("API Key must be provided via --api_key or OPENALGO_APIKEY env var")
 
         self.host = host or os.getenv('OPENALGO_HOST', 'http://127.0.0.1:5001')
         self.ignore_time = ignore_time
@@ -75,11 +52,11 @@ class SuperTrendVWAPStrategy:
         # Optimization Parameters
         self.threshold = 150
         self.stop_pct = 1.8
-        self.adx_threshold = 20  # Added ADX Filter
+        self.adx_threshold = 20
         self.adx_period = 14
+        self.atr_sl_multiplier = 3.0
 
         # State
-        self.trailing_stop = 0.0
         self.atr = 0.0
 
         # Setup Logger
@@ -103,23 +80,24 @@ class SuperTrendVWAPStrategy:
         else:
             self.client = APIClient(api_key=self.api_key, host=self.host)
 
-        self.pm = PositionManager(symbol) if PositionManager else None
+        # Initialize Risk Manager
+        self.rm = RiskManager(strategy_name=f"VWAP_{symbol}", exchange="NSE", capital=100000)
 
-    def generate_signal(self, df):
+    def analyze_data(self, df):
         """
-        Generate signal for backtesting.
-        Returns: 'BUY', 'SELL', 'HOLD'
+        Core logic to analyze market data and return signal.
+        Returns: action ('BUY', 'SELL', 'HOLD'), details (dict)
         """
-        if df.empty: return 'HOLD', {}, {}
+        if df.empty: return 'HOLD', {}
 
-        # Ensure datetime sorted
-        df = df.sort_index()
+        # Ensure sorted
+        # df = df.sort_values('datetime') # Assumed sorted by caller
 
         # Calculate Indicators
         try:
             df = calculate_intraday_vwap(df)
-        except:
-            return 'HOLD', {}, {}
+        except Exception:
+            return 'HOLD', {}
 
         self.atr = self.calculate_atr(df)
         last = df.iloc[-1]
@@ -127,14 +105,8 @@ class SuperTrendVWAPStrategy:
         # Volume Profile
         poc_price, poc_vol = self.analyze_volume_profile(df)
 
-        # Dynamic Deviation
-        vix = self.get_vix()
-        dev_threshold = 0.02
-        if vix > 20: dev_threshold = 0.01
-        elif vix < 12: dev_threshold = 0.03
-
         # Logic
-        # HTF Trend Filter (EMA 200)
+        # HTF Trend Filter (EMA 200) - simplified calculation on 5m data
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
         is_uptrend = True
         if not pd.isna(last['ema200']):
@@ -147,32 +119,50 @@ class SuperTrendVWAPStrategy:
         dynamic_threshold = vol_mean + (1.5 * vol_std)
         is_volume_spike = last['volume'] > dynamic_threshold
 
+        # VWAP Deviation
+        vwap_dev = (last['close'] - last['vwap']) / last['vwap']
+
+        # VIX Check (if available in df or passed in details, else ignore here)
+        # In this method, we focus on price action. External filters like VIX/Sector handled in execution loop.
+
         is_above_poc = last['close'] > poc_price
-        is_not_overextended = abs(last['vwap_dev']) < dev_threshold
 
         # ADX Filter
         adx = self.calculate_adx(df, period=self.adx_period)
         is_strong_trend = adx > self.adx_threshold
 
-        # Sector check (Mocked for backtest usually, or passed via client)
-        sector_bullish = True
-
-        score = 0
         details = {
             'close': last['close'],
             'vwap': last['vwap'],
             'atr': self.atr,
             'poc': poc_price,
-            'adx': adx
+            'adx': adx,
+            'vwap_dev': vwap_dev,
+            'is_uptrend': is_uptrend,
+            'is_strong_trend': is_strong_trend
         }
 
-        if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish and is_strong_trend and is_uptrend:
-            return 'BUY', 1.0, details
+        # BUY Logic
+        if is_above_vwap and is_volume_spike and is_above_poc and is_strong_trend and is_uptrend:
+             # Additional deviation check done in caller or here
+             if abs(vwap_dev) < 0.02: # Default 2%
+                 return 'BUY', details
 
-        # Sell Logic (Inverse for completeness?)
-        # For now, just Buy based on VWAP Breakout
+        return 'HOLD', details
 
-        return 'HOLD', 0.0, details
+    def generate_signal(self, df):
+        """
+        Generate signal for backtesting.
+        """
+        if df.empty: return 'HOLD', 0.0, {}
+
+        # Backtest might not have Volume Profile or VIX fully simulated,
+        # so analyze_data handles the core price/volume logic.
+
+        action, details = self.analyze_data(df)
+
+        # Backtest Simplification: Assume sector/VIX are OK
+        return action, 1.0, details
 
     def calculate_rsi(self, series, period=14):
         delta = series.diff()
@@ -280,6 +270,12 @@ class SuperTrendVWAPStrategy:
         self.symbol = normalize_symbol(self.symbol)
         self.logger.info(f"Starting SuperTrend VWAP for {self.symbol}")
 
+        # Initial Risk Check
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            self.logger.error(f"Cannot trade: {reason}")
+            return
+
         while True:
             try:
                 if not self.ignore_time and not is_market_open():
@@ -299,16 +295,13 @@ class SuperTrendVWAPStrategy:
                     self.logger.error(f"Failed to fetch history for {self.symbol} on {exchange}: {e}", exc_info=True)
                     time.sleep(60)
                     continue
+
                 if df.empty or len(df) < 50:
                     self.logger.warning(f"Insufficient data for {self.symbol}: {len(df)} rows. Need at least 50.")
                     time.sleep(60)
                     continue
-                required_cols = ['open', 'high', 'low', 'close', 'volume']
-                missing_cols = [col for col in required_cols if col not in df.columns]
-                if missing_cols:
-                    self.logger.error(f"Missing required columns for {self.symbol}: {missing_cols}")
-                    time.sleep(60)
-                    continue
+
+                # Pre-process
                 if "datetime" in df.columns:
                     df["datetime"] = pd.to_datetime(df["datetime"])
                 elif "timestamp" in df.columns:
@@ -316,87 +309,80 @@ class SuperTrendVWAPStrategy:
                 else:
                     df["datetime"] = pd.to_datetime(df.index)
                 df = df.sort_values("datetime")
-                try:
-                    if not callable(calculate_intraday_vwap):
-                        self.logger.error("calculate_intraday_vwap is not callable. Check imports.")
-                        time.sleep(60)
-                        continue
-                    df = calculate_intraday_vwap(df)
-                    if 'vwap' not in df.columns or 'vwap_dev' not in df.columns:
-                        self.logger.error("VWAP calculation failed - missing required columns")
-                        time.sleep(60)
-                        continue
-                except Exception as e:
-                    self.logger.error(f"VWAP calc failed: {e}", exc_info=True)
+
+                # Core Analysis
+                action, details = self.analyze_data(df)
+
+                # Extract details
+                close_price = details.get('close')
+                vwap_dev = details.get('vwap_dev', 0)
+
+                # --- Risk Management & Execution ---
+
+                # EOD Square-off Check (Moved after data fetch to have valid price)
+                if self.rm.should_square_off_eod():
+                    self.logger.info("EOD Square-off Triggered")
+                    if self.symbol in self.rm.positions:
+                        # Use last known close price for exit
+                        self.rm.register_exit(self.symbol, close_price)
+                        self.logger.info(f"Closed position at {close_price} due to EOD.")
+                    break
+
+                # Check Stop Loss (Trailing)
+                stop_hit, stop_reason = self.rm.check_stop_loss(self.symbol, close_price)
+                if stop_hit:
+                    self.logger.info(stop_reason)
+                    self.rm.register_exit(self.symbol, close_price)
+                    # Cool down or exit loop? Continue monitoring for re-entry
                     time.sleep(60)
                     continue
-                self.atr = self.calculate_atr(df)
-                last = df.iloc[-1]
 
-                # Volume Profile
-                poc_price, poc_vol = self.analyze_volume_profile(df)
+                # Update Trailing Stop
+                self.rm.update_trailing_stop(self.symbol, close_price)
 
-                # Dynamic Deviation based on VIX
-                vix = self.get_vix()
-                dev_threshold = 0.02
-                size_multiplier = 1.0
+                # Position Management
+                has_position = self.symbol in self.rm.positions
 
-                if vix > 25:
-                    dev_threshold = 0.008 # Very tight in extreme volatility
-                    size_multiplier = 0.5 # Reduce position size
-                elif vix > 20:
-                    dev_threshold = 0.015 # Tighten in high volatility
-                elif vix < 12:
-                    dev_threshold = 0.03 # Loosen in low volatility
+                if has_position:
+                    # Check Strategy Exits (e.g. Price crossed below VWAP)
+                    # We need to know if we are Long or Short.
+                    pos = self.rm.positions[self.symbol]
+                    is_long = pos['qty'] > 0
 
-                # Logic
-                is_above_vwap = last['close'] > last['vwap']
+                    if is_long and close_price < details.get('vwap', 0):
+                        self.logger.info(f"Price {close_price} crossed below VWAP. Exiting.")
+                        self.rm.register_exit(self.symbol, close_price)
 
-                # Dynamic Volume Threshold (Mean + 1.5 StdDev)
-                vol_mean = df['volume'].rolling(20).mean().iloc[-1]
-                vol_std = df['volume'].rolling(20).std().iloc[-1]
-                dynamic_threshold = vol_mean + (1.5 * vol_std)
-                is_volume_spike = last['volume'] > dynamic_threshold
-
-                # Volume Profile Logic: Price must be above Point of Control to confirm value migration up
-                is_above_poc = last['close'] > poc_price
-                is_not_overextended = abs(last['vwap_dev']) < dev_threshold
-
-                if self.pm and self.pm.has_position():
-                    # Manage Position (Trailing Stop)
-                    sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
-
-                    if self.trailing_stop == 0:
-                        self.trailing_stop = last['close'] - (sl_mult * self.atr) # Initial SL
-
-                    # Update Trailing Stop (Only move up)
-                    new_stop = last['close'] - (sl_mult * self.atr)
-                    if new_stop > self.trailing_stop:
-                        self.trailing_stop = new_stop
-                        self.logger.info(f"Trailing Stop Updated: {self.trailing_stop:.2f}")
-
-                    # Check Exit
-                    if last['close'] < self.trailing_stop:
-                        self.logger.info(f"Trailing Stop Hit at {last['close']:.2f}")
-                        self.pm.update_position(self.quantity, last['close'], 'SELL')
-                        self.trailing_stop = 0.0
-                    elif last['close'] < last['vwap']:
-                        self.logger.info(f"Price crossed below VWAP at {last['close']:.2f}. Exiting.")
-                        self.pm.update_position(self.quantity, last['close'], 'SELL')
-                        self.trailing_stop = 0.0
+                    # Short logic if implemented
 
                 else:
                     # Entry Logic
-                    sector_bullish = self.check_sector_correlation()
+                    if action == 'BUY':
+                        # Dynamic Filters
+                        vix = self.get_vix()
 
-                    if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish:
-                        adj_qty = int(self.quantity * size_multiplier)
-                        if adj_qty < 1: adj_qty = 1 # Minimum 1
-                        self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
-                        if self.pm:
-                            self.pm.update_position(adj_qty, last['close'], 'BUY')
-                            sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
-                            self.trailing_stop = last['close'] - (sl_mult * self.atr)
+                        # Size Multiplier based on VIX
+                        size_multiplier = 1.0
+                        if vix > 25: size_multiplier = 0.5
+
+                        # Dev Threshold Check
+                        dev_threshold = 0.02
+                        if vix > 20: dev_threshold = 0.015
+                        elif vix < 12: dev_threshold = 0.03
+
+                        if abs(vwap_dev) > dev_threshold:
+                            self.logger.info(f"Signal ignored: Dev {vwap_dev:.4f} > Threshold {dev_threshold}")
+                        else:
+                            # Sector Check
+                            if self.check_sector_correlation():
+                                can_trade, reason = self.rm.can_trade()
+                                if can_trade:
+                                    qty = int(self.quantity * size_multiplier)
+                                    qty = max(1, qty)
+                                    self.logger.info(f"BUY EXECUTION: {self.symbol} @ {close_price}")
+                                    self.rm.register_entry(self.symbol, qty, close_price, "LONG")
+                                else:
+                                    self.logger.warning(f"Trade Rejected by RiskManager: {reason}")
 
             except Exception as e:
                 self.logger.error(f"Error in SuperTrend VWAP strategy for {self.symbol}: {e}", exc_info=True)
@@ -420,7 +406,7 @@ def run_strategy():
 
     symbol = args.symbol
     if not symbol and args.underlying:
-        if SymbolResolver:
+        try:
             resolver = SymbolResolver()
             res = resolver.resolve({'underlying': args.underlying, 'type': args.type, 'exchange': args.exchange})
             if isinstance(res, dict):
@@ -428,6 +414,8 @@ def run_strategy():
             else:
                 symbol = res
             print(f"Resolved {args.underlying} -> {symbol}")
+        except Exception as e:
+            print(f"Resolution Failed: {e}")
 
     if not symbol:
         print("Error: Must provide --symbol or --underlying")
