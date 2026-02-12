@@ -18,17 +18,41 @@ scrape_configs:
       env: local
       __path__: /var/log/openalgo/*.log
   pipeline_stages:
-  # Attempt to parse JSON lines
-  - json:
-      expressions:
-        level: level
-        logger: logger
-        timestamp: timestamp
-  # Set labels from extracted fields
+  # Detect format (JSON starts with {)
+  - regex:
+      expression: '^(?P<json_start>{)'
   - labels:
-      level:
-      logger:
-  # Set timestamp from extracted field (if available)
-  - timestamp:
-      source: timestamp
-      format: RFC3339
+      json_start:
+
+  # Handle JSON Logs
+  - match:
+      selector: '{json_start="{"}'
+      stages:
+      - json:
+          expressions:
+            timestamp: timestamp
+            level: level
+            logger: logger
+            message: message
+      - timestamp:
+          source: timestamp
+          format: RFC3339
+      - labels:
+          level:
+          logger:
+          # We keep the original log line (JSON) intact.
+          # Loki can parse JSON at query time.
+
+  # Handle Standard Logs (Assume standard Python logging format)
+  - match:
+      selector: '{json_start=""}'
+      stages:
+      - regex:
+          # Matches: [2024-01-29 10:00:00,123] INFO logger: message
+          expression: '^\[(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})\] (?P<level>\w+) (?P<logger>.*?): (?P<message>.*)$'
+      - timestamp:
+          source: timestamp
+          format: '2006-01-02 15:04:05,000'
+      - labels:
+          level:
+          logger:
