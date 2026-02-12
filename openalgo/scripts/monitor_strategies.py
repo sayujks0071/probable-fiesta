@@ -46,6 +46,13 @@ def get_running_strategies():
             log_match = re.search(r'--logfile\s+([^\s]+)', cmdline)
             logfile = log_match.group(1) if log_match else None
 
+            # If logfile not explicitly passed, guess it based on script/symbol (best effort)
+            if not logfile:
+                 # Standard convention: openalgo/log/strategies/{script_name_no_py}_{symbol}.log or similar?
+                 # gap_fade_strategy.py logs to gap_fade.log
+                 # Let's just rely on what we found or check default paths
+                 pass
+
             strategies.append({
                 "pid": pid,
                 "script": script_name,
@@ -70,18 +77,35 @@ def tail_log(logfile, lines=5):
 
 def main():
     print(f"--- OpenAlgo Strategy Monitor --- {datetime.now()}")
+
+    # Check Instruments Master
+    instruments_path = os.path.join(REPO_ROOT, "data", "instruments.csv")
+    if not os.path.exists(instruments_path):
+        print(f"\033[93m[WARNING] Instruments master missing: {instruments_path}. Symbol resolution may fail.\033[0m")
+
     strategies = get_running_strategies()
 
     if not strategies:
         print("No strategies running.")
         return
 
-    print(f"{'PID':<8} {'SYMBOL':<10} {'STRATEGY':<30} {'LOG FILE'}")
-    print("-" * 80)
+    print(f"{'PID':<8} {'SYMBOL':<10} {'STRATEGY':<30} {'STATUS':<10} {'LOG FILE'}")
+    print("-" * 90)
 
     for s in strategies:
+        status = "RUNNING"
         log_display = s['logfile'] if s['logfile'] else "N/A"
-        print(f"{s['pid']:<8} {s['symbol']:<10} {s['script']:<30} {log_display}")
+
+        # Check for Stale Logs
+        if s['logfile'] and os.path.exists(s['logfile']):
+            mtime = os.path.getmtime(s['logfile'])
+            age = time.time() - mtime
+            if age > 300: # 5 mins
+                status = "STALE"
+                # ANSI Red for Stale
+                status = f"\033[91m{status}\033[0m"
+
+        print(f"{s['pid']:<8} {s['symbol']:<10} {s['script']:<30} {status:<10} {log_display}")
 
         # If we have a logfile, show last line
         if s['logfile']:
