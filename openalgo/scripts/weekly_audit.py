@@ -7,6 +7,7 @@ import psutil
 import yfinance as yf
 import requests
 import pandas as pd
+import re
 from pathlib import Path
 
 # Configure Logging
@@ -98,6 +99,15 @@ class WeeklyAudit:
                             active_positions += 1
                             tracked_symbols.add(symbol)
 
+                            # Check Per-Trade Risk (2% Max)
+                            stop_loss = data.get('stop_loss')
+                            risk_pct = 0.0
+                            if stop_loss:
+                                risk_amt = abs(entry - stop_loss) * abs(pos)
+                                risk_pct = risk_amt / self.CAPITAL
+                                if risk_pct > 0.02:
+                                    self.risk_issues.append(f"{symbol} Risk {risk_pct*100:.2f}% > Limit 2.0%")
+
                             # Fetch current price for PnL/DD
                             current_price = self.get_market_price(symbol)
                             pnl = 0.0
@@ -113,7 +123,7 @@ class WeeklyAudit:
                                     if dd_pct > max_dd:
                                         max_dd = dd_pct
 
-                            position_details.append(f"- {symbol}: {pos} @ {entry} (Exp: {exposure:,.2f})")
+                            position_details.append(f"- {symbol}: {pos} @ {entry} (Exp: {exposure:,.2f}, Risk: {risk_pct*100:.2f}%)")
                 except Exception as e:
                     logger.error(f"Error reading {state_file}: {e}")
 
@@ -293,6 +303,7 @@ class WeeklyAudit:
         dhan_positions = self.fetch_broker_positions(5002)
 
         broker_symbols = set()
+        broker_qty = {}
         details = []
 
         if kite_positions is None and dhan_positions is None:
@@ -300,11 +311,17 @@ class WeeklyAudit:
         else:
             if kite_positions:
                 for p in kite_positions:
-                    broker_symbols.add(p.get('symbol', 'UNKNOWN'))
+                    sym = p.get('symbol', 'UNKNOWN')
+                    qty = p.get('quantity', 0)
+                    broker_symbols.add(sym)
+                    broker_qty[sym] = qty
                 details.append(f"Kite: {len(kite_positions)} positions")
             if dhan_positions:
                 for p in dhan_positions:
-                    broker_symbols.add(p.get('symbol', 'UNKNOWN'))
+                    sym = p.get('symbol', 'UNKNOWN')
+                    qty = p.get('quantity', 0)
+                    broker_symbols.add(sym)
+                    broker_qty[sym] = qty
                 details.append(f"Dhan: {len(dhan_positions)} positions")
 
         # Mock Discrepancy (Test hook)
@@ -317,6 +334,20 @@ class WeeklyAudit:
         # Symbol-level comparison
         missing_in_broker = tracked_symbols - broker_symbols
         orphaned_in_broker = broker_symbols - tracked_symbols
+
+        # Quantity comparison for matched symbols
+        for sym in tracked_symbols:
+            if sym in broker_qty:
+                # Get tracked quantity from state file
+                try:
+                    with open(self.state_dir / f"{sym}_state.json", 'r') as f:
+                         s_data = json.load(f)
+                         tracked_qty = s_data.get('position', 0)
+                         b_qty = broker_qty[sym]
+                         if tracked_qty != b_qty:
+                             discrepancies.append(f"{sym} Qty Mismatch: Tracked {tracked_qty} vs Broker {b_qty}")
+                except Exception:
+                    pass
 
         if kite_positions is None and dhan_positions is None:
              discrepancies.append("Cannot reconcile: Brokers Unreachable")
@@ -451,6 +482,64 @@ class WeeklyAudit:
         )
         self.add_section("✅ COMPLIANCE CHECK:", content)
 
+    def scan_logs_for_errors(self):
+        logger.info("Scanning Logs for Errors...")
+        log_dir = self.root_dir / "log" / "strategies"
+        errors = {}
+
+        if log_dir.exists():
+            for log_file in log_dir.glob("*.log"):
+                try:
+                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        for line in f:
+                            if ("429" in line or "Too Many Requests" in line) and "Error" in line:
+                                errors["Rate Limit (429)"] = errors.get("Rate Limit (429)", 0) + 1
+                            elif ("403" in line or "Forbidden" in line) and "Error" in line:
+                                errors["Auth Error (403)"] = errors.get("Auth Error (403)", 0) + 1
+                            elif ("500" in line or "Internal Server Error" in line) and "Error" in line:
+                                errors["Server Error (500)"] = errors.get("Server Error (500)", 0) + 1
+                except Exception:
+                    pass
+
+        if errors:
+            content = "⚠️ API Errors Detected:\n"
+            for k, v in errors.items():
+                content += f"- {k}: {v} occurrences\n"
+            self.risk_issues.append(f"API Errors: {errors}")
+            self.add_section("🐛 ERROR LOG ANALYSIS:", content)
+        else:
+            self.add_section("🐛 ERROR LOG ANALYSIS:", "✅ No Critical API Errors Found")
+
+    def generate_pnl_report(self):
+        logger.info("Generating P&L Report...")
+        log_dir = self.root_dir / "log" / "strategies"
+        total_profit = 0.0
+        total_loss = 0.0
+
+        if log_dir.exists():
+            for log_file in log_dir.glob("*.log"):
+                try:
+                    with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        for line in f:
+                            # Simple regex for PROFIT: X and LOSS: Y
+                            p_match = re.search(r"PROFIT:\s*([\d\.]+)", line)
+                            l_match = re.search(r"LOSS:\s*([\-\d\.]+)", line)
+
+                            if p_match:
+                                total_profit += abs(float(p_match.group(1)))
+                            if l_match:
+                                total_loss += -abs(float(l_match.group(1)))
+                except Exception:
+                    pass
+
+        net_pnl = total_profit + total_loss
+        content = (
+            f"- Total Realized Profit: +{total_profit:,.2f}\n"
+            f"- Total Realized Loss: {total_loss:,.2f}\n"
+            f"- Net P&L: {net_pnl:,.2f}\n"
+        )
+        self.add_section("💰 WEEKLY P&L REPORT:", content)
+
     def run(self):
         tracked_symbols = self.analyze_portfolio_risk()
         self.analyze_correlations(tracked_symbols)
@@ -460,6 +549,8 @@ class WeeklyAudit:
         self.check_system_health()
         self.detect_market_regime()
         self.check_compliance()
+        self.scan_logs_for_errors()
+        self.generate_pnl_report()
 
         # Compile Issues
         issues_content = ""
