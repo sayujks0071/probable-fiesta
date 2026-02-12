@@ -7,72 +7,67 @@ import pandas as pd
 from datetime import datetime, timedelta
 import importlib.util
 
-# Paths
-# This script is in vendor/openalgo/scripts/
-BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # vendor/openalgo/scripts
-REPO_ROOT = os.path.dirname(os.path.dirname(BASE_DIR)) # vendor
+# Add repo root to path
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.append(repo_root)
 
-# Add REPO_ROOT to sys.path to allow 'import openalgo...'
-if REPO_ROOT not in sys.path:
-    sys.path.append(REPO_ROOT)
-
+# Import Backtest Engine
 try:
     from openalgo.strategies.utils.simple_backtest_engine import SimpleBacktestEngine
-except ImportError as e:
-    print(f"Import Error: {e}")
-    sys.exit(1)
+except ImportError:
+    # Fallback path logic
+    sys.path.append(os.path.join(repo_root, 'openalgo', 'strategies', 'utils'))
+    from simple_backtest_engine import SimpleBacktestEngine
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Leaderboard")
 
-# Strategy Configurations
 STRATEGIES = [
     {
         "name": "SuperTrend_VWAP",
-        "file": "vendor/openalgo/strategies/scripts/supertrend_vwap_strategy.py",
-        "symbol": "NIFTY",
+        "file": "openalgo/strategies/scripts/supertrend_vwap_strategy.py",
+        "symbol": "NIFTY", # Default test symbol
         "exchange": "NSE_INDEX"
     },
     {
         "name": "MCX_Momentum",
-        "file": "vendor/openalgo/strategies/scripts/mcx_commodity_momentum_strategy.py",
-        "symbol": "SILVERMIC",
+        "file": "openalgo/strategies/scripts/mcx_commodity_momentum_strategy.py",
+        "symbol": "SILVERMIC", # Will try to resolve if needed, but engine needs raw symbol usually?
+                               # Engine loads data. We can use a proxy symbol like 'SILVER' if using mock data,
+                               # but usually specific symbol needed.
         "exchange": "MCX"
+    },
+    {
+        "name": "AI_Hybrid",
+        "file": "openalgo/strategies/scripts/ai_hybrid_reversion_breakout.py",
+        "symbol": "NIFTY",
+        "exchange": "NSE_INDEX"
+    },
+    {
+        "name": "ML_Momentum",
+        "file": "openalgo/strategies/scripts/advanced_ml_momentum_strategy.py",
+        "symbol": "NIFTY",
+        "exchange": "NSE_INDEX"
     }
 ]
 
-# Fine-Tuning Grid
 TUNING_CONFIG = {
     "SuperTrend_VWAP": {
         "stop_pct": [1.5, 2.0],
         "threshold": [150, 160]
     },
     "MCX_Momentum": {
-        "adx_threshold": [20, 25, 30],
+        "adx_threshold": [20, 30],
         "period_rsi": [10, 14]
+    },
+    "AI_Hybrid": {
+        "rsi_lower": [25, 35],
+        "rsi_upper": [60, 70]
+    },
+    "ML_Momentum": {
+        "threshold": [0.01, 0.02]
     }
 }
-
-class StrategyWrapper:
-    """Wraps a strategy module to inject parameters."""
-    def __init__(self, module, params):
-        self.module = module
-        self.params = params
-
-        # Proxy standard attributes
-        self.ATR_SL_MULTIPLIER = getattr(module, 'ATR_SL_MULTIPLIER', 1.5)
-        self.ATR_TP_MULTIPLIER = getattr(module, 'ATR_TP_MULTIPLIER', 2.5)
-        self.TIME_STOP_BARS = getattr(module, 'TIME_STOP_BARS', None)
-        self.BREAKEVEN_TRIGGER_R = getattr(module, 'BREAKEVEN_TRIGGER_R', None)
-
-    def generate_signal(self, df, client=None, symbol=None):
-        # Call the original generate_signal with injected params
-        return self.module.generate_signal(df, client, symbol, params=self.params)
-
-    def check_exit(self, df, position):
-        if hasattr(self.module, 'check_exit'):
-            return self.module.check_exit(df, position)
-        return False, None, None
 
 def generate_variants(base_name, grid):
     import itertools
@@ -93,12 +88,8 @@ def generate_variants(base_name, grid):
 def load_strategy_module(filepath):
     """Load a strategy script as a module."""
     try:
-        if not os.path.exists(filepath):
-            # Try absolute path from cwd
-            filepath = os.path.abspath(filepath)
-
         module_name = os.path.basename(filepath).replace('.py', '')
-        spec = importlib.util.spec_from_file_location(module_name, filepath)
+        spec = importlib.util.spec_from_file_location(module_name, os.path.join(repo_root, filepath))
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
@@ -110,15 +101,13 @@ def load_strategy_module(filepath):
 def run_leaderboard():
     engine = SimpleBacktestEngine(initial_capital=100000.0)
 
-    # Use a longer window for better stats?
-    # For daily run, maybe last 5 days
-    start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
     end_date = datetime.now().strftime("%Y-%m-%d")
 
     results = []
 
     for strat_config in STRATEGIES:
-        logger.info(f"Processing {strat_config['name']}...")
+        logger.info(f"Backtesting {strat_config['name']}...")
 
         module = load_strategy_module(strat_config['file'])
         if not module:
@@ -133,17 +122,38 @@ def run_leaderboard():
 
         if strat_config['name'] in TUNING_CONFIG:
             variants = generate_variants(strat_config['name'], TUNING_CONFIG[strat_config['name']])
+            # Limit to top 3 variants if too many? For now run all (small grid)
             runs.extend(variants)
 
         for run in runs:
-            logger.info(f"  > Backtesting: {run['name']}")
+            logger.info(f"  > Variant: {run['name']} Params: {run['params']}")
 
-            if run['params']:
-                target_module = StrategyWrapper(module, run['params'])
+            # Monkey patch module to accept params if needed, or pass via run_backtest extension?
+            # SimpleBacktestEngine.run_backtest calls module.generate_signal(..., symbol=symbol)
+            # It doesn't pass 'params'.
+            # We need to wrap the module or monkey patch generate_signal.
+
+            original_gen = module.generate_signal
+
+            # Create a partial/wrapper
+            params = run['params']
+            if params:
+                def wrapped_gen(df, client=None, symbol=None):
+                    return original_gen(df, client, symbol, params=params)
+
+                # Create a temporary object acting as module
+                class ModuleWrapper:
+                    pass
+                wrapper = ModuleWrapper()
+                wrapper.generate_signal = wrapped_gen
+                wrapper.ATR_SL_MULTIPLIER = getattr(module, 'ATR_SL_MULTIPLIER', 1.5)
+                wrapper.ATR_TP_MULTIPLIER = getattr(module, 'ATR_TP_MULTIPLIER', 2.5)
+                target_module = wrapper
             else:
                 target_module = module
 
             try:
+                # Run Backtest
                 res = engine.run_backtest(
                     strategy_module=target_module,
                     symbol=strat_config['symbol'],

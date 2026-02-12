@@ -1,6 +1,6 @@
 import pandas as pd
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import re
 
@@ -9,8 +9,7 @@ logger = logging.getLogger("SymbolResolver")
 class SymbolResolver:
     def __init__(self, instruments_path=None):
         if instruments_path is None:
-            # Default to vendor/openalgo/data/instruments.csv
-            # self file is in vendor/openalgo/strategies/utils/
+            # Default to openalgo/data/instruments.csv
             base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../data'))
             instruments_path = os.path.join(base_path, 'instruments.csv')
 
@@ -31,10 +30,6 @@ class SymbolResolver:
                      # Map segment to instrument_type if missing (fallback)
                      self.df['instrument_type'] = self.df['segment'].apply(lambda x: 'FUT' if 'FUT' in str(x) else ('OPT' if 'OPT' in str(x) else 'EQ'))
 
-                # Normalize columns
-                if 'name' not in self.df.columns and 'tradingsymbol' in self.df.columns:
-                    self.df['name'] = self.df['tradingsymbol'].apply(lambda x: re.sub(r'\d.*', '', x))
-
                 logger.info(f"Loaded {len(self.df)} instruments from {self.instruments_path}")
             except Exception as e:
                 logger.error(f"Failed to load instruments: {e}")
@@ -44,6 +39,7 @@ class SymbolResolver:
     def resolve(self, config):
         """
         Resolve a strategy config to a tradable symbol or list of candidates.
+        Used primarily for validation during Daily Prep.
         """
         itype = config.get('type', 'EQUITY').upper()
         underlying = config.get('underlying')
@@ -51,10 +47,6 @@ class SymbolResolver:
             underlying = config.get('symbol')
 
         exchange = config.get('exchange', 'NSE')
-
-        # Mapping for NIFTY/BANKNIFTY if passed as NIFTY 50 etc
-        if underlying == 'NIFTY 50': underlying = 'NIFTY'
-        if underlying == 'NIFTY BANK': underlying = 'BANKNIFTY'
 
         if itype == 'EQUITY':
             return self._resolve_equity(underlying, exchange)
@@ -69,12 +61,14 @@ class SymbolResolver:
     def get_tradable_symbol(self, config, spot_price=None):
         """
         Get a specific tradable symbol for execution.
+        For Options, requires spot_price to determine Strike if 'ATM/ITM/OTM' is used.
         """
         itype = config.get('type', 'EQUITY').upper()
 
         if itype == 'OPT':
             return self._get_option_symbol(config, spot_price)
         else:
+            # For Equity/Futures, resolve returns the specific symbol
             return self.resolve(config)
 
     def _resolve_equity(self, symbol, exchange):
@@ -100,52 +94,52 @@ class SymbolResolver:
         if self.df.empty: return f"{underlying}FUT"
 
         now = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-
-        # Basic Filter
-        mask = (self.df['instrument_type'] == 'FUT') & \
+        # Filter for Futures of this underlying
+        mask = (self.df['name'] == underlying) & \
+               (self.df['instrument_type'] == 'FUT') & \
                (self.df['exchange'] == exchange) & \
                (self.df['expiry'] >= now)
 
-        # Name Filter (Flexible)
-        # Check if name column matches underlying OR symbol starts with underlying
-        name_mask = (self.df['name'] == underlying) | (self.df['symbol'].str.startswith(underlying))
-        mask &= name_mask
-
-        matches = self.df[mask].copy()
+        matches = self.df[mask].sort_values('expiry')
 
         if matches.empty:
-            logger.warning(f"No futures found for {underlying}")
-            return None
+            # Try searching by symbol if name match fails
+            mask_sym = (self.df['symbol'].str.startswith(underlying)) & \
+                       (self.df['instrument_type'] == 'FUT') & \
+                       (self.df['exchange'] == exchange) & \
+                       (self.df['expiry'] >= now)
+            matches = self.df[mask_sym].sort_values('expiry')
+
+            if matches.empty:
+                logger.warning(f"No futures found for {underlying}")
+                return None
 
         # MCX MINI Logic
         if exchange == 'MCX':
-            # Identify MINI contracts: containing 'M' or 'MINI' or 'MIC' usually followed by digits or end of string
-            # Regex: (M|MINI|MIC) followed by digit or end of string, but ensuring it's not just part of the name (e.g. ALUMINIUM)
-            # Actually, standard naming: SILVER -> SILVERM, SILVERMIC. GOLD -> GOLDM.
+            # Priority:
+            # 1. Symbol contains 'MINI'
+            # 2. Symbol matches Name + 'M' + Date (e.g., SILVERM...) vs SILVER...
 
-            # Simple heuristic: Sort by lot_size ASC. The smallest lot size is likely the MINI/MICRO.
-            matches['lot_size'] = pd.to_numeric(matches['lot_size'], errors='coerce').fillna(999999)
-            matches = matches.sort_values(['expiry', 'lot_size'])
+            # Check for explicitly 'MINI' or 'M' suffix on underlying name
+            # Use non-capturing group to avoid pandas UserWarning
+            mini_pattern = r'(?:{}M|{}MINI)'.format(underlying, underlying)
 
-            # If multiple contracts exist for the nearest expiry, pick the one with smallest lot size
-            nearest_expiry = matches.iloc[0]['expiry']
-            same_expiry = matches[matches['expiry'] == nearest_expiry]
+            mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
 
-            best_match = same_expiry.sort_values('lot_size').iloc[0]
+            if not mini_matches.empty:
+                logger.info(f"Found MCX MINI contract for {underlying}: {mini_matches.iloc[0]['symbol']}")
+                return mini_matches.iloc[0]['symbol']
 
-            logger.info(f"MCX Resolution for {underlying}: Selected {best_match['symbol']} (Lot: {best_match['lot_size']})")
-            return best_match['symbol']
+            # Also check if the symbol itself ends with 'M' before some digits (less reliable but possible)
+            # e.g. CRUDEOILM23NOV...
 
-        # Standard Future (NSE) - just nearest expiry
-        matches = matches.sort_values('expiry')
+            logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
+
+        # Return nearest expiry
         return matches.iloc[0]['symbol']
 
     def _resolve_option(self, config):
         underlying = config.get('underlying')
-        # Map NIFTY 50 -> NIFTY
-        if underlying == 'NIFTY 50': underlying = 'NIFTY'
-        if underlying == 'NIFTY BANK': underlying = 'BANKNIFTY'
-
         option_type = config.get('option_type', 'CE').upper()
         expiry_pref = config.get('expiry_preference', 'WEEKLY').upper()
         exchange = config.get('exchange', 'NFO')
@@ -153,18 +147,24 @@ class SymbolResolver:
         if self.df.empty: return None
 
         now = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-
         mask = (self.df['name'] == underlying) & \
                (self.df['instrument_type'] == 'OPT') & \
                (self.df['exchange'] == exchange) & \
                (self.df['expiry'] >= now)
 
+        # Pre-filter by Option Type if possible (though we might need both for straddles, here we resolve for specific type)
         if option_type:
              mask &= self.df['symbol'].str.endswith(option_type)
 
         matches = self.df[mask].copy()
 
         if matches.empty:
+            # Try name mapping (e.g. NIFTY 50 -> NIFTY)
+            if underlying == 'NIFTY 50':
+                return self._resolve_option({**config, 'underlying': 'NIFTY'})
+            if underlying == 'NIFTY BANK':
+                return self._resolve_option({**config, 'underlying': 'BANKNIFTY'})
+
             logger.warning(f"No options found for {underlying} {option_type}")
             return None
 
@@ -191,7 +191,7 @@ class SymbolResolver:
     def _select_expiry(self, unique_expiries, expiry_pref):
         if not unique_expiries: return None
 
-        # 1. Identify the nearest expiry
+        # 1. Identify the nearest expiry (base reference)
         nearest_expiry = unique_expiries[0]
 
         if expiry_pref == 'WEEKLY':
@@ -199,8 +199,7 @@ class SymbolResolver:
 
         elif expiry_pref == 'MONTHLY':
             # Logic: Select the last expiry of the *current month cycle*.
-            # The nearest_expiry is the start of our search.
-            # We want the last expiry in the month of nearest_expiry.
+            # If nearest_expiry is in Oct, find the last expiry in Oct.
 
             target_year = nearest_expiry.year
             target_month = nearest_expiry.month
@@ -219,7 +218,7 @@ class SymbolResolver:
 
     def _get_option_symbol(self, config, spot_price):
         """
-        Find specific option symbol based on spot price and strike criteria.
+        Find specific option symbol based on spot price and strike criteria (ATM, ITM, OTM).
         """
         if spot_price is None:
             logger.error("Spot price required to resolve Option Symbol")
@@ -231,13 +230,11 @@ class SymbolResolver:
 
         expiry_date = pd.to_datetime(valid_set['expiry'])
         underlying = config.get('underlying')
-        if underlying == 'NIFTY 50': underlying = 'NIFTY'
-        if underlying == 'NIFTY BANK': underlying = 'BANKNIFTY'
-
         exchange = config.get('exchange', 'NFO')
         option_type = config.get('option_type', 'CE').upper()
-        strike_criteria = config.get('strike_criteria', 'ATM').upper()
+        strike_criteria = config.get('strike_criteria', 'ATM').upper() # ATM, ITM, OTM
 
+        # Filter instruments for this specific expiry
         mask = (self.df['name'] == underlying) & \
                (self.df['instrument_type'] == 'OPT') & \
                (self.df['exchange'] == exchange) & \
@@ -249,25 +246,37 @@ class SymbolResolver:
         if chain.empty:
             return None
 
-        # Extract Strike
+        # Extract Strike Price
+        # Assuming symbol format or having a 'strike' column.
+        # If 'strike' column doesn't exist, we must parse symbol or assume 'strike' exists in master.
+        # OpenAlgo/Kite master usually has 'strike'.
+
         if 'strike' not in chain.columns:
+            # Try to parse strike from symbol (e.g. NIFTY23OCT19500CE)
+            # This is brittle but a fallback.
+            # Regex: look for digits before CE/PE
             def parse_strike(sym):
                 m = re.search(r'(\d+)(CE|PE)$', sym)
                 return float(m.group(1)) if m else 0
             chain['strike'] = chain['symbol'].apply(parse_strike)
 
+        # Sort by strike
         chain = chain.sort_values('strike')
 
-        # Find ATM
+        # Find ATM Strike
+        # Simple logic: closest to spot
         chain['diff'] = abs(chain['strike'] - spot_price)
         atm_row = chain.loc[chain['diff'].idxmin()]
         atm_strike = atm_row['strike']
 
         selected_strike = atm_strike
+
+        # Adjust for ITM/OTM (Simple 1-step logic, can be enhanced)
         strikes = sorted(chain['strike'].unique())
         atm_index = strikes.index(atm_strike)
 
         if strike_criteria == 'ITM':
+            # Call ITM = Lower Strike, Put ITM = Higher Strike
             if option_type == 'CE':
                 idx = max(0, atm_index - 1)
             else:
@@ -275,12 +284,14 @@ class SymbolResolver:
             selected_strike = strikes[idx]
 
         elif strike_criteria == 'OTM':
+            # Call OTM = Higher Strike, Put OTM = Lower Strike
             if option_type == 'CE':
                 idx = min(len(strikes)-1, atm_index + 1)
             else:
                 idx = max(0, atm_index - 1)
             selected_strike = strikes[idx]
 
+        # Get final symbol
         final_row = chain[chain['strike'] == selected_strike]
         if not final_row.empty:
             return final_row.iloc[0]['symbol']

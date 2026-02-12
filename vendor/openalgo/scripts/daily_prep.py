@@ -10,56 +10,58 @@ from datetime import datetime, timedelta
 import httpx
 import pandas as pd
 
+# Add repo root to path
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.append(repo_root)
+
+from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+from openalgo.strategies.utils.trading_utils import APIClient
+
 # Configure Logging
 try:
     from openalgo_observability.logging_setup import setup_logging
     setup_logging()
 except ImportError:
+    # Fallback if module not found
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 logger = logging.getLogger("DailyPrep")
 
-try:
-    from openalgo.strategies.utils.symbol_resolver import SymbolResolver
-except ImportError:
-    logger.error("Could not import SymbolResolver. Ensure PYTHONPATH includes 'vendor'.")
-    sys.exit(1)
-
-# Paths relative to this script
-# Script is in vendor/openalgo/scripts/
-BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # vendor/openalgo/scripts
-OPENALGO_ROOT = os.path.dirname(BASE_DIR) # vendor/openalgo
-
-DATA_DIR = os.path.join(OPENALGO_ROOT, 'data')
-STATE_DIR = os.path.join(OPENALGO_ROOT, 'strategies', 'state')
-SESSION_DIR = os.path.join(OPENALGO_ROOT, 'sessions')
-CONFIG_FILE = os.path.join(OPENALGO_ROOT, 'strategies', 'active_strategies.json')
+DATA_DIR = os.path.join(repo_root, 'openalgo/data')
+STATE_DIR = os.path.join(repo_root, 'openalgo/strategies/state')
+SESSION_DIR = os.path.join(repo_root, 'openalgo/sessions')
+CONFIG_FILE = os.path.join(repo_root, 'openalgo/strategies/active_strategies.json')
 
 def check_env():
     logger.info("Checking Environment...")
     if not os.getenv('OPENALGO_APIKEY'):
         logger.warning("OPENALGO_APIKEY not set. Using default 'demo_key'.")
         os.environ['OPENALGO_APIKEY'] = 'demo_key'
+
+    # Verify paths
+    if not os.path.exists(os.path.join(repo_root, 'openalgo')):
+        logger.error("Repo structure invalid. 'openalgo' dir not found.")
+        sys.exit(1)
     logger.info("Environment OK.")
 
 def purge_stale_state():
     logger.info("Purging Stale State...")
 
-    # 1. State Files
+    # 1. Clear PositionManager state
     if os.path.exists(STATE_DIR):
         files = glob.glob(os.path.join(STATE_DIR, "*.json"))
-        count = 0
+        deleted_count = 0
         for f in files:
             try:
                 os.remove(f)
-                count += 1
+                deleted_count += 1
             except Exception as e:
                 logger.error(f"Failed to delete {f}: {e}")
-        logger.info(f"Deleted {count} state files from {STATE_DIR}")
+        logger.info(f"Deleted {deleted_count} state files from {STATE_DIR}")
     else:
-        os.makedirs(STATE_DIR, exist_ok=True)
+        logger.info(f"State dir {STATE_DIR} does not exist, skipping.")
 
-    # 2. Cached Instruments
+    # 2. Clear Cached Instruments
     inst_file = os.path.join(DATA_DIR, 'instruments.csv')
     if os.path.exists(inst_file):
         try:
@@ -68,122 +70,145 @@ def purge_stale_state():
         except Exception as e:
             logger.error(f"Failed to delete instruments.csv: {e}")
 
-    # 3. Sessions
+    # 3. Clear Auth/Sessions
     if os.path.exists(SESSION_DIR):
         try:
             shutil.rmtree(SESSION_DIR)
             os.makedirs(SESSION_DIR)
-            logger.info("Purged session directory")
+            logger.info(f"Purged and recreated session directory: {SESSION_DIR}")
         except Exception as e:
-            logger.error(f"Failed to purge sessions: {e}")
+             logger.error(f"Failed to purge session directory: {e}")
     else:
         os.makedirs(SESSION_DIR, exist_ok=True)
+        logger.info(f"Created session directory: {SESSION_DIR}")
 
 def check_auth():
     logger.info("Running Authentication Health Check...")
-    # Mocking for now as no real broker connection
-    logger.info("Authentication check passed (Simulated).")
+    script_path = os.path.join(repo_root, 'openalgo/scripts/authentication_health_check.py')
+
+    # Check if script exists, if not, mock it for now
+    if not os.path.exists(script_path):
+        logger.warning(f"Auth check script not found at {script_path}. Skipping.")
+        return
+
+    try:
+        # Run the health check script
+        result = subprocess.run([sys.executable, script_path], capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error("Authentication check failed!")
+            logger.error(result.stderr)
+            # In a strict environment, we might exit here:
+            # sys.exit(1)
+        else:
+            logger.info("Authentication check passed.")
+    except Exception as e:
+        logger.error(f"Failed to run auth check: {e}")
 
 def fetch_instruments():
     logger.info("Fetching Instruments...")
     os.makedirs(DATA_DIR, exist_ok=True)
     csv_path = os.path.join(DATA_DIR, 'instruments.csv')
 
-    # Try fetching from API (Simulated if no host)
-    host = os.getenv('OPENALGO_HOST', 'http://127.0.0.1:5001')
     api_key = os.getenv('OPENALGO_APIKEY')
+    host = os.getenv('OPENALGO_HOST', 'http://127.0.0.1:5001')
 
     fetched = False
     try:
-        if 'localhost' in host:
-            # Check if server running? No, just try request with short timeout
-             with httpx.Client(timeout=2.0) as client:
-                resp = client.get(f"{host}/api/v1/instruments", headers={'X-API-KEY': api_key})
-                if resp.status_code == 200:
-                    with open(csv_path, 'wb') as f:
-                        f.write(resp.content)
-                    fetched = True
-                    logger.info("Fetched instruments from API.")
+        # Try fetching from API
+        url = f"{host}/api/v1/instruments"
+        logger.info(f"Requesting {url}...")
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(url, headers={'X-API-KEY': api_key})
+            if resp.status_code == 200:
+                with open(csv_path, 'wb') as f:
+                    f.write(resp.content)
+                logger.info("Instruments downloaded successfully via API.")
+                fetched = True
+            else:
+                logger.warning(f"Failed to fetch instruments from API: {resp.status_code}")
     except Exception as e:
-        logger.warning(f"API fetch failed: {e}")
+        logger.warning(f"API Connection failed: {e}")
 
+    # Fallback: Generate Comprehensive Mock Instruments if not found
     if not fetched:
         logger.info("Using Fallback: Generating Mock Instruments...")
-        # Use the logic from previous script but ensure it covers everything needed
-        # We can re-use the generator logic
-        _generate_mock_instruments(csv_path)
+        now = datetime.now()
 
-def _generate_mock_instruments(path):
-    now = datetime.now()
-    # Next Thursday
-    days_ahead = 3 - now.weekday()
-    if days_ahead < 0: days_ahead += 7
-    next_thursday = now + timedelta(days=days_ahead)
+        # Calculate next Thursday for Weekly Expiry
+        days_ahead = 3 - now.weekday()
+        if days_ahead < 0: days_ahead += 7
+        next_thursday = now + timedelta(days=days_ahead)
 
-    # Monthly (Last Thursday of Month)
-    # Simple logic: If today > 25th, maybe next month?
-    # Let's just create expiries for this month and next month
+        # Calculate Monthly Expiry (Last Thursday of current month)
+        # Simplified: Last day of month
+        import calendar
+        last_day = calendar.monthrange(now.year, now.month)[1]
+        month_end = datetime(now.year, now.month, last_day)
+        # Backtrack to Thursday
+        offset = (month_end.weekday() - 3) % 7
+        monthly_expiry = month_end - timedelta(days=offset)
 
-    import calendar
-    def get_last_thursday(year, month):
-        last_day = calendar.monthrange(year, month)[1]
-        dt = datetime(year, month, last_day)
-        offset = (dt.weekday() - 3) % 7
-        return dt - timedelta(days=offset)
+        data = [
+            # Equities
+            {'exchange': 'NSE', 'token': '1', 'symbol': 'RELIANCE', 'name': 'RELIANCE', 'expiry': None, 'lot_size': 1, 'instrument_type': 'EQ'},
+            {'exchange': 'NSE', 'token': '2', 'symbol': 'NIFTY', 'name': 'NIFTY', 'expiry': None, 'lot_size': 1, 'instrument_type': 'EQ'},
+            {'exchange': 'NSE', 'token': '3', 'symbol': 'INFY', 'name': 'INFY', 'expiry': None, 'lot_size': 1, 'instrument_type': 'EQ'},
 
-    this_month_exp = get_last_thursday(now.year, now.month)
-    if now > this_month_exp:
-        # Move to next month
-        next_month = now.month + 1 if now.month < 12 else 1
-        next_year = now.year if now.month < 12 else now.year + 1
-        this_month_exp = get_last_thursday(next_year, next_month)
+            # MCX Futures (Standard & MINI)
+            {'exchange': 'MCX', 'token': '4', 'symbol': 'SILVERMIC23NOVFUT', 'name': 'SILVER', 'expiry': (now + timedelta(days=20)).strftime('%Y-%m-%d'), 'lot_size': 1, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'token': '5', 'symbol': 'SILVER23NOVFUT', 'name': 'SILVER', 'expiry': (now + timedelta(days=20)).strftime('%Y-%m-%d'), 'lot_size': 30, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'token': '6', 'symbol': 'GOLDM23NOVFUT', 'name': 'GOLD', 'expiry': (now + timedelta(days=25)).strftime('%Y-%m-%d'), 'lot_size': 10, 'instrument_type': 'FUT'},
 
-    data = [
-        {'exchange': 'NSE', 'token': '1', 'symbol': 'RELIANCE', 'name': 'RELIANCE', 'expiry': None, 'lot_size': 1, 'instrument_type': 'EQ', 'tradingsymbol': 'RELIANCE'},
-        {'exchange': 'NSE', 'token': '2', 'symbol': 'NIFTY', 'name': 'NIFTY', 'expiry': None, 'lot_size': 1, 'instrument_type': 'EQ', 'tradingsymbol': 'NIFTY'},
+            # 2026 Mock Futures for Testing
+            {'exchange': 'MCX', 'token': '100', 'symbol': 'GOLDM05FEB26FUT', 'name': 'GOLD', 'expiry': '2026-02-05', 'lot_size': 10, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'token': '101', 'symbol': 'SILVERM27FEB26FUT', 'name': 'SILVER', 'expiry': '2026-02-27', 'lot_size': 5, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'token': '102', 'symbol': 'CRUDEOIL19FEB26FUT', 'name': 'CRUDEOIL', 'expiry': '2026-02-19', 'lot_size': 100, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'token': '103', 'symbol': 'NATURALGAS24FEB26FUT', 'name': 'NATURALGAS', 'expiry': '2026-02-24', 'lot_size': 1250, 'instrument_type': 'FUT'},
 
-        # Options
-        {'exchange': 'NFO', 'token': '10', 'symbol': f'NIFTY{next_thursday.strftime("%d%b%y").upper()}19500CE', 'name': 'NIFTY', 'expiry': next_thursday, 'lot_size': 50, 'instrument_type': 'OPT', 'tradingsymbol': f'NIFTY{next_thursday.strftime("%d%b%y").upper()}19500CE', 'strike': 19500},
-        {'exchange': 'NFO', 'token': '11', 'symbol': f'NIFTY{this_month_exp.strftime("%d%b%y").upper()}19500CE', 'name': 'NIFTY', 'expiry': this_month_exp, 'lot_size': 50, 'instrument_type': 'OPT', 'tradingsymbol': f'NIFTY{this_month_exp.strftime("%d%b%y").upper()}19500CE', 'strike': 19500},
+            # NSE Futures
+            {'exchange': 'NFO', 'token': '7', 'symbol': 'NIFTY23OCTFUT', 'name': 'NIFTY', 'expiry': monthly_expiry.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'FUT'},
 
-        # MCX
-        {'exchange': 'MCX', 'token': '20', 'symbol': 'SILVERMIC26NOVFUT', 'name': 'SILVER', 'expiry': datetime(2026, 11, 30), 'lot_size': 1, 'instrument_type': 'FUT', 'tradingsymbol': 'SILVERMIC26NOVFUT'},
-        {'exchange': 'MCX', 'token': '21', 'symbol': 'SILVER26NOVFUT', 'name': 'SILVER', 'expiry': datetime(2026, 11, 30), 'lot_size': 30, 'instrument_type': 'FUT', 'tradingsymbol': 'SILVER26NOVFUT'},
-    ]
-    pd.DataFrame(data).to_csv(path, index=False)
-    logger.info(f"Mock instruments saved to {path}")
+            # NSE Options (Weekly)
+            {'exchange': 'NFO', 'token': '10', 'symbol': 'NIFTY23OCT19500CE', 'name': 'NIFTY', 'expiry': next_thursday.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT'},
+            {'exchange': 'NFO', 'token': '11', 'symbol': 'NIFTY23OCT19500PE', 'name': 'NIFTY', 'expiry': next_thursday.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT'},
+
+            # NSE Options (Monthly)
+            {'exchange': 'NFO', 'token': '12', 'symbol': 'NIFTY23OCT19600CE', 'name': 'NIFTY', 'expiry': monthly_expiry.strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT'},
+        ]
+
+        try:
+            pd.DataFrame(data).to_csv(csv_path, index=False)
+            logger.info(f"Mock instruments generated and saved to {csv_path}")
+        except Exception as e:
+            logger.error(f"Failed to save mock instruments: {e}")
+            sys.exit(1)
 
 def validate_symbols():
     logger.info("Validating Strategy Symbols...")
     if not os.path.exists(CONFIG_FILE):
-        logger.warning(f"Config file not found: {CONFIG_FILE}. Creating dummy config for testing.")
-        dummy_config = {
-            "Test_NIFTY_Opt": {
-                "type": "OPT",
-                "underlying": "NIFTY",
-                "option_type": "CE",
-                "expiry_preference": "WEEKLY"
-            },
-            "Test_MCX_Silver": {
-                "type": "FUT",
-                "underlying": "SILVER",
-                "exchange": "MCX"
-            }
-        }
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(dummy_config, f, indent=4)
-        # return
+        logger.warning(f"Config file not found: {CONFIG_FILE}. Skipping validation.")
+        return
 
     try:
         with open(CONFIG_FILE, 'r') as f:
-            configs = json.load(f)
+            content = f.read()
+            if not content.strip():
+                configs = {}
+            else:
+                configs = json.loads(content)
     except Exception as e:
         logger.error(f"Failed to load config: {e}")
         return
 
+    if not configs:
+         logger.info("No active strategies configured.")
+         return
+
     resolver = SymbolResolver(os.path.join(DATA_DIR, 'instruments.csv'))
 
+    valid_count = 0
     invalid_count = 0
+
     print("\n--- SYMBOL VALIDATION REPORT ---")
     print(f"{'STRATEGY':<25} | {'TYPE':<8} | {'INPUT':<15} | {'RESOLVED':<30} | {'STATUS'}")
     print("-" * 95)
@@ -191,32 +216,41 @@ def validate_symbols():
     for strat_id, config in configs.items():
         try:
             resolved = resolver.resolve(config)
+
             status = "✅ Valid"
-            resolved_str = "None"
+            resolved_str = "Unknown"
 
             if resolved is None:
                 status = "🔴 Invalid"
                 invalid_count += 1
+                resolved_str = "None"
             elif isinstance(resolved, dict):
+                # Options return dict
                 if resolved.get('status') == 'valid':
-                    resolved_str = str(resolved.get('expiry'))
+                    resolved_str = f"Expiry: {resolved.get('expiry')}"
+                    valid_count += 1
                 else:
                     status = "🔴 Invalid"
                     invalid_count += 1
+                    resolved_str = "Invalid"
             else:
+                # String result
                 resolved_str = str(resolved)
+                valid_count += 1
 
-            print(f"{strat_id:<25} | {str(config.get('type')):<8} | {str(config.get('underlying')):<15} | {resolved_str[:30]:<30} | {status}")
+            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {resolved_str[:30]:<30} | {status}")
+
         except Exception as e:
             logger.error(f"Error validating {strat_id}: {e}")
             invalid_count += 1
+            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {'ERROR':<30} | 🔴 Error")
 
     print("-" * 95)
     if invalid_count > 0:
         logger.error(f"Found {invalid_count} invalid symbols! Trading Halted.")
         sys.exit(1)
     else:
-        logger.info("All symbols valid.")
+        logger.info("All symbols valid. Ready to trade.")
 
 def main():
     print("🚀 DAILY PREP STARTED")
