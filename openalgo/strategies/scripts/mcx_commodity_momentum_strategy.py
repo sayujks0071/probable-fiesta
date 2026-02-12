@@ -21,17 +21,21 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from risk_manager import RiskManager
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.risk_manager import RiskManager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.risk_manager import RiskManager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            RiskManager = None
             is_market_open = lambda: True
 
 # Setup Logging
@@ -47,6 +51,7 @@ class MCXMomentumStrategy:
 
         self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
         self.pm = PositionManager(symbol) if PositionManager else None
+        self.rm = RiskManager(strategy_name="MCX_Momentum", exchange="MCX") if RiskManager else None
         self.data = pd.DataFrame()
 
         # Log active filters
@@ -192,6 +197,28 @@ class MCXMomentumStrategy:
         if self.pm:
             has_position = self.pm.has_position()
 
+        # Risk Manager Checks (Stop Loss / EOD)
+        if self.rm and has_position:
+            # Check Stop Loss
+            stop_hit, reason = self.rm.check_stop_loss(self.symbol, current['close'])
+            if stop_hit:
+                logger.warning(f"RiskManager: {reason}")
+                # Close Position
+                pos_qty = self.pm.position
+                action = 'SELL' if pos_qty > 0 else 'BUY'
+                self.pm.update_position(abs(pos_qty), current['close'], action)
+                self.rm.register_exit(self.symbol, current['close'], abs(pos_qty))
+                return
+
+            # Check EOD
+            if self.rm.should_square_off_eod():
+                logger.warning("RiskManager: EOD Square-off Triggered")
+                pos_qty = self.pm.position
+                action = 'SELL' if pos_qty > 0 else 'BUY'
+                self.pm.update_position(abs(pos_qty), current['close'], action)
+                self.rm.register_exit(self.symbol, current['close'], abs(pos_qty))
+                return
+
         # Multi-Factor Checks
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
         global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
@@ -213,6 +240,13 @@ class MCXMomentumStrategy:
 
         # Entry Logic
         if not has_position:
+            # Risk Manager Pre-Trade Check
+            if self.rm:
+                can_trade, reason = self.rm.can_trade()
+                if not can_trade:
+                    logger.warning(f"RiskManager Blocked Trade: {reason}")
+                    return
+
             # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
             if (current['adx'] > self.params['adx_threshold'] and
                 current['rsi'] > 55 and
@@ -221,6 +255,8 @@ class MCXMomentumStrategy:
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
+                if self.rm:
+                    self.rm.register_entry(self.symbol, base_qty, current['close'], 'LONG')
 
             # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
             elif (current['adx'] > self.params['adx_threshold'] and
@@ -230,12 +266,18 @@ class MCXMomentumStrategy:
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
+                if self.rm:
+                    self.rm.register_entry(self.symbol, base_qty, current['close'], 'SHORT')
 
         # Exit Logic
         elif has_position:
             # Retrieve position details
             pos_qty = self.pm.position
             entry_price = self.pm.entry_price
+
+            # Also Update Risk Manager Trailing Stop if active
+            if self.rm:
+                self.rm.update_trailing_stop(self.symbol, current['close'])
 
             # Stop Loss / Take Profit Logic could be added here
             # Simple Exit: Trend Fades (ADX < 20) or RSI Reversal
@@ -244,10 +286,12 @@ class MCXMomentumStrategy:
                 if current['rsi'] < 45 or current['adx'] < 20:
                      logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                     if self.rm: self.rm.register_exit(self.symbol, current['close'], abs(pos_qty))
             elif pos_qty < 0: # Short
                 if current['rsi'] > 55 or current['adx'] < 20:
                      logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                     if self.rm: self.rm.register_exit(self.symbol, current['close'], abs(pos_qty))
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
@@ -271,7 +315,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
