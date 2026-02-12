@@ -3,6 +3,12 @@
 Advanced ML Momentum Strategy
 Momentum with relative strength and sector overlay.
 """
+
+# [Optimization 2026-02-12] Changes: threshold: 0.01 -> 0.011 (Tightened due to WR 57.1%)
+
+# [Optimization 2026-02-12] Changes: threshold: 0.011 -> 0.012 (Tightened due to WR 57.1%), stop_pct: 1.0 -> 0.8 (Tightened due to R:R 1.27)
+
+# [Optimization 2026-02-12] Changes: threshold: 0.012 -> 0.013 (Tightened due to WR 57.1%), stop_pct: 0.8 -> 0.6 (Tightened due to R:R 1.27)
 import os
 import sys
 import time
@@ -270,8 +276,8 @@ def run_strategy():
 # Module level wrapper for SimpleBacktestEngine
 def generate_signal(df, client=None, symbol=None, params=None):
     strat_params = {
-        'threshold': 0.01,
-        'stop_pct': 1.0,
+        'threshold': 0.013,
+        'stop_pct': 0.6,
         'sector': 'NIFTY 50',
         'vol_multiplier': 0.5
     }
