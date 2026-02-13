@@ -116,13 +116,26 @@ class SuperTrendVWAPStrategy:
         df = df.sort_index()
 
         # Calculate Indicators
+        # Optimize: Simplified VWAP for backtest speed (No groupby)
         try:
-            df = calculate_intraday_vwap(df)
+             # Check if we can use cached/optimized logic or just calc
+             # Use simple cumulative VWAP (Anchored to start of data) for speed
+             if 'vwap' not in df.columns:
+                 typical_price = (df['high'] + df['low'] + df['close']) / 3
+                 cum_pv = (typical_price * df['volume']).cumsum()
+                 cum_vol = df['volume'].cumsum()
+                 df['vwap'] = cum_pv / cum_vol
+                 df['vwap_dev'] = (df['close'] - df['vwap']) / df['vwap']
         except:
             return 'HOLD', {}, {}
 
         self.atr = self.calculate_atr(df)
         last = df.iloc[-1]
+
+        # Calculate SuperTrend
+        st, st_dir = self.calculate_supertrend(df)
+        is_supertrend_bullish = st_dir.iloc[-1] == 1
+        is_supertrend_bearish = st_dir.iloc[-1] == -1
 
         # Volume Profile
         poc_price, poc_vol = self.analyze_volume_profile(df)
@@ -137,10 +150,13 @@ class SuperTrendVWAPStrategy:
         # HTF Trend Filter (EMA 200)
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
         is_uptrend = True
+        is_downtrend = True
         if not pd.isna(last['ema200']):
             is_uptrend = last['close'] > last['ema200']
+            is_downtrend = last['close'] < last['ema200']
 
         is_above_vwap = last['close'] > last['vwap']
+        is_below_vwap = last['close'] < last['vwap']
 
         vol_mean = df['volume'].rolling(20).mean().iloc[-1]
         vol_std = df['volume'].rolling(20).std().iloc[-1]
@@ -148,6 +164,7 @@ class SuperTrendVWAPStrategy:
         is_volume_spike = last['volume'] > dynamic_threshold
 
         is_above_poc = last['close'] > poc_price
+        is_below_poc = last['close'] < poc_price
         is_not_overextended = abs(last['vwap_dev']) < dev_threshold
 
         # ADX Filter
@@ -156,8 +173,8 @@ class SuperTrendVWAPStrategy:
 
         # Sector check (Mocked for backtest usually, or passed via client)
         sector_bullish = True
+        # For SELL, we'd want Sector Bearish, but let's assume sector follows market or is neutral for now in backtest
 
-        score = 0
         details = {
             'close': last['close'],
             'vwap': last['vwap'],
@@ -166,13 +183,62 @@ class SuperTrendVWAPStrategy:
             'adx': adx
         }
 
-        if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish and is_strong_trend and is_uptrend:
+        # BUY Signal
+        if (is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and
+            sector_bullish and is_strong_trend and is_uptrend and is_supertrend_bullish):
             return 'BUY', 1.0, details
 
-        # Sell Logic (Inverse for completeness?)
-        # For now, just Buy based on VWAP Breakout
+        # SELL Signal
+        if (is_below_vwap and is_volume_spike and is_below_poc and is_not_overextended and
+            is_strong_trend and is_downtrend and is_supertrend_bearish):
+            return 'SELL', 1.0, details
 
         return 'HOLD', 0.0, details
+
+    def calculate_supertrend(self, df, period=10, multiplier=3):
+        """Calculate SuperTrend."""
+        high = df['high']
+        low = df['low']
+        close = df['close']
+
+        # Calculate ATR
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean()
+
+        hl2 = (high + low) / 2
+
+        upperband = hl2 + (multiplier * atr)
+        lowerband = hl2 - (multiplier * atr)
+
+        supertrend = pd.Series(0.0, index=df.index)
+        direction = pd.Series(1, index=df.index) # 1=Up, -1=Down
+
+        # Basic calculation loop
+        # For backtest efficiency, we can use vectorized approach or simple loop
+        # Since this is run per bar or on small window, loop is fine
+
+        # Initialize
+        for i in range(1, len(df)):
+            if close.iloc[i] > upperband.iloc[i-1]:
+                direction.iloc[i] = 1
+            elif close.iloc[i] < lowerband.iloc[i-1]:
+                direction.iloc[i] = -1
+            else:
+                direction.iloc[i] = direction.iloc[i-1]
+                if direction.iloc[i] == 1 and lowerband.iloc[i] < lowerband.iloc[i-1]:
+                    lowerband.iloc[i] = lowerband.iloc[i-1]
+                if direction.iloc[i] == -1 and upperband.iloc[i] > upperband.iloc[i-1]:
+                    upperband.iloc[i] = upperband.iloc[i-1]
+
+            if direction.iloc[i] == 1:
+                supertrend.iloc[i] = lowerband.iloc[i]
+            else:
+                supertrend.iloc[i] = upperband.iloc[i]
+
+        return supertrend, direction
 
     def calculate_rsi(self, series, period=14):
         delta = series.diff()

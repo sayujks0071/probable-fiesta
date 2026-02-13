@@ -87,22 +87,48 @@ class AIHybridStrategy:
         df['upper'] = df['sma20'] + (2 * df['std'])
         df['lower'] = df['sma20'] - (2 * df['std'])
 
+        # ADX Calculation
+        try:
+            up_move = df['high'].diff()
+            down_move = -df['low'].diff()
+
+            plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+            minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+            plus_dm_series = pd.Series(plus_dm, index=df.index)
+            minus_dm_series = pd.Series(minus_dm, index=df.index)
+
+            tr1 = df['high'] - df['low']
+            tr2 = (df['high'] - df['close'].shift(1)).abs()
+            tr3 = (df['low'] - df['close'].shift(1)).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.rolling(14).mean()
+
+            plus_di = 100 * (plus_dm_series.ewm(alpha=1/14).mean() / atr)
+            minus_di = 100 * (minus_dm_series.ewm(alpha=1/14).mean() / atr)
+
+            dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
+            df['adx'] = dx.rolling(14).mean()
+        except Exception as e:
+            df['adx'] = 20 # Fallback
+
         # Regime Filter (SMA200)
         df['sma200'] = df['close'].rolling(200).mean()
 
         last = df.iloc[-1]
+        prev = df.iloc[-2]
 
         # Volatility Sizing (Target Risk)
         # Robust Sizing: Risk 1% of Capital (1000) per trade
         # Stop Loss distance is roughly 2 * ATR
         # Risk = Qty * 2 * ATR  => Qty = Risk / (2 * ATR)
 
-        atr = df['high'].diff().abs().rolling(14).mean().iloc[-1] # Simple ATR approx
+        atr_val = atr.iloc[-1] if not atr.empty else 0
 
         risk_amount = 1000.0 # 1% of 100k
 
-        if atr > 0:
-            qty = int(risk_amount / (2.0 * atr))
+        if atr_val > 0:
+            qty = int(risk_amount / (2.0 * atr_val))
             qty = max(1, min(qty, 500)) # Cap to reasonable limits
         else:
             qty = 50 # Safe default
@@ -119,17 +145,17 @@ class AIHybridStrategy:
         if last['rsi'] < self.rsi_lower and last['close'] < last['lower']:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             # Enhanced Volume Confirmation (Stricter than average)
-            if last['volume'] > avg_vol * 1.2:
-                # Reversion can trade against trend, so maybe ignore regime or be strict?
-                # Let's say Reversion is allowed in any regime if oversold enough.
+            # Improvement: Green candle confirmation
+            if last['volume'] > avg_vol * 1.2 and last['close'] > prev['close']:
                 return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
 
         # Breakout Logic: RSI > 60 and Price > Upper BB
         elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             # Breakout needs significant volume (2x avg)
-            # Breakout ONLY in Bullish Regime
-            if last['volume'] > avg_vol * 2.0 and is_bullish_regime:
+            # Breakout ONLY in Bullish Regime AND Strong Trend (ADX > 25)
+            adx_val = last.get('adx', 0)
+            if last['volume'] > avg_vol * 2.0 and is_bullish_regime and adx_val > 25:
                  return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
 
         return 'HOLD', 0.0, {}
