@@ -23,13 +23,16 @@ if str(utils_path) not in sys.path:
 try:
     from trading_utils import APIClient
     from symbol_resolver import SymbolResolver
+    from risk_manager import RiskManager
 except ImportError:
     try:
         from openalgo.strategies.utils.trading_utils import APIClient
         from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+        from openalgo.strategies.utils.risk_manager import RiskManager
     except ImportError:
         APIClient = None
         SymbolResolver = None
+        RiskManager = None
 
 # Configuration
 SYMBOL = os.getenv('SYMBOL', None)
@@ -58,6 +61,21 @@ class MCXGlobalArbitrageStrategy:
         self.api_client = api_client
         self.last_trade_time = 0
         self.cooldown_seconds = 300
+
+        # Initialize Risk Manager
+        self.rm = None
+        if RiskManager:
+            self.rm = RiskManager(
+                strategy_name=f"MCX_Arbitrage_{symbol}",
+                exchange="MCX",
+                capital=100000,
+                config={
+                    'max_loss_per_trade_pct': 3.0, # Slightly higher for arbitrage
+                    'max_daily_loss_pct': 5.0,
+                    'mcx_eod_square_off_time': '23:25',
+                    'trade_cooldown_seconds': 300
+                }
+            )
 
         # Session Reference Points (Opening Price of the session/day)
         self.session_ref_mcx = None
@@ -148,6 +166,15 @@ class MCXGlobalArbitrageStrategy:
 
         logger.info(f"MCX Chg: {mcx_change_pct:.2f}% | Global Chg: {global_change_pct:.2f}% | Divergence: {divergence_pct:.2f}%")
         
+        # Stop Loss Check via RiskManager
+        if self.position != 0 and self.rm:
+            stop_hit, reason = self.rm.check_stop_loss(self.symbol, current['mcx_price'])
+            if stop_hit:
+                logger.info(f"Risk Manager triggered: {reason}")
+                side = "BUY" if self.position == -1 else "SELL" # Close position
+                self.exit(side, current['mcx_price'], "Stop Loss Hit")
+                return
+
         # Entry Logic
         current_time = time.time()
         time_since_last_trade = current_time - self.last_trade_time
@@ -155,6 +182,13 @@ class MCXGlobalArbitrageStrategy:
         if self.position == 0:
             if time_since_last_trade < self.cooldown_seconds:
                 return
+
+            # Check Risk Manager
+            if self.rm:
+                can_trade, reason = self.rm.can_trade()
+                if not can_trade:
+                    logger.warning(f"Risk Manager Blocked Trade: {reason}")
+                    return
             
             # MCX is Overpriced -> Sell MCX
             if divergence_pct > self.params['divergence_threshold']:
@@ -197,6 +231,10 @@ class MCXGlobalArbitrageStrategy:
         if order_placed or not self.api_client: # Assume success if no client (testing)
             self.position = 1 if side == "BUY" else -1
             self.last_trade_time = time.time()
+            if self.rm:
+                # 3% stop loss for Arb
+                stop_loss = price * 1.03 if side == "SELL" else price * 0.97
+                self.rm.register_entry(self.symbol, 1, price, "LONG" if side == "BUY" else "SHORT", stop_loss=stop_loss)
 
     def exit(self, side, price, reason):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
@@ -222,6 +260,8 @@ class MCXGlobalArbitrageStrategy:
             logger.warning(f"[EXIT] No API client available - signal logged but order not placed")
         
         if order_placed or not self.api_client:
+            if self.rm:
+                self.rm.register_exit(self.symbol, price, abs(self.position))
             self.position = 0
             self.last_trade_time = time.time()
 
