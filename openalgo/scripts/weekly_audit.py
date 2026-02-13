@@ -7,6 +7,7 @@ import psutil
 import yfinance as yf
 import requests
 import pandas as pd
+import argparse
 from pathlib import Path
 
 # Configure Logging
@@ -25,7 +26,9 @@ logging.basicConfig(
 logger = logging.getLogger("WeeklyAudit")
 
 class WeeklyAudit:
-    def __init__(self):
+    def __init__(self, sim_mode=False):
+        logger.info(f"Initializing WeeklyAudit with sim_mode={sim_mode}")
+        self.sim_mode = sim_mode
         self.root_dir = Path("openalgo")
         self.strategies_dir = self.root_dir / "strategies"
         self.state_dir = self.strategies_dir / "state"
@@ -84,36 +87,63 @@ class WeeklyAudit:
 
         # Scan State Files
         if self.state_dir.exists():
-            for state_file in self.state_dir.glob("*_state.json"):
+            # Support both new RiskManager format (*_risk_state.json) and legacy format
+            risk_files = list(self.state_dir.glob("*_risk_state.json"))
+            # Avoid processing same file twice if it matches both patterns
+            legacy_files = [f for f in self.state_dir.glob("*_state.json") if f not in risk_files]
+
+            state_files = risk_files + legacy_files
+
+            for state_file in state_files:
                 try:
                     with open(state_file, 'r') as f:
                         data = json.load(f)
-                        pos = data.get('position', 0)
-                        entry = data.get('entry_price', 0.0)
-                        symbol = state_file.stem.replace('_state', '')
 
-                        if pos != 0:
-                            exposure = abs(pos * entry)
-                            total_exposure += exposure
-                            active_positions += 1
-                            tracked_symbols.add(symbol)
+                        # Determine format
+                        positions_map = {}
+                        if 'positions' in data and isinstance(data['positions'], dict):
+                            # RiskManager format: "positions": {"SYMBOL": {...}}
+                            positions_map = data['positions']
+                        elif 'position' in data:
+                            # Legacy format: "position": 10, "entry_price": ...
+                            # Derive symbol from filename
+                            symbol = state_file.stem.replace('_risk_state', '').replace('_state', '')
+                            positions_map = {symbol: {
+                                'qty': data.get('position', 0),
+                                'entry_price': data.get('entry_price', 0.0)
+                            }}
 
-                            # Fetch current price for PnL/DD
-                            current_price = self.get_market_price(symbol)
-                            pnl = 0.0
-                            if current_price:
-                                if pos > 0:
-                                    pnl = (current_price - entry) * pos
+                        for symbol, details in positions_map.items():
+                            pos = details.get('qty', 0)
+                            entry = details.get('entry_price', 0.0)
+
+                            if pos != 0:
+                                exposure = abs(pos * entry)
+                                total_exposure += exposure
+                                active_positions += 1
+                                tracked_symbols.add(symbol)
+
+                                # Fetch current price for PnL/DD
+                                if self.sim_mode:
+                                     # Mock price slightly off entry
+                                     current_price = entry * 0.98 if "SHORT" in details.get('side', '') else entry * 1.02
                                 else:
-                                    pnl = (entry - current_price) * abs(pos)
+                                     current_price = self.get_market_price(symbol)
 
-                                # Estimate Drawdown for this position
-                                if pnl < 0:
-                                    dd_pct = abs(pnl) / (abs(pos) * entry)
-                                    if dd_pct > max_dd:
-                                        max_dd = dd_pct
+                                pnl = 0.0
+                                if current_price:
+                                    if pos > 0:
+                                        pnl = (current_price - entry) * pos
+                                    else:
+                                        pnl = (entry - current_price) * abs(pos)
 
-                            position_details.append(f"- {symbol}: {pos} @ {entry} (Exp: {exposure:,.2f})")
+                                    # Estimate Drawdown for this position
+                                    if pnl < 0:
+                                        dd_pct = abs(pnl) / (abs(pos) * entry)
+                                        if dd_pct > max_dd:
+                                            max_dd = dd_pct
+
+                                position_details.append(f"- {symbol}: {pos} @ {entry} (Exp: {exposure:,.2f})")
                 except Exception as e:
                     logger.error(f"Error reading {state_file}: {e}")
 
@@ -145,6 +175,9 @@ class WeeklyAudit:
         return tracked_symbols
 
     def get_market_price(self, symbol):
+        if self.sim_mode:
+            return 100.0  # Mock price
+
         ticker = self._get_ticker(symbol)
         if not ticker:
             return None
@@ -160,6 +193,10 @@ class WeeklyAudit:
 
     def analyze_correlations(self, tracked_symbols):
         logger.info("Analyzing Correlations...")
+        if self.sim_mode:
+            self.add_section("🔗 CORRELATION ANALYSIS:", "✅ No significant correlations detected (Simulated).")
+            return
+
         if len(tracked_symbols) < 2:
             return
 
@@ -235,6 +272,10 @@ class WeeklyAudit:
 
     def check_data_quality(self, tracked_symbols):
         logger.info("Checking Data Quality...")
+        if self.sim_mode:
+            self.add_section("📡 DATA FEED QUALITY:", "✅ Data Feed Stable (Simulated)")
+            return
+
         issues = []
         for sym in tracked_symbols:
             t = self._get_ticker(sym)
@@ -257,6 +298,17 @@ class WeeklyAudit:
 
     def fetch_broker_positions(self, port):
         """Fetch positions from broker API"""
+        if self.sim_mode:
+            # Return mock positions that partially match dummy state
+            # StrategyA: TATASTEEL 100
+            # StrategyB: INFY 50 (SHORT)
+            if port == 5001: # Kite: Has TATASTEEL
+                 return [{'symbol': 'TATASTEEL', 'quantity': 100, 'product': 'MIS'}]
+            elif port == 5002: # Dhan: Has INFY, but maybe missing one to trigger mismatch logic?
+                 # Let's say Dhan has INFY but mismatched quantity to show reconciliation issue
+                 return [{'symbol': 'INFY', 'quantity': -50, 'product': 'MIS'}]
+            return []
+
         url = f"http://localhost:{port}/api/v1/positions"
         try:
             response = requests.get(url, timeout=2)
@@ -273,6 +325,9 @@ class WeeklyAudit:
 
     def check_api_health(self, port, name):
         """Check API Health"""
+        if self.sim_mode:
+            return "✅ Healthy (Simulated)"
+
         url = f"http://localhost:{port}/health"
         try:
             response = requests.get(url, timeout=2)
@@ -389,14 +444,17 @@ class WeeklyAudit:
     def detect_market_regime(self):
         logger.info("Detecting Market Regime...")
         try:
-            vix = yf.Ticker("^INDIAVIX").history(period="5d")
-            if vix.empty:
-                vix = yf.Ticker("^VIX").history(period="5d")
-
-            if not vix.empty:
-                current_vix = vix['Close'].iloc[-1]
+            if self.sim_mode:
+                current_vix = 18.5
             else:
-                current_vix = 15.0 # Default fallback
+                vix = yf.Ticker("^INDIAVIX").history(period="5d")
+                if vix.empty:
+                    vix = yf.Ticker("^VIX").history(period="5d")
+
+                if not vix.empty:
+                    current_vix = vix['Close'].iloc[-1]
+                else:
+                    current_vix = 15.0 # Default fallback
 
             regime = "Ranging"
             mix = "Mean Reversion"
@@ -493,5 +551,9 @@ class WeeklyAudit:
         logger.info(f"Report generated at {report_file}")
 
 if __name__ == "__main__":
-    audit = WeeklyAudit()
+    parser = argparse.ArgumentParser(description='Run Weekly Risk & Health Audit')
+    parser.add_argument('--sim', action='store_true', help='Run in simulation mode with mock data')
+    args = parser.parse_args()
+
+    audit = WeeklyAudit(sim_mode=args.sim)
     audit.run()
