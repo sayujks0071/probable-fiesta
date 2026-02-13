@@ -18,17 +18,29 @@ scrape_configs:
       env: local
       __path__: /var/log/openalgo/*.log
   pipeline_stages:
-  # Attempt to parse JSON lines
+  # Try to parse as JSON first
   - json:
       expressions:
+        timestamp: timestamp
         level: level
         logger: logger
-        timestamp: timestamp
-  # Set labels from extracted fields
-  - labels:
-      level:
-      logger:
-  # Set timestamp from extracted field (if available)
+        message: message
+  # If JSON parsing fails (or keys missing), try Regex for text logs
+  # Text format: [2024-05-20 10:00:00,123] INFO logger.name: Message content
+  - regex:
+      expression: '^\[(?P<timestamp>.*?)\] (?P<level>\w+) (?P<logger>.*?): (?P<message>.*)$'
+  # Set timestamp
   - timestamp:
       source: timestamp
       format: RFC3339
+      # Fallback formats if RFC3339 fails (e.g. standard python logging default)
+      fallback_formats:
+        - "2006-01-02 15:04:05,000"
+        - "2006-01-02 15:04:05,999"
+  # Set labels
+  - labels:
+      level:
+      logger:
+  # If message was extracted, use it as the log line content?
+  # Promtail by default sends the whole line unless 'output' stage is used.
+  # But we want to keep the line or restructure it? usually raw line is fine.

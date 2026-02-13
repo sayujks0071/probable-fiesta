@@ -1,5 +1,6 @@
 #!/bin/bash
-# Install Systemd User Timer for OpenAlgo Healthcheck
+# Install Systemd User Timer for OpenAlgo Healthcheck.
+# Preferred method for Linux.
 
 mkdir -p ~/.config/systemd/user
 SCRIPT_DIR=$(cd $(dirname $0) && pwd)
