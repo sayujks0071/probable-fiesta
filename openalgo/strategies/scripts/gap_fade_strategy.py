@@ -3,7 +3,7 @@ import sys
 import os
 import argparse
 import logging
-import time
+import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,7 +13,7 @@ project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+from openalgo.strategies.utils.trading_utils import APIClient, PositionManager
 
 # Configure logging
 logging.basicConfig(
@@ -38,37 +38,36 @@ class GapFadeStrategy:
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
 
         # 1. Get Previous Close
-        # Using history API for last 2 days
+        # Using history API for last few days to be safe
         today = datetime.now()
-        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d") # Go back enough to get prev day
+        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
         end_date = today.strftime("%Y-%m-%d")
 
-        # Get daily candles
         df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
 
-        if df.empty or len(df) < 1:
-            logger.error("Could not fetch history for previous close.")
-            return
-
-        # Assuming the last completed row is previous day, or if market just opened, we might have today's open
-        # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
-
-        prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
-
+        prev_close = 0.0
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
-        if not quote:
-            logger.error("Could not fetch quote.")
-            return
 
-        current_price = float(quote['ltp'])
-
-        # Some APIs provide 'close' in quote which is prev_close
-        if 'close' in quote and quote['close'] > 0:
+        if quote and 'close' in quote and quote['close'] > 0:
             prev_close = float(quote['close'])
+        elif not df.empty:
+             # Fallback to history
+             # Assuming last row is previous day if market just opened, or we check date
+             # For simplicity, if quote prev close failed, we use last history close
+             prev_close = df.iloc[-1]['close']
+
+        if prev_close == 0:
+             logger.error("Could not determine prev close.")
+             return
+
+        # Fetch current price again or use quote ltp
+        current_price = 0.0
+        if quote:
+            current_price = float(quote.get('ltp', 0))
+
+        if current_price == 0:
+             logger.error("Could not fetch current price.")
+             return
 
         logger.info(f"Prev Close: {prev_close}, Current: {current_price}")
 
@@ -85,37 +84,66 @@ class GapFadeStrategy:
 
         if gap_pct > self.gap_threshold:
             # Gap UP -> Fade (Sell/Short or Buy Put)
-            logger.info("Gap UP detected. Looking to FADE (Short).")
-            action = "SELL" # Futures Sell or PE Buy
-            # For options: Buy PE
+            logger.info("Gap UP detected. Looking to FADE (Short) -> Buy PE.")
+            action = "BUY"
             option_type = "PE"
 
         elif gap_pct < -self.gap_threshold:
             # Gap DOWN -> Fade (Buy/Long or Buy Call)
-            logger.info("Gap DOWN detected. Looking to FADE (Long).")
+            logger.info("Gap DOWN detected. Looking to FADE (Long) -> Buy CE.")
             action = "BUY"
             option_type = "CE"
 
-        # 3. Select Option Strike (ATM)
-        atm = round(current_price / 50) * 50
-        strike_symbol = f"{self.symbol}{today.strftime('%y%b').upper()}{atm}{option_type}" # Symbol format varies
-        # Simplified: Just log the intent
-
-        logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade)")
-
-        # 4. Check VIX for Sizing (inherited from general rules)
-        vix_quote = self.client.get_quote("INDIA VIX", "NSE")
-        vix = float(vix_quote['ltp']) if vix_quote else 15
+        # 3. Check VIX for Sizing
+        vix = self.client.get_vix()
+        if vix is None:
+             vix = 15.0 # Default
 
         qty = self.qty
         if vix > 30:
             qty = int(qty * 0.5)
             logger.info(f"High VIX {vix}. Reduced Qty to {qty}")
 
-        # 5. Place Order (Simulation)
-        # self.client.placesmartorder(...)
-        logger.info(f"Executing {option_type} Buy for {qty} qty.")
-        self.pm.update_position(qty, 100, "BUY") # Mock update
+        # 4. Select Option Strike (ATM)
+        step = 100 if "SENSEX" in self.symbol else 50
+        if "BANK" in self.symbol: step = 100
+
+        atm = round(current_price / step) * step
+
+        chain = self.client.get_option_chain(self.symbol)
+        trading_symbol = None
+
+        if chain:
+            for item in chain:
+                if item.get('strike') == atm:
+                    if option_type == "CE":
+                        trading_symbol = item.get('ce', {}).get('symbol')
+                    else:
+                        trading_symbol = item.get('pe', {}).get('symbol')
+                    break
+
+        if not trading_symbol:
+            logger.warning(f"Could not resolve trading symbol for ATM {atm} {option_type}. Aborting.")
+            return
+
+        logger.info(f"Selected Trading Symbol: {trading_symbol}")
+
+        # 5. Place Order
+        resp = self.client.placesmartorder(
+            strategy="GapFade",
+            symbol=trading_symbol,
+            action=action,
+            exchange="NFO",
+            price_type="MARKET",
+            product="MIS",
+            quantity=qty,
+            position_size=qty
+        )
+
+        logger.info(f"Order Response: {resp}")
+
+        if resp and resp.get('status') != 'error':
+             self.pm.update_position(qty, current_price, action)
 
 def main():
     parser = argparse.ArgumentParser()

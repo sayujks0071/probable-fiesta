@@ -21,6 +21,11 @@ if str(project_root) not in sys.path:
 from openalgo.strategies.utils.trading_utils import APIClient, is_market_open
 from openalgo.strategies.utils.option_analytics import calculate_pcr, calculate_max_pain, calculate_greeks
 
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -46,7 +51,7 @@ class AdvancedOptionsRanker:
         self.script_map = {
             "Iron Condor": "delta_neutral_iron_condor_nifty.py",
             "Gap Fade": "gap_fade_strategy.py",
-            # Others not yet implemented as scripts
+            "Sentiment Reversal": "sentiment_reversal_strategy.py"
         }
 
         # Thresholds
@@ -68,12 +73,30 @@ class AdvancedOptionsRanker:
 
     def _fetch_gift_nifty_proxy(self, nifty_spot):
         try:
-            # Deterministic: Return 0 gap if no data.
-            # In production, fetch specific symbol.
-            # For now, we assume if we are running before market, we might check last close
-            # But without history, we can't do much.
-            # Returning 0.0 ensures deterministic behavior for tests.
-            return nifty_spot, 0.0
+            # Try to fetch global sentiment proxy via yfinance if available
+            gap_pct = 0.0
+            gift_price = nifty_spot
+
+            if yf:
+                try:
+                    # Fetch Nifty 50 (^NSEI) and maybe SGX Nifty proxy if available (e.g. ^IXIC for global trend)
+                    # Since accurate GIFT Nifty is hard to get for free, we use a global proxy or rely on pre-market manual input.
+                    # Here we check generic global trend.
+                    # For Gap, we need Yesterday Close vs Today Pre-open (if available) or Current.
+
+                    # If market is closed, we might see prev close.
+                    ticker = yf.Ticker("^NSEI")
+                    hist = ticker.history(period="5d")
+                    if not hist.empty:
+                        last_close = hist['Close'].iloc[-1]
+                        # If nifty_spot is live (from broker), compute gap
+                        if nifty_spot > 0 and last_close > 0:
+                            gap_pct = ((nifty_spot - last_close) / last_close) * 100
+                            gift_price = nifty_spot # Assume spot reflects 'GIFT' indication in pre-market context or live
+                except Exception as e:
+                    logger.warning(f"YFinance fetch failed: {e}")
+
+            return gift_price, gap_pct
         except Exception as e:
             logger.warning(f"Error fetching GIFT Nifty proxy: {e}")
             return nifty_spot, 0.0
@@ -337,6 +360,8 @@ class AdvancedOptionsRanker:
 
             # Pass extra args
             if strategy_name == "Iron Condor":
+                cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
+            elif strategy_name == "Sentiment Reversal":
                 cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
 
             logger.info(f"Executing: {' '.join(cmd)}")
