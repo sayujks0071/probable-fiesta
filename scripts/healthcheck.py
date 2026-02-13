@@ -2,6 +2,7 @@
 """
 OpenAlgo Health Check & Alerting Script
 Checks service health and queries logs for alerts.
+Designed for OpenAlgo Local Observability.
 """
 import os
 import sys
@@ -18,8 +19,8 @@ from datetime import datetime, timedelta
 # Configuration
 LOKI_URL = "http://localhost:3100"
 GRAFANA_URL = "http://localhost:3000"
+# Log to logs/healthcheck.log relative to this script
 LOG_FILE = os.path.join(os.path.dirname(__file__), "../logs/healthcheck.log")
-OPENALGO_LOG_FILE = os.path.join(os.path.dirname(__file__), "../logs/openalgo.log")
 
 # Alert Thresholds
 ERROR_THRESHOLD = 5 # Max errors in 5m
@@ -30,8 +31,10 @@ logger = logging.getLogger("HealthCheck")
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-# Rotating File Handler
+# Ensure log directory exists
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
+# Rotating File Handler
 handler = logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=3)
 handler.setFormatter(formatter)
 logger.addHandler(handler)
@@ -55,7 +58,7 @@ def check_service(name, url, timeout=2):
 
 def check_process(pattern):
     try:
-        # Use pgrep
+        # Use pgrep -f to match full command line
         cmd = ["pgrep", "-f", pattern]
         output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
         pids = output.decode().strip().split('\n')
@@ -115,6 +118,8 @@ def send_alert(title, message):
     # 2. Desktop Notification (Linux/Mac)
     try:
         if sys.platform == "linux":
+            # Check if notify-send exists
+            subprocess.run(["which", "notify-send"], check=True, stdout=subprocess.DEVNULL)
             subprocess.run(["notify-send", title, message], check=False)
         elif sys.platform == "darwin":
              subprocess.run(["osascript", "-e", f'display notification "{message}" with title "{title}"'], check=False)
@@ -128,8 +133,9 @@ def main():
     loki_ok, loki_msg = check_service("Loki", f"{LOKI_URL}/ready")
     grafana_ok, graf_msg = check_service("Grafana", f"{GRAFANA_URL}/login")
 
-    # Check OpenAlgo Process (look for python scripts)
-    oa_ok, oa_msg = check_process("openalgo")
+    # Check OpenAlgo Process
+    # We look for daily_startup.py or daily_prep.py or just 'openalgo'
+    oa_ok, oa_msg = check_process("daily_startup.py|daily_prep.py")
 
     logger.info(f"Loki: {loki_msg}")
     logger.info(f"Grafana: {graf_msg}")
@@ -145,7 +151,7 @@ def main():
 
         # A. Error Spike
         # Query: count_over_time({job="openalgo"} |= "ERROR" [5m])
-        # But here we just fetch lines and count
+        # But here we just fetch lines and count locally
         error_count, error_lines = query_loki('{job="openalgo"} |= "ERROR"', start)
         logger.info(f"Errors in last {ALERT_LOOKBACK_MINUTES}m: {error_count}")
 
@@ -156,7 +162,7 @@ def main():
         # B. Critical Keywords (Immediate)
         # "Auth failed", "Token invalid", "Order rejected", "Broker error"
         critical_patterns = ["Auth failed", "Token invalid", "Order rejected", "Broker error", "Invalid symbol"]
-        # Construct query: {job="openalgo"} |~ "Auth failed|Token invalid|..."
+        # Construct regex: (?i)Auth failed|Token invalid|...
         regex = "|".join(critical_patterns)
         crit_count, crit_lines = query_loki(f'{{job="openalgo"}} |~ "(?i){regex}"', start)
 
@@ -165,7 +171,7 @@ def main():
             send_alert("Critical Event", f"Found {crit_count} critical events.\nSample:\n{sample}")
 
     else:
-        # Fallback to reading file if Loki is down?
+        # Fallback? No, if Loki is down we can't query logs.
         pass
 
     logger.info("--- Health Check Complete ---")

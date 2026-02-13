@@ -1,5 +1,6 @@
 #!/bin/bash
-# Install Crontab entry (fallback)
+# Install Crontab entry (fallback).
+# Ensures idempotent installation.
 
 SCRIPT_DIR=$(cd $(dirname $0) && pwd)
 SCRIPT_PATH="$SCRIPT_DIR/healthcheck.py"

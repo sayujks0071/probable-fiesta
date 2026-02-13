@@ -44,6 +44,7 @@ def run_script(script_path, description):
 def main():
     # Initialize Observability Logging
     setup_logging()
+    logging.info("Observability logging setup complete.")
 
     parser = argparse.ArgumentParser(description="OpenAlgo Daily Startup Routine")
     parser.add_argument("--backtest", action="store_true", help="Run backtest and leaderboard generation after prep")

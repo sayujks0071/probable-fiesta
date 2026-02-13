@@ -1,79 +1,99 @@
 # OpenAlgo Local Observability Stack
 
-This directory contains the configuration for running a local observability stack using Grafana, Loki, and Promtail.
+This folder contains the configuration for a local monitoring stack using **Grafana, Loki, and Promtail**. It is designed to run alongside your local OpenAlgo Python application.
 
-## Components
-
-1.  **Loki**: Log aggregation system (Port 3100).
-2.  **Promtail**: Log collector that tails logs from `../logs/*.log` and ships them to Loki.
-3.  **Grafana**: Visualization dashboard (Port 3000).
-
-## Setup
+## 🚀 Quick Start
 
 ### Prerequisites
-- Docker and Docker Compose installed.
-- Python 3 for running OpenAlgo.
+- [Docker & Docker Compose](https://docs.docker.com/get-docker/) installed.
+- Python 3.8+ installed locally.
 
-### Quick Start
-
-Use the `Makefile` in the repo root:
-
+### 1. Start Observability Services
+From the repository root, run:
 ```bash
-# Start Observability Stack
 make obs-up
-
-# Check Status
-make status
-
-# View Logs (Tail)
-make obs-logs
-
-# Stop Stack
-make obs-down
 ```
+This starts:
+- **Loki** (Log aggregation) at `http://localhost:3100`
+- **Promtail** (Log shipper) tailing `../logs/*.log`
+- **Grafana** (Visualization) at `http://localhost:3000`
 
-### Accessing Dashboards
+### 2. Verify Access
+- Open **Grafana**: [http://localhost:3000](http://localhost:3000)
+- **Login**: `admin` / `admin` (skip password change if desired)
+- Go to **Dashboards** -> **Manage** -> **OpenAlgo** -> **OpenAlgo Local Dashboard**.
 
-1.  Open [http://localhost:3000](http://localhost:3000).
-2.  Login with `admin` / `admin`.
-3.  Navigate to **Dashboards > Manage**.
-4.  You should see **OpenAlgo Local Dashboard**.
-
-### Logging Configuration
-
-OpenAlgo uses a custom logging module `openalgo_observability` that:
-- Writes to `logs/openalgo.log`.
-- Redacts sensitive keys (api_key, password, etc.).
-- Supports JSON logging via `OPENALGO_LOG_JSON=1`.
-
-To run OpenAlgo with logging enabled:
-
+### 3. Run OpenAlgo
+Start your daily routine as usual. Logs will automatically be drained to `./logs/openalgo.log` and picked up by Promtail.
 ```bash
-# Run the daily startup script
 make run
-
-# Or manually
-python3 daily_startup.py
+```
+Or manually:
+```bash
+python daily_startup.py
 ```
 
-### Alerts
+### 4. Check Logs
+- View real-time logs in Grafana **Explore** tab.
+- Query: `{job="openalgo"}`
+- Search for errors: `{job="openalgo"} |= "ERROR"`
 
-A health check script is provided in `scripts/healthcheck.py`. It runs periodically to:
-1.  Check if OpenAlgo and Observability services are up.
-2.  Query Loki for error spikes or critical failures.
-3.  Send alerts to Console/Desktop/Telegram.
+---
 
-To enable Telegram alerts, set environment variables:
+## 🔔 Alerting & Health Checks
+
+We provide a lightweight Python script (`scripts/healthcheck.py`) that monitors:
+1.  **Service Health**: Checks if Loki, Grafana, and OpenAlgo are running.
+2.  **Log Spikes**: Queries Loki for high error rates (> 5 errors in 5m).
+3.  **Critical Events**: Scans for "Auth failed", "Order rejected", etc.
+
+### Manual Check
 ```bash
-export TELEGRAM_BOT_TOKEN="your_token"
-export TELEGRAM_CHAT_ID="your_chat_id"
+make healthcheck
 ```
 
-To install the scheduled health check:
-```bash
-# Install as Systemd User Timer (Recommended)
-./scripts/install_systemd_user_timers.sh
+### Automated Monitoring
+You can schedule the health check to run every 5 minutes.
 
-# Or Install as Cron job
-./scripts/install_cron.sh
+**Option A: Systemd User Timer (Linux - Preferred)**
+```bash
+bash scripts/install_systemd_user_timers.sh
+```
+*Benefits: Reliable, runs in background, logs to journal.*
+
+**Option B: Cron Job (Linux/Mac)**
+```bash
+bash scripts/install_cron.sh
+```
+
+### Notifications
+By default, alerts are logged to console/logs. To enable **Telegram** notifications:
+1.  Set environment variables in your shell or `.env` file:
+    ```bash
+    export TELEGRAM_BOT_TOKEN="your_bot_token"
+    export TELEGRAM_CHAT_ID="your_chat_id"
+    ```
+2.  The healthcheck script will automatically pick these up and send alerts.
+
+---
+
+## 🔒 Security & Redaction
+
+The logging setup (`openalgo_observability/logging_setup.py`) includes a **SensitiveDataFilter** that automatically redacts:
+- API Keys (`api_key=...`)
+- Bearer Tokens (`Authorization: Bearer ...`)
+- Passwords & Secrets
+
+**Note:** Logs are stored locally in `./logs/`. Ensure this directory is `.gitignore`d (it is by default).
+
+## 🛠 Troubleshooting
+
+**Logs not showing in Grafana?**
+1.  Check Promtail status: `docker compose logs promtail`
+2.  Ensure `./logs/openalgo.log` exists and has content.
+3.  Verify the time range in Grafana (top right) covers the last 5 minutes.
+
+**Stop everything**
+```bash
+make obs-down
 ```

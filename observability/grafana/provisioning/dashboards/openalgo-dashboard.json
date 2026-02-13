@@ -86,12 +86,12 @@
       },
       "targets": [
         {
-          "expr": "count_over_time({job=\"openalgo\"} |= \"Order Placed\" [5m])",
-          "legendFormat": "Orders Placed",
+          "expr": "count_over_time({job=\"openalgo\"} |~ \"Order Placed|filled|rejected\" [5m])",
+          "legendFormat": "Orders Events",
           "refId": "A"
         }
       ],
-      "title": "Orders Placed (5m)",
+      "title": "Order Events (5m)",
       "type": "stat"
     },
     {
@@ -121,7 +121,7 @@
       },
       "targets": [
         {
-          "expr": "count_over_time({job=\"openalgo\"} |= \"Auth failed\" [5m])",
+          "expr": "count_over_time({job=\"openalgo\"} |~ \"Auth failed|Token invalid\" [5m])",
           "legendFormat": "Auth Failures",
           "refId": "A"
         }
@@ -159,7 +159,7 @@
     "to": "now"
   },
   "timezone": "",
-  "title": "OpenAlgo Local Dashboard",
+  "title": "OpenAlgo Local Observability",
   "uid": "openalgo-local",
   "version": 1
 }

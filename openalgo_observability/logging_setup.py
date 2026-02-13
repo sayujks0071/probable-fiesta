@@ -75,7 +75,10 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(log_data)
 
 def setup_logging():
-    """Configure structured logging with rotation and redaction."""
+    """
+    Configure structured logging with rotation and redaction.
+    Ensures sensitive patterns are masked before emission.
+    """
 
     # Prevent double setup
     if os.environ.get('OPENALGO_LOGGING_SETUP_DONE') == 'true':

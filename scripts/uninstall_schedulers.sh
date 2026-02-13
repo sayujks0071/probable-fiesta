@@ -1,5 +1,5 @@
 #!/bin/bash
-# Remove Systemd User Timer for OpenAlgo Healthcheck
+# Clean up schedulers (Systemd and Cron).
 
 echo "Stopping Systemd User Service..."
 systemctl --user stop openalgo-health.timer
