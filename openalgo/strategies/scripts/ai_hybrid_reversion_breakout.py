@@ -5,6 +5,8 @@
 AI Hybrid Reversion Breakout Strategy
 Enhanced with Sector Rotation, Market Breadth, Earnings Filter, and VIX Sizing.
 """
+
+# [Optimization 2026-02-13] Changes: rsi_lower: 35.0 -> 40.0 (High Rejection 80.0%), rsi_upper: 60.0 -> 55 (High Rejection 80.0%)
 import os
 import sys
 import time
@@ -323,7 +325,7 @@ def run_strategy():
     parser.add_argument('--symbol', type=str, required=True, help='Stock Symbol')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key (or set OPENALGO_APIKEY env var)')
-    parser.add_argument('--rsi_lower', type=float, default=35.0, help='RSI Lower Threshold')
+    parser.add_argument('--rsi_lower', type=float, default=40.0, help='RSI Lower Threshold')
     parser.add_argument('--sector', type=str, default='NIFTY 50', help='Sector Benchmark')
     parser.add_argument('--earnings_date', type=str, help='Earnings Date YYYY-MM-DD')
     parser.add_argument("--logfile", type=str, help="Log file path")
@@ -358,7 +360,7 @@ def run_strategy():
 def generate_signal(df, client=None, symbol=None, params=None):
     strat_params = {
         'rsi_lower': 30.0,
-        'rsi_upper': 60.0,
+        'rsi_upper': 55,
         'stop_pct': 1.0,
         'sector': 'NIFTY 50'
     }
