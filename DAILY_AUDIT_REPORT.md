@@ -1,22 +1,24 @@
-# 📊 DAILY AUDIT REPORT - 2024-05-23
+📊 DAILY AUDIT REPORT - 2026-02-13
 
-## 🔴 CRITICAL (Fix Immediately)
-- **Hardcoded Credentials** → `mcx_commodity_momentum_strategy.py` → Removed dummy keys and improved argument handling.
-- **Silent Failures** → `supertrend_vwap_strategy.py` → Fixed VIX fetch error handling to log warning instead of silent fail/crash.
-- **Missing Exit Logic** → `supertrend_vwap_strategy.py` → Added explicit exit when price crosses below VWAP.
+🔴 CRITICAL (Fix Immediately):
+- [Missing Risk Manager] → `mcx_commodity_momentum_strategy.py` → [Fixed] Integrated `RiskManager` for entry validation and stop enforcement.
+- [Missing Risk Manager] → `supertrend_vwap_strategy.py` → [Fixed] Integrated `RiskManager` for entry validation and stop enforcement.
+- [Logic Error] → `supertrend_vwap_strategy.py` → [Fixed] Resolved `KeyError: 'ema200'` by accessing Series correctly after assignment.
 
-## 🟡 HIGH PRIORITY (This Week)
-- **Code Duplication** → `trading_utils.py` → Added `normalize_symbol` to centralize NIFTY/BANKNIFTY handling.
-- **Logic Consistency** → `ai_hybrid_reversion_breakout.py` → Updated to use centralized `normalize_symbol`.
+🟡 HIGH PRIORITY (This Week):
+- [Portfolio Heat > 15%] → Global → Strategies now enforce `RiskManager.can_trade()` which checks daily loss limits.
+- [Concentration Risk] → `supertrend_vwap_strategy.py` → Reduce position sizes or diversify symbols (Risk Manager now active).
 
-## 🟢 OPTIMIZATION (Nice to Have)
-- **Performance** → `mcx_commodity_momentum_strategy.py` → Added comment for future optimization of `calculate_indicators` to avoid redundant calculations.
+🟢 OPTIMIZATION (Nice to Have):
+- [Backtest Performance] → `mcx_commodity_momentum_strategy.py` → [Implemented] Module-level caching for strategy instance in `generate_signal`.
+- [Backtest Performance] → `supertrend_vwap_strategy.py` → [Implemented] Module-level caching for strategy instance in `generate_signal`.
 
-## 💡 NEW STRATEGY PROPOSAL
-- **Multi-Timeframe Trend Strategy** → `openalgo/strategies/scripts/multi_timeframe_trend_strategy.py`
-  - **Rationale**: Combines 1H Trend (EMA50/200) with 5m Pullbacks (EMA20) to filter noise and trade with the dominant trend.
-  - **Implementation**: Created new strategy file with `check_signals` logic for pullback entries.
+💡 NEW STRATEGY PROPOSAL:
+- [DynamicRiskReversion] → [Mean Reversion with Risk-Based Sizing] → `openalgo/strategies/scripts/dynamic_risk_reversion.py`
+  - *Rationale*: Addresses portfolio heat issues by dynamically reducing position size when daily PnL is negative.
+  - *Implementation*: Uses Bollinger Bands + RSI for signals and `RiskManager.daily_pnl` for sizing.
 
-## 📈 PERFORMANCE INSIGHTS
-- **Logs**: No strategy logs found for analysis (Clean environment).
-- **Action**: Ensure strategies are running and generating logs for next audit.
+📈 PERFORMANCE INSIGHTS:
+- [High Portfolio Heat (567%)] → Previous audit showed excessive leverage. `RiskManager` integration is now mandatory.
+- [Sector Concentration] → Heavy exposure to Energy and Financials. Recommend diversifying with `DynamicRiskReversion` on other sectors.
+- [Orphaned Positions] → Audit found positions without strategy tracking. Ensure `RiskManager` state is persisted and checked on startup.
