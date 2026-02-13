@@ -25,20 +25,24 @@ sys.path.insert(0, utils_dir)
 try:
     from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
     from symbol_resolver import SymbolResolver
+    from risk_manager import RiskManager
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
         from utils.symbol_resolver import SymbolResolver
+        from utils.risk_manager import RiskManager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+            from openalgo.strategies.utils.risk_manager import RiskManager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
             SymbolResolver = None
+            RiskManager = None
             normalize_symbol = lambda s: s
             is_market_open = lambda: True
             def calculate_intraday_vwap(df):
@@ -104,6 +108,7 @@ class SuperTrendVWAPStrategy:
             self.client = APIClient(api_key=self.api_key, host=self.host)
 
         self.pm = PositionManager(symbol) if PositionManager else None
+        self.rm = RiskManager("SuperTrend_VWAP", "NSE", 100000) if RiskManager else None
 
     def generate_signal(self, df):
         """
@@ -137,8 +142,9 @@ class SuperTrendVWAPStrategy:
         # HTF Trend Filter (EMA 200)
         df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
         is_uptrend = True
-        if not pd.isna(last['ema200']):
-            is_uptrend = last['close'] > last['ema200']
+        ema200_val = df['ema200'].iloc[-1]
+        if not pd.isna(ema200_val):
+            is_uptrend = last['close'] > ema200_val
 
         is_above_vwap = last['close'] > last['vwap']
 
@@ -363,6 +369,16 @@ class SuperTrendVWAPStrategy:
                 is_not_overextended = abs(last['vwap_dev']) < dev_threshold
 
                 if self.pm and self.pm.has_position():
+                    # Check Risk Manager Stops
+                    if self.rm:
+                        stop_hit, reason = self.rm.check_stop_loss(self.symbol, last['close'])
+                        if stop_hit:
+                            self.logger.warning(f"Risk Manager Exit: {reason}")
+                            self.pm.update_position(self.quantity, last['close'], 'SELL')
+                            self.rm.register_exit(self.symbol, last['close'])
+                            self.trailing_stop = 0.0
+                            continue
+
                     # Manage Position (Trailing Stop)
                     sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
 
@@ -379,13 +395,23 @@ class SuperTrendVWAPStrategy:
                     if last['close'] < self.trailing_stop:
                         self.logger.info(f"Trailing Stop Hit at {last['close']:.2f}")
                         self.pm.update_position(self.quantity, last['close'], 'SELL')
+                        if self.rm: self.rm.register_exit(self.symbol, last['close'])
                         self.trailing_stop = 0.0
                     elif last['close'] < last['vwap']:
                         self.logger.info(f"Price crossed below VWAP at {last['close']:.2f}. Exiting.")
                         self.pm.update_position(self.quantity, last['close'], 'SELL')
+                        if self.rm: self.rm.register_exit(self.symbol, last['close'])
                         self.trailing_stop = 0.0
 
                 else:
+                    # Check Risk Manager
+                    if self.rm:
+                        can_trade, reason = self.rm.can_trade()
+                        if not can_trade:
+                            self.logger.warning(f"Risk Check Failed: {reason}")
+                            time.sleep(60)
+                            continue
+
                     # Entry Logic
                     sector_bullish = self.check_sector_correlation()
 
@@ -397,6 +423,8 @@ class SuperTrendVWAPStrategy:
                             self.pm.update_position(adj_qty, last['close'], 'BUY')
                             sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
                             self.trailing_stop = last['close'] - (sl_mult * self.atr)
+                        if self.rm:
+                            self.rm.register_entry(self.symbol, adj_qty, last['close'], 'LONG')
 
             except Exception as e:
                 self.logger.error(f"Error in SuperTrend VWAP strategy for {self.symbol}: {e}", exc_info=True)
@@ -452,13 +480,21 @@ def run_strategy():
     strategy.run()
 
 # Module level wrapper for SimpleBacktestEngine
-def generate_signal(df, client=None, symbol=None, params=None):
-    # Instantiate strategy with dummy params
-    strat = SuperTrendVWAPStrategy(symbol=symbol or "TEST", quantity=1, api_key="test", host="test", client=client)
 
-    # Silence logger for backtest to avoid handler explosion
-    strat.logger.handlers = []
-    strat.logger.addHandler(logging.NullHandler())
+_STRAT_CACHE = {}
+
+def generate_signal(df, client=None, symbol=None, params=None):
+    symbol_key = symbol or "TEST"
+
+    if symbol_key in _STRAT_CACHE:
+        strat = _STRAT_CACHE[symbol_key]
+    else:
+        # Instantiate strategy with dummy params
+        strat = SuperTrendVWAPStrategy(symbol=symbol_key, quantity=1, api_key="test", host="test", client=client)
+        # Silence logger for backtest to avoid handler explosion
+        strat.logger.handlers = []
+        strat.logger.addHandler(logging.NullHandler())
+        _STRAT_CACHE[symbol_key] = strat
 
     # Apply params if provided
     if params:

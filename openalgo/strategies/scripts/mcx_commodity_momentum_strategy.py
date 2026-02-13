@@ -21,17 +21,21 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from risk_manager import RiskManager
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.risk_manager import RiskManager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.risk_manager import RiskManager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            RiskManager = None
             is_market_open = lambda: True
 
 # Setup Logging
@@ -47,6 +51,7 @@ class MCXMomentumStrategy:
 
         self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
         self.pm = PositionManager(symbol) if PositionManager else None
+        self.rm = RiskManager("MCX_Momentum", "MCX", 100000) if RiskManager else None
         self.data = pd.DataFrame()
 
         # Log active filters
@@ -213,6 +218,13 @@ class MCXMomentumStrategy:
 
         # Entry Logic
         if not has_position:
+            # Check Risk Manager
+            if self.rm:
+                can_trade, reason = self.rm.can_trade()
+                if not can_trade:
+                    logger.warning(f"Risk Check Failed: {reason}")
+                    return
+
             # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
             if (current['adx'] > self.params['adx_threshold'] and
                 current['rsi'] > 55 and
@@ -221,6 +233,8 @@ class MCXMomentumStrategy:
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
+                if self.rm:
+                    self.rm.register_entry(self.symbol, base_qty, current['close'], 'LONG')
 
             # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
             elif (current['adx'] > self.params['adx_threshold'] and
@@ -230,12 +244,27 @@ class MCXMomentumStrategy:
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
+                if self.rm:
+                    self.rm.register_entry(self.symbol, base_qty, current['close'], 'SHORT')
 
         # Exit Logic
         elif has_position:
             # Retrieve position details
             pos_qty = self.pm.position
             entry_price = self.pm.entry_price
+
+            # Check Risk Manager Stops
+            if self.rm:
+                stop_hit, reason = self.rm.check_stop_loss(self.symbol, current['close'])
+                if stop_hit:
+                    logger.warning(f"Risk Manager Exit: {reason}")
+                    if pos_qty > 0:
+                        self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                        self.rm.register_exit(self.symbol, current['close'])
+                    elif pos_qty < 0:
+                        self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                        self.rm.register_exit(self.symbol, current['close'])
+                    return
 
             # Stop Loss / Take Profit Logic could be added here
             # Simple Exit: Trend Fades (ADX < 20) or RSI Reversal
@@ -244,10 +273,13 @@ class MCXMomentumStrategy:
                 if current['rsi'] < 45 or current['adx'] < 20:
                      logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                     if self.rm: self.rm.register_exit(self.symbol, current['close'])
+
             elif pos_qty < 0: # Short
                 if current['rsi'] > 55 or current['adx'] < 20:
                      logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                     if self.rm: self.rm.register_exit(self.symbol, current['close'])
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
@@ -339,6 +371,8 @@ DEFAULT_PARAMS = {
     'risk_per_trade': 0.02,
 }
 
+_STRAT_CACHE = {}
+
 def generate_signal(df, client=None, symbol=None, params=None):
     # Merge default params with provided params
     strat_params = DEFAULT_PARAMS.copy()
@@ -348,7 +382,15 @@ def generate_signal(df, client=None, symbol=None, params=None):
     api_key = client.api_key if client and hasattr(client, 'api_key') else "BACKTEST"
     host = client.host if client and hasattr(client, 'host') else "http://127.0.0.1:5001"
 
-    strat = MCXMomentumStrategy(symbol or "TEST", api_key, host, strat_params)
+    symbol_key = symbol or "TEST"
+
+    # Use Cached Strategy Instance
+    if symbol_key in _STRAT_CACHE:
+        strat = _STRAT_CACHE[symbol_key]
+        strat.params = strat_params # Update params if they changed
+    else:
+        strat = MCXMomentumStrategy(symbol_key, api_key, host, strat_params)
+        _STRAT_CACHE[symbol_key] = strat
 
     # Set Time Stop for Engine
     setattr(strat, 'TIME_STOP_BARS', 12) # 3 Hours (12 * 15m)
