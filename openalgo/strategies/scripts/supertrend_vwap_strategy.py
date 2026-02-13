@@ -5,6 +5,12 @@
 SuperTrend VWAP Strategy
 VWAP mean reversion with volume profile analysis, Enhanced Sector RSI Filter, and Dynamic Risk.
 """
+
+# [Optimization 2026-02-13] Changes: threshold: 160.0 -> 165 (Low WR 40.0%)
+
+# [Optimization 2026-02-13] Changes: threshold: 155.0 -> 160 (Low WR 40.0%)
+
+# [Optimization 2026-02-13] Changes: threshold: 150.0 -> 155 (Low WR 40.0%)
 import os
 import sys
 import time
@@ -73,7 +79,7 @@ class SuperTrendVWAPStrategy:
         self.sector_benchmark = sector_benchmark
 
         # Optimization Parameters
-        self.threshold = 150
+        self.threshold = 165
         self.stop_pct = 1.8
         self.adx_threshold = 20  # Added ADX Filter
         self.adx_period = 14

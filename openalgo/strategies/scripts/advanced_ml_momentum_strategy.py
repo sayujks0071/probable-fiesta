@@ -3,6 +3,12 @@
 Advanced ML Momentum Strategy
 Momentum with relative strength and sector overlay.
 """
+
+# [Optimization 2026-02-13] Changes: threshold: 2.01 -> 3.01 (Low WR 58.3%), stop_pct: 0.81 -> 0.73 (Low R:R 0.80)
+
+# [Optimization 2026-02-13] Changes: threshold: 1.01 -> 2.01 (Low WR 58.3%), stop_pct: 0.9 -> 0.81 (Low R:R 0.80)
+
+# [Optimization 2026-02-13] Changes: threshold: 0.01 -> 1.01 (Low WR 58.3%), stop_pct: 1.0 -> 0.9 (Low R:R 0.80)
 import os
 import sys
 import time
@@ -248,7 +254,7 @@ def run_strategy():
     parser.add_argument('--symbol', type=str, help='Stock Symbol')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
-    parser.add_argument('--threshold', type=float, default=0.01, help='ROC Threshold')
+    parser.add_argument('--threshold', type=float, default=3.01, help='ROC Threshold')
     parser.add_argument('--sector', type=str, default='NIFTY 50', help='Sector Benchmark')
 
     args = parser.parse_args()
@@ -271,7 +277,7 @@ def run_strategy():
 def generate_signal(df, client=None, symbol=None, params=None):
     strat_params = {
         'threshold': 0.01,
-        'stop_pct': 1.0,
+        'stop_pct': 0.73,
         'sector': 'NIFTY 50',
         'vol_multiplier': 0.5
     }
