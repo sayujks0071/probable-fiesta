@@ -69,17 +69,36 @@ class MLMomentumStrategy:
         # SMA for Trend
         df['sma50'] = df['close'].rolling(50).mean()
 
+        # ATR for Volatility Sizing
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean().iloc[-1]
+
+        # Linear Regression Slope (Trend Quality)
+        y = df['close'][-20:].values
+        x = np.arange(len(y))
+        slope = 0.0
+        try:
+             # Simple Linear Regression: slope = cov(x,y) / var(x)
+             slope = np.polyfit(x, y, 1)[0]
+        except: pass
+
         last = df.iloc[-1]
         current_price = last['close']
 
         # Simplifications for Backtest (Missing Index/Sector Data)
-        # We assume RS and Sector conditions are met if data missing, or strict if we want.
-        # Let's assume 'rs_excess > 0' and 'sector_outperformance > 0' are TRUE for baseline logic
-        # unless we pass index data in 'df' (which we don't usually).
-
         rs_excess = 0.01 # Mock positive
         sector_outperformance = 0.01 # Mock positive
         sentiment = 0.5 # Mock positive
+
+        # Exit Logic: Momentum Fades
+        if last['rsi'] < 50:
+             return 'SELL', 1.0, {'reason': 'Momentum Fade', 'rsi': last['rsi']}
 
         # Entry Logic
         if (last['roc'] > self.roc_threshold and
@@ -87,12 +106,20 @@ class MLMomentumStrategy:
             rs_excess > 0 and
             sector_outperformance > 0 and
             current_price > last['sma50'] and
+            slope > 0 and # Trend Check
             sentiment >= 0):
 
             # Volume check
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             if last['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
-                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi']}
+                # ATR Sizing logic: Risk 1% of 100k = 1000. SL = 2 ATR.
+                # Qty = 1000 / (2 * ATR)
+                qty = 100
+                if atr > 0:
+                    qty = int(1000 / (2 * atr))
+                    qty = max(1, min(qty, 1000))
+
+                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi'], 'atr': atr, 'quantity': qty}
 
         return 'HOLD', 0.0, {}
 

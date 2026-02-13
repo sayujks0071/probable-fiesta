@@ -108,6 +108,10 @@ class MCXMomentumStrategy:
         if current.get('atr', 0) < min_atr:
              return 'HOLD', 0.0, {'reason': 'Low Volatility'}
 
+        # Chop Filter (ADX check for low values regardless of threshold)
+        if current['adx'] < 20:
+             return 'HOLD', 0.0, {'reason': 'Choppy Market (ADX < 20)'}
+
         if (current['adx'] > self.params['adx_threshold'] and
             current['rsi'] > 50 and
             current['close'] > prev['close']):
