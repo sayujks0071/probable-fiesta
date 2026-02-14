@@ -9,10 +9,17 @@ from pathlib import Path
 current_file = Path(__file__).resolve()
 project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
+    sys.path.insert(0, str(project_root))
 
-from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
-from openalgo.strategies.utils.option_analytics import calculate_greeks, calculate_max_pain
+try:
+    from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+    from openalgo.strategies.utils.option_analytics import calculate_greeks, calculate_max_pain
+    from openalgo.strategies.utils.risk_manager import create_risk_manager
+except ImportError:
+    sys.path.append(str(project_root / "vendor"))
+    from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+    from openalgo.strategies.utils.option_analytics import calculate_greeks, calculate_max_pain
+    from openalgo.strategies.utils.risk_manager import create_risk_manager
 
 # Configure logging
 logging.basicConfig(
@@ -26,15 +33,21 @@ logging.basicConfig(
 logger = logging.getLogger("DeltaNeutralIronCondor")
 
 class DeltaNeutralIronCondor:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None, current_vix=None):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.max_vix = max_vix
         self.sentiment_score = sentiment_score
+        self.current_vix = current_vix # Use passed VIX if available
+
+        # Risk Manager
+        self.rm = create_risk_manager(f"{symbol}_IronCondor", "NSE", capital=100000)
         self.pm = PositionManager(f"{symbol}_IC")
 
     def get_vix(self):
+        if self.current_vix is not None:
+            return self.current_vix
         q = self.client.get_quote("INDIA VIX", "NSE")
         return float(q['ltp']) if q else 15.0
 
@@ -135,6 +148,12 @@ class DeltaNeutralIronCondor:
     def execute(self):
         logger.info(f"Starting execution for {self.symbol}")
 
+        # 1. Risk Check
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.warning(f"Risk Check Failed: {reason}")
+            return
+
         vix = self.get_vix()
         logger.info(f"Current VIX: {vix}")
 
@@ -143,15 +162,14 @@ class DeltaNeutralIronCondor:
             logger.warning(f"VIX {vix} < 12. Too low for Iron Condor (Low Premium/High Gamma Risk). Skipping.")
             return
 
+        qty = self.qty
         if vix > self.max_vix:
             logger.warning(f"VIX {vix} > {self.max_vix}. Reducing Quantity by 50%.")
-            self.qty = int(self.qty * 0.5)
+            qty = int(qty * 0.5)
 
         # Sentiment Filter
         if self.sentiment_score is not None:
             logger.info(f"Checking Sentiment Score: {self.sentiment_score}")
-            # Score 0 (Negative) to 1 (Positive), 0.5 Neutral
-            # Iron Condor is Neutral. Avoid if sentiment is extreme.
             dist_from_neutral = abs(self.sentiment_score - 0.5)
             if dist_from_neutral > 0.3: # < 0.2 or > 0.8
                 logger.warning(f"Sentiment Score {self.sentiment_score} is strongly directional. Iron Condor risk is high. Skipping.")
@@ -175,10 +193,16 @@ class DeltaNeutralIronCondor:
         logger.info(f"Selected Strikes: {strikes}")
 
         # Place Orders (Mock)
-        logger.info(f"Placing orders for {self.qty} qty...")
+        logger.info(f"Placing orders for {qty} qty...")
 
-        # In real scenario:
-        # self.client.placesmartorder(...)
+        # Register Entry with Risk Manager (assuming all legs filled)
+        # For simplicity, registering one entry representing the spread or just logging
+        # In multi-leg, risk tracking is complex. We'll register the short legs as risk.
+        self.rm.register_entry(f"{self.symbol}_IC_SHORT_CE", qty, 100, "SHORT")
+        self.rm.register_entry(f"{self.symbol}_IC_SHORT_PE", qty, 100, "SHORT")
+
+        # Update Position Manager
+        self.pm.update_position(qty, 100, "SELL") # Shorting the spread
 
         logger.info("Strategy execution completed (Simulation).")
 
@@ -188,10 +212,13 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
     parser.add_argument("--sentiment_score", type=float, default=None, help="External Sentiment Score (0.0-1.0)")
+    parser.add_argument("--vix", type=float, default=None, help="Current VIX")
     args = parser.parse_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score)
+    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty,
+                                      sentiment_score=args.sentiment_score,
+                                      current_vix=args.vix)
     strategy.execute()
 
 if __name__ == "__main__":
