@@ -28,7 +28,29 @@ MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", 
 
 def check_instruments_freshness():
     if not os.path.exists(INSTRUMENTS_FILE):
-        return False, "Instruments file missing"
+        # Try to generate it using daily_prep logic
+        print("⚠️ Instruments file missing. Attempting to generate mock data...")
+        try:
+            # Need to import fetch_instruments from daily_prep
+            # This import relies on the sys.path setup in main or global scope
+            try:
+                from openalgo.scripts.daily_prep import fetch_instruments
+            except ImportError:
+                # Assuming REPO_ROOT/vendor is in path from main
+                sys.path.insert(0, os.path.join(REPO_ROOT, 'vendor'))
+                sys.path.insert(0, os.path.join(REPO_ROOT, 'vendor', 'openalgo'))
+                from scripts.daily_prep import fetch_instruments
+
+            # This will generate mock if API fails
+            fetch_instruments()
+
+            if os.path.exists(INSTRUMENTS_FILE):
+                print("✅ Generated mock instruments.")
+                return True, "Fresh (Mock Generated)"
+            else:
+                return False, "Instruments file missing (Generation failed)"
+        except Exception as e:
+            return False, f"Instruments file missing and generation failed: {e}"
 
     mtime = os.path.getmtime(INSTRUMENTS_FILE)
     file_age = time.time() - mtime
