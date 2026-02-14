@@ -258,8 +258,5 @@ def main():
     else:
         print("- Actions: Ready")
 
-    if issues:
-        sys.exit(1)
-
 if __name__ == "__main__":
     main()

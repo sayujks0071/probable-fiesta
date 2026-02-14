@@ -8,15 +8,20 @@ if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
 # Also add openalgo/scripts to path if needed for internal imports within daily_prep
-scripts_dir = os.path.join(repo_root, 'openalgo', 'scripts')
+scripts_dir = os.path.join(repo_root, 'vendor', 'openalgo', 'scripts')
 if scripts_dir not in sys.path:
     sys.path.insert(0, scripts_dir)
+
+# Add vendor to path
+vendor_dir = os.path.join(repo_root, 'vendor')
+if vendor_dir not in sys.path:
+    sys.path.insert(0, vendor_dir)
 
 try:
     from openalgo.scripts.daily_prep import fetch_instruments
 except ImportError:
     # Fallback if openalgo package is not directly importable (e.g. not installed)
-    sys.path.insert(0, os.path.join(repo_root, 'openalgo'))
+    sys.path.insert(0, os.path.join(repo_root, 'vendor', 'openalgo'))
     from scripts.daily_prep import fetch_instruments
 
 def main():

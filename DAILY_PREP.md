@@ -12,12 +12,12 @@ The `daily_startup.py` script is the main entry point for the trading day. It en
 ```
 
 ### What it does:
-1.  **Repository Check**: Checks for `vendor/openalgo/` directory. If missing, clones it from the repository.
-2.  **Daily Prep**: Launches `vendor/openalgo/scripts/daily_prep.py` which:
+1.  **Repository Check**: Checks for `openalgo/` directory. If missing, clones it from the repository.
+2.  **Daily Prep**: Launches `openalgo/scripts/daily_prep.py` which:
     *   **Environment Check**: Verifies `OPENALGO_APIKEY` and repo structure.
     *   **Purge Stale State**: Deletes previous day's:
-        *   Strategy state files (`vendor/openalgo/strategies/state/*.json`)
-        *   Cached instruments (`vendor/openalgo/data/instruments.csv`)
+        *   Strategy state files (`openalgo/strategies/state/*.json`)
+        *   Cached instruments (`openalgo/data/instruments.csv`)
         *   Session files (if any)
     *   **Authentication Check**: Verifies connectivity to Broker (Kite/Dhan).
     *   **Fetch Instruments**: Downloads the latest instrument list from the broker (or generates a mock list if API is unavailable).
@@ -74,13 +74,13 @@ The `SymbolResolver` (`openalgo/strategies/utils/symbol_resolver.py`) handles dy
 
 ## 4. Daily Backtest & Ranking
 
-To run a simulation backtest of all active strategies along with daily prep:
+To run a simulation backtest of all active strategies:
 
 ```bash
-./daily_startup.py --backtest
+./openalgo/scripts/run_daily_backtest.py
 ```
 
-This executes `vendor/openalgo/scripts/daily_backtest_leaderboard.py`, which:
+This script:
 1.  Loads `active_strategies.json`.
 2.  Resolves symbols using the fresh instrument list.
 3.  **Real Backtest**: Runs the actual strategy logic (e.g. `ORBStrategy.calculate_signals`) against generated/historical data.
