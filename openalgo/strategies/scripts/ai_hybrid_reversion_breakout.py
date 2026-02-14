@@ -40,10 +40,13 @@ except ImportError:
             is_market_open = lambda: True
 
 class AIHybridStrategy:
-    def __init__(self, symbol, api_key, port, rsi_lower=30, rsi_upper=60, stop_pct=1.0, sector='NIFTY 50', earnings_date=None, logfile=None, time_stop_bars=12):
+    def __init__(self, symbol, api_key, port, rsi_lower=30, rsi_upper=60, stop_pct=1.0, sector='NIFTY 50', earnings_date=None, logfile=None, time_stop_bars=12, client=None):
         self.symbol = symbol
         self.host = f"http://127.0.0.1:{port}"
-        self.client = APIClient(api_key=api_key, host=self.host)
+        if client:
+            self.client = client
+        else:
+            self.client = APIClient(api_key=api_key, host=self.host)
 
         # Setup Logger
         self.logger = logging.getLogger(f"AIHybrid_{symbol}")
@@ -115,21 +118,33 @@ class AIHybridStrategy:
         if not pd.isna(last.get('sma200')) and last['close'] < last['sma200']:
             is_bullish_regime = False
 
+        # Bandwidth Filter (Range vs Volatile)
+        bandwidth = (df['upper'] - df['lower']) / df['sma20']
+        bw_avg = bandwidth.rolling(20).mean()
+        is_range = False
+        if not pd.isna(bw_avg.iloc[-1]):
+             is_range = bandwidth.iloc[-1] < bw_avg.iloc[-1]
+
+        # Safety Cap on Quantity
+        max_exposure = 200000 # 2x leverage on 100k
+        qty_cap = int(max_exposure / last['close'])
+        qty = min(qty, qty_cap, 500)
+        qty = max(1, qty)
+
         # Reversion Logic: RSI < 30 and Price < Lower BB (Oversold)
-        if last['rsi'] < self.rsi_lower and last['close'] < last['lower']:
+        # Only take Reversion in Range (to avoid catching falling knives in Trend)
+        if is_range and last['rsi'] < self.rsi_lower and last['close'] < last['lower']:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             # Enhanced Volume Confirmation (Stricter than average)
             if last['volume'] > avg_vol * 1.2:
-                # Reversion can trade against trend, so maybe ignore regime or be strict?
-                # Let's say Reversion is allowed in any regime if oversold enough.
                 return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
 
         # Breakout Logic: RSI > 60 and Price > Upper BB
-        elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
+        # Breakout works best in Bullish Regime and when volatility expands (NOT Range)
+        elif is_bullish_regime and not is_range and last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             # Breakout needs significant volume (2x avg)
-            # Breakout ONLY in Bullish Regime
-            if last['volume'] > avg_vol * 2.0 and is_bullish_regime:
+            if last['volume'] > avg_vol * 2.0:
                  return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
 
         return 'HOLD', 0.0, {}
@@ -372,7 +387,8 @@ def generate_signal(df, client=None, symbol=None, params=None):
         rsi_lower=float(strat_params.get('rsi_lower', 30.0)),
         rsi_upper=float(strat_params.get('rsi_upper', 60.0)),
         stop_pct=float(strat_params.get('stop_pct', 1.0)),
-        sector=strat_params.get('sector', 'NIFTY 50')
+        sector=strat_params.get('sector', 'NIFTY 50'),
+        client=client
     )
 
     # Silence logger for backtest

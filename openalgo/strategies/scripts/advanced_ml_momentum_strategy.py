@@ -39,10 +39,13 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class MLMomentumStrategy:
-    def __init__(self, symbol, api_key, port, threshold=0.01, stop_pct=1.0, sector='NIFTY 50', vol_multiplier=0.5):
+    def __init__(self, symbol, api_key, port, threshold=0.01, stop_pct=1.0, sector='NIFTY 50', vol_multiplier=0.5, client=None):
         self.symbol = symbol
         self.host = f"http://127.0.0.1:{port}"
-        self.client = APIClient(api_key=api_key, host=self.host)
+        if client:
+            self.client = client
+        else:
+            self.client = APIClient(api_key=api_key, host=self.host)
         self.logger = logging.getLogger(f"MLMomentum_{symbol}")
         self.pm = PositionManager(symbol) if PositionManager else None
 
@@ -72,12 +75,35 @@ class MLMomentumStrategy:
         last = df.iloc[-1]
         current_price = last['close']
 
-        # Simplifications for Backtest (Missing Index/Sector Data)
-        # We assume RS and Sector conditions are met if data missing, or strict if we want.
-        # Let's assume 'rs_excess > 0' and 'sector_outperformance > 0' are TRUE for baseline logic
-        # unless we pass index data in 'df' (which we don't usually).
+        # Volatility Sizing (ATR Based)
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift()).abs()
+        low_close = (df['low'] - df['close'].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean().iloc[-1]
 
-        rs_excess = 0.01 # Mock positive
+        qty = 100
+        if atr > 0:
+             # Risk 1% (1000) with 2 ATR Stop
+             qty = int(1000.0 / (2.0 * atr))
+             qty = max(1, min(qty, 500))
+
+        # Relative Strength (Try to fetch Index Data)
+        rs_excess = 0.0
+        try:
+             # Fetch NIFTY using client (Mock in backtest, Real in prod)
+             index_df = self.client.history("NIFTY", interval="15m")
+             if not index_df.empty:
+                  # Use simple last ROC diff
+                  stock_roc = last['roc']
+                  index_roc = index_df['close'].pct_change(10).iloc[-1]
+                  if not pd.isna(index_roc):
+                       rs_excess = stock_roc - index_roc
+             else:
+                  rs_excess = 0.01 # Fallback if no data
+        except:
+             rs_excess = 0.01
+
         sector_outperformance = 0.01 # Mock positive
         sentiment = 0.5 # Mock positive
 
@@ -92,7 +118,7 @@ class MLMomentumStrategy:
             # Volume check
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             if last['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
-                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi']}
+                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi'], 'quantity': qty}
 
         return 'HOLD', 0.0, {}
 
@@ -285,7 +311,8 @@ def generate_signal(df, client=None, symbol=None, params=None):
         threshold=float(strat_params.get('threshold', 0.01)),
         stop_pct=float(strat_params.get('stop_pct', 1.0)),
         sector=strat_params.get('sector', 'NIFTY 50'),
-        vol_multiplier=float(strat_params.get('vol_multiplier', 0.5))
+        vol_multiplier=float(strat_params.get('vol_multiplier', 0.5)),
+        client=client
     )
 
     # Silence logger
