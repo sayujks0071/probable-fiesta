@@ -1,0 +1,378 @@
+[
+    {
+        "strategy": "ML_Momentum_v0",
+        "params": {
+            "threshold": 0.01,
+            "vol_multiplier": 0.5
+        },
+        "avg_sharpe": 19.728695034232448,
+        "details": {
+            "TREND": {
+                "total_return_pct": 5.507958092565401,
+                "win_rate": 100.0,
+                "profit_factor": 5507.958092565416,
+                "max_drawdown_pct": 0.21077583958820045,
+                "avg_win": 688.494761570677,
+                "avg_loss": 0,
+                "largest_win": 918.1133624965462,
+                "largest_loss": 0,
+                "sharpe_ratio": 56.789626724880954,
+                "total_profit": 5507.958092565416,
+                "total_loss": -1
+            },
+            "RANGE": {
+                "total_return_pct": 1.121923693099554,
+                "win_rate": 62.5,
+                "profit_factor": 1.4920979759683897,
+                "max_drawdown_pct": 1.4325630553522397,
+                "avg_win": 680.3604783663457,
+                "avg_loss": -759.9595662440591,
+                "largest_win": 759.1448252904526,
+                "largest_loss": -772.185152497389,
+                "sharpe_ratio": 2.7861204804803874,
+                "total_profit": 3401.802391831728,
+                "total_loss": -2279.8786987321773
+            },
+            "VOLATILE": {
+                "total_return_pct": -0.2526229716375092,
+                "win_rate": 52.77777777777778,
+                "profit_factor": 0.9467952024312296,
+                "max_drawdown_pct": 1.0338178984179087,
+                "avg_win": 236.60531271804672,
+                "avg_loss": -279.3014066635535,
+                "largest_win": 284.75166822978827,
+                "largest_loss": -357.3839570272012,
+                "sharpe_ratio": -0.3896621026639979,
+                "total_profit": 4495.5009416428875,
+                "total_loss": -4748.123913280409
+            }
+        }
+    },
+    {
+        "strategy": "ML_Momentum_v1",
+        "params": {
+            "threshold": 0.01,
+            "vol_multiplier": 1.0
+        },
+        "avg_sharpe": 18.308116105538254,
+        "details": {
+            "TREND": {
+                "total_return_pct": 4.791113803684799,
+                "win_rate": 100.0,
+                "profit_factor": 4791.1138036848015,
+                "max_drawdown_pct": 0.20178215435250035,
+                "avg_win": 684.4448290978288,
+                "avg_loss": 0,
+                "largest_win": 918.1133624965462,
+                "largest_loss": 0,
+                "sharpe_ratio": 52.862238999017414,
+                "total_profit": 4791.1138036848015,
+                "total_loss": -1
+            },
+            "RANGE": {
+                "total_return_pct": 1.0292678944255895,
+                "win_rate": 62.5,
+                "profit_factor": 1.4338263134006533,
+                "max_drawdown_pct": 1.4462082222316348,
+                "avg_win": 680.3604783663457,
+                "avg_loss": -790.8448324687157,
+                "largest_win": 759.1448252904526,
+                "largest_loss": -818.3214799659536,
+                "sharpe_ratio": 2.7861204804803887,
+                "total_profit": 3401.802391831728,
+                "total_loss": -2372.5344974061472
+            },
+            "VOLATILE": {
+                "total_return_pct": -0.3720845116682613,
+                "win_rate": 51.724137931034484,
+                "profit_factor": 0.9038537779117666,
+                "max_drawdown_pct": 0.8222622339027779,
+                "avg_win": 233.19341746308817,
+                "avg_loss": -276.4275552581838,
+                "largest_win": 267.36919295558255,
+                "largest_loss": -357.3839570272012,
+                "sharpe_ratio": -0.7240111628830448,
+                "total_profit": 3497.9012619463224,
+                "total_loss": -3869.985773614573
+            }
+        }
+    },
+    {
+        "strategy": "MCX_Momentum_v0",
+        "params": {
+            "adx_threshold": 20,
+            "period_rsi": 14
+        },
+        "avg_sharpe": 10.170141327192477,
+        "details": {
+            "TREND": {
+                "total_return_pct": 0.11931164523991175,
+                "win_rate": 80.0,
+                "profit_factor": 138.65060752267306,
+                "max_drawdown_pct": 0.019248409029649985,
+                "avg_win": 30.04460422435659,
+                "avg_loss": -0.8667716575116629,
+                "largest_win": 36.7795799546559,
+                "largest_loss": -0.8667716575116629,
+                "sharpe_ratio": 28.19406660879377,
+                "total_profit": 120.17841689742636,
+                "total_loss": -0.8667716575116629
+            },
+            "RANGE": {
+                "total_return_pct": -0.003651484467613045,
+                "win_rate": 46.666666666666664,
+                "profit_factor": 0.9810908672693647,
+                "max_drawdown_pct": 0.10947049706054401,
+                "avg_win": 27.065062869661283,
+                "avg_loss": -24.13836556940612,
+                "largest_win": 33.63407872421749,
+                "largest_loss": -33.527590438891366,
+                "sharpe_ratio": 0.08519929793065871,
+                "total_profit": 189.45544008762897,
+                "total_loss": -193.10692455524895
+            },
+            "VOLATILE": {
+                "total_return_pct": 0.1310234302010649,
+                "win_rate": 58.82352941176471,
+                "profit_factor": 1.241527788626402,
+                "max_drawdown_pct": 0.22314154258068064,
+                "avg_win": 67.35010926935281,
+                "avg_loss": -77.49680892749942,
+                "largest_win": 115.86630995974326,
+                "largest_loss": -105.88279848612945,
+                "sharpe_ratio": 2.2311580748530013,
+                "total_profit": 673.5010926935281,
+                "total_loss": -542.4776624924959
+            }
+        }
+    },
+    {
+        "strategy": "MCX_Momentum_v1",
+        "params": {
+            "adx_threshold": 25,
+            "period_rsi": 14
+        },
+        "avg_sharpe": 9.086663211285119,
+        "details": {
+            "TREND": {
+                "total_return_pct": 0.09679352109665343,
+                "win_rate": 75.0,
+                "profit_factor": 51.45686338725079,
+                "max_drawdown_pct": 0.005317106121541214,
+                "avg_win": 32.903954371314285,
+                "avg_loss": -1.9183420172944352,
+                "largest_win": 36.7795799546559,
+                "largest_loss": -1.9183420172944352,
+                "sharpe_ratio": 24.9436322610717,
+                "total_profit": 98.71186311394285,
+                "total_loss": -1.9183420172944352
+            },
+            "RANGE": {
+                "total_return_pct": -0.003651484467613045,
+                "win_rate": 46.666666666666664,
+                "profit_factor": 0.9810908672693647,
+                "max_drawdown_pct": 0.10947049706054401,
+                "avg_win": 27.065062869661283,
+                "avg_loss": -24.13836556940612,
+                "largest_win": 33.63407872421749,
+                "largest_loss": -33.527590438891366,
+                "sharpe_ratio": 0.08519929793065871,
+                "total_profit": 189.45544008762897,
+                "total_loss": -193.10692455524895
+            },
+            "VOLATILE": {
+                "total_return_pct": 0.1310234302010649,
+                "win_rate": 58.82352941176471,
+                "profit_factor": 1.241527788626402,
+                "max_drawdown_pct": 0.22314154258068064,
+                "avg_win": 67.35010926935281,
+                "avg_loss": -77.49680892749942,
+                "largest_win": 115.86630995974326,
+                "largest_loss": -105.88279848612945,
+                "sharpe_ratio": 2.2311580748530013,
+                "total_profit": 673.5010926935281,
+                "total_loss": -542.4776624924959
+            }
+        }
+    },
+    {
+        "strategy": "SuperTrend_VWAP_v0",
+        "params": {
+            "threshold": 150,
+            "stop_pct": 1.5
+        },
+        "avg_sharpe": 0.0,
+        "details": {
+            "TREND": {
+                "total_return_pct": 0.0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown_pct": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "largest_win": 0.0,
+                "largest_loss": 0.0,
+                "sharpe_ratio": 0.0
+            },
+            "RANGE": {
+                "total_return_pct": 0.0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown_pct": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "largest_win": 0.0,
+                "largest_loss": 0.0,
+                "sharpe_ratio": 0.0
+            },
+            "VOLATILE": {
+                "total_return_pct": 0.0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown_pct": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "largest_win": 0.0,
+                "largest_loss": 0.0,
+                "sharpe_ratio": 0.0
+            }
+        }
+    },
+    {
+        "strategy": "SuperTrend_VWAP_v1",
+        "params": {
+            "threshold": 150,
+            "stop_pct": 2.0
+        },
+        "avg_sharpe": 0.0,
+        "details": {
+            "TREND": {
+                "total_return_pct": 0.0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown_pct": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "largest_win": 0.0,
+                "largest_loss": 0.0,
+                "sharpe_ratio": 0.0
+            },
+            "RANGE": {
+                "total_return_pct": 0.0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown_pct": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "largest_win": 0.0,
+                "largest_loss": 0.0,
+                "sharpe_ratio": 0.0
+            },
+            "VOLATILE": {
+                "total_return_pct": 0.0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown_pct": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "largest_win": 0.0,
+                "largest_loss": 0.0,
+                "sharpe_ratio": 0.0
+            }
+        }
+    },
+    {
+        "strategy": "AI_Hybrid_v0",
+        "params": {
+            "rsi_lower": 30,
+            "rsi_upper": 60
+        },
+        "avg_sharpe": -2841297952311443.5,
+        "details": {
+            "TREND": {
+                "total_return_pct": 0.0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown_pct": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "largest_win": 0.0,
+                "largest_loss": 0.0,
+                "sharpe_ratio": 0.0
+            },
+            "RANGE": {
+                "total_return_pct": -9.312987162962818,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown_pct": 9.3213271832533,
+                "avg_win": 0,
+                "avg_loss": -1862.5974325925629,
+                "largest_win": 0,
+                "largest_loss": -2366.0839937729233,
+                "sharpe_ratio": -8523893856934330.0,
+                "total_profit": 0,
+                "total_loss": -9312.987162962814
+            },
+            "VOLATILE": {
+                "total_return_pct": -0.10095661419266254,
+                "win_rate": 50.0,
+                "profit_factor": 0.8277711437959306,
+                "max_drawdown_pct": 0.5833465985397961,
+                "avg_win": 485.2205016388548,
+                "avg_loss": -586.1771158315173,
+                "largest_win": 485.2205016388548,
+                "largest_loss": -586.1771158315173,
+                "sharpe_ratio": -1.2709774112399268,
+                "total_profit": 485.2205016388548,
+                "total_loss": -586.1771158315173
+            }
+        }
+    },
+    {
+        "strategy": "AI_Hybrid_v1",
+        "params": {
+            "rsi_lower": 35,
+            "rsi_upper": 60
+        },
+        "avg_sharpe": -4247690718166993.5,
+        "details": {
+            "TREND": {
+                "total_return_pct": 0.0,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown_pct": 0.0,
+                "avg_win": 0.0,
+                "avg_loss": 0.0,
+                "largest_win": 0.0,
+                "largest_loss": 0.0,
+                "sharpe_ratio": 0.0
+            },
+            "RANGE": {
+                "total_return_pct": -9.34125828805883,
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown_pct": 9.349595708398677,
+                "avg_win": 0,
+                "avg_loss": -1868.2516576117644,
+                "largest_win": 0,
+                "largest_loss": -2366.0839937729233,
+                "sharpe_ratio": -1.2743072154500984e+16,
+                "total_profit": 0,
+                "total_loss": -9341.258288058822
+            },
+            "VOLATILE": {
+                "total_return_pct": 0.4124893493889249,
+                "win_rate": 66.66666666666666,
+                "profit_factor": 1.7036940512489829,
+                "max_drawdown_pct": 0.580381044964963,
+                "avg_win": 499.33323261022105,
+                "avg_loss": -586.1771158315173,
+                "largest_win": 513.4459635815873,
+                "largest_loss": -586.1771158315173,
+                "sharpe_ratio": 4.2644109608268925,
+                "total_profit": 998.6664652204421,
+                "total_loss": -586.1771158315173
+            }
+        }
+    }
+]

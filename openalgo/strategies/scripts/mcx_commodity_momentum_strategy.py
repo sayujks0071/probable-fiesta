@@ -39,13 +39,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("MCX_Momentum")
 
 class MCXMomentumStrategy:
-    def __init__(self, symbol, api_key, host, params):
+    def __init__(self, symbol, api_key, host, params, client=None):
         self.symbol = symbol
         self.api_key = api_key
         self.host = host
         self.params = params
 
-        self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
+        if client:
+            self.client = client
+        else:
+            self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
         self.pm = PositionManager(symbol) if PositionManager else None
         self.data = pd.DataFrame()
 
@@ -97,11 +100,15 @@ class MCXMomentumStrategy:
 
         # Factors
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
+        chop_ok = current.get('chop', 50) < 61.8
 
         action = 'HOLD'
 
         if not seasonality_ok:
             return 'HOLD', 0.0, {'reason': 'Seasonality Weak'}
+
+        if not chop_ok:
+            return 'HOLD', 0.0, {'reason': 'Choppy Market'}
 
         # Volatility Filter
         min_atr = self.params.get('min_atr', 0)
@@ -171,6 +178,64 @@ class MCXMomentumStrategy:
         df['adx'] = dx.rolling(window=self.params['period_adx']).mean()
 
         self.data = df
+        self.calculate_chop_index()
+
+    def calculate_chop_index(self, period=14):
+        """Calculate Chop Index."""
+        if self.data.empty: return
+        df = self.data
+        high = df['high']
+        low = df['low']
+        close = df['close']
+
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+        atr_sum = tr.rolling(period).sum()
+        high_max = high.rolling(period).max()
+        low_min = low.rolling(period).min()
+
+        # Avoid division by zero
+        range_diff = high_max - low_min
+        range_diff = range_diff.replace(0, np.nan)
+
+        # Log10 requires positive values
+        ratio = atr_sum / range_diff
+        ratio = ratio.replace(0, np.nan)
+
+        ci = 100 * np.log10(ratio) / np.log10(period)
+        self.data['chop'] = ci
+
+    def check_exit(self, df, position):
+        """Chandelier Exit Logic."""
+        if df.empty: return False, None, None
+
+        atr = df['atr'].iloc[-1] if 'atr' in df.columns else 0
+        if atr == 0: return False, None, None
+
+        # Chandelier Exit (3 * ATR)
+        mult = 3.0
+
+        if position.side == 'BUY':
+             # Use 22-period high (approx recent swing)
+             recent_high = df['high'].rolling(22).max().iloc[-1]
+             if pd.isna(recent_high): return False, None, None
+
+             new_stop = recent_high - (mult * atr)
+             if new_stop > position.stop_loss:
+                 position.stop_loss = new_stop
+
+        elif position.side == 'SELL':
+             recent_low = df['low'].rolling(22).min().iloc[-1]
+             if pd.isna(recent_low): return False, None, None
+
+             new_stop = recent_low + (mult * atr)
+             if new_stop < position.stop_loss:
+                 position.stop_loss = new_stop
+
+        return False, None, None
 
     def check_signals(self):
         """Check entry and exit conditions."""
@@ -348,7 +413,7 @@ def generate_signal(df, client=None, symbol=None, params=None):
     api_key = client.api_key if client and hasattr(client, 'api_key') else "BACKTEST"
     host = client.host if client and hasattr(client, 'host') else "http://127.0.0.1:5001"
 
-    strat = MCXMomentumStrategy(symbol or "TEST", api_key, host, strat_params)
+    strat = MCXMomentumStrategy(symbol or "TEST", api_key, host, strat_params, client=client)
 
     # Set Time Stop for Engine
     setattr(strat, 'TIME_STOP_BARS', 12) # 3 Hours (12 * 15m)

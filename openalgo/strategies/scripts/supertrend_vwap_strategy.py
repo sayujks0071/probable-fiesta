@@ -130,7 +130,7 @@ class SuperTrendVWAPStrategy:
         # Dynamic Deviation
         vix = self.get_vix()
         dev_threshold = 0.02
-        if vix > 20: dev_threshold = 0.01
+        if vix > 25: dev_threshold = 0.01
         elif vix < 12: dev_threshold = 0.03
 
         # Logic
@@ -144,7 +144,7 @@ class SuperTrendVWAPStrategy:
 
         vol_mean = df['volume'].rolling(20).mean().iloc[-1]
         vol_std = df['volume'].rolling(20).std().iloc[-1]
-        dynamic_threshold = vol_mean + (1.5 * vol_std)
+        dynamic_threshold = vol_mean + (1.0 * vol_std) # Relaxed from 1.5
         is_volume_spike = last['volume'] > dynamic_threshold
 
         is_above_poc = last['close'] > poc_price
@@ -270,11 +270,43 @@ class SuperTrendVWAPStrategy:
             )
             if not vix_df.empty:
                 vix = vix_df.iloc[-1]['close']
+                # Sanity check for Mock or bad data
+                if vix > 100 or vix < 0:
+                    self.logger.warning(f"Abnormal VIX {vix}, using default 15.0")
+                    return 15.0
                 self.logger.debug(f"Fetched VIX: {vix}")
                 return vix
         except Exception as e:
             self.logger.warning(f"Could not fetch VIX: {e}. Defaulting to 15.0.")
         return 15.0 # Default
+
+    def check_exit(self, df, position):
+        """Custom Exit Logic: Trailing Stop & VWAP Cross."""
+        if df.empty: return False, None, None
+
+        try:
+            # Re-calculate or reuse ATR
+            # Optimization: If self.atr is fresh, use it? But safe to recalc.
+            atr = self.calculate_atr(df)
+            last = df.iloc[-1]
+
+            # Trailing Stop Update
+            sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 2.0)
+
+            if position.side == 'BUY':
+                new_stop = last['close'] - (sl_mult * atr)
+                if new_stop > position.stop_loss:
+                    position.stop_loss = new_stop
+
+                # VWAP Cross Exit
+                if 'vwap' in df.columns:
+                     if last['close'] < df.iloc[-1]['vwap']:
+                          return True, "VWAP_CROSS", last['close']
+
+            return False, None, None
+        except Exception as e:
+            self.logger.error(f"Check Exit Error: {e}")
+            return False, None, None
 
     def run(self):
         self.symbol = normalize_symbol(self.symbol)
