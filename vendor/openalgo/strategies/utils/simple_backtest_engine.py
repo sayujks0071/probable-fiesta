@@ -318,7 +318,8 @@ class SimpleBacktestEngine:
         exchange: str,
         start_date: str,
         end_date: str,
-        interval: str = "15m"
+        interval: str = "15m",
+        df: pd.DataFrame = None
     ) -> Dict[str, Any]:
         """
         Run backtest on a strategy.
@@ -330,6 +331,7 @@ class SimpleBacktestEngine:
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
             interval: Data interval
+            df: Optional pre-loaded DataFrame
         
         Returns:
             Dictionary with backtest results
@@ -350,7 +352,8 @@ class SimpleBacktestEngine:
         self.equity_curve = []
         
         # Load historical data
-        df = self.load_historical_data(symbol, exchange, start_date, end_date, interval)
+        if df is None or df.empty:
+            df = self.load_historical_data(symbol, exchange, start_date, end_date, interval)
         
         if df.empty:
             logger.error("No data available for backtest")

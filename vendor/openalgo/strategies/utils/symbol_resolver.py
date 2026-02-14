@@ -10,6 +10,8 @@ class SymbolResolver:
     def __init__(self, instruments_path=None):
         if instruments_path is None:
             # Default to openalgo/data/instruments.csv
+            # We assume this script is running from vendor/openalgo/strategies/utils/
+            # So ../../../data/instruments.csv -> vendor/openalgo/data/instruments.csv
             base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../data'))
             instruments_path = os.path.join(base_path, 'instruments.csv')
 
@@ -100,7 +102,7 @@ class SymbolResolver:
                (self.df['exchange'] == exchange) & \
                (self.df['expiry'] >= now)
 
-        matches = self.df[mask].sort_values('expiry')
+        matches = self.df[mask].copy()
 
         if matches.empty:
             # Try searching by symbol if name match fails
@@ -108,34 +110,61 @@ class SymbolResolver:
                        (self.df['instrument_type'] == 'FUT') & \
                        (self.df['exchange'] == exchange) & \
                        (self.df['expiry'] >= now)
-            matches = self.df[mask_sym].sort_values('expiry')
+            matches = self.df[mask_sym].copy()
 
             if matches.empty:
                 logger.warning(f"No futures found for {underlying}")
                 return None
 
+        # Sort by expiry first
+        matches = matches.sort_values('expiry')
+
         # MCX MINI Logic
         if exchange == 'MCX':
             # Priority:
-            # 1. Symbol contains 'MINI'
-            # 2. Symbol matches Name + 'M' + Date (e.g., SILVERM...) vs SILVER...
+            # 1. 'MINI' in symbol
+            # 2. 'M' suffix on underlying name (e.g. SILVERM)
+            # 3. Smaller lot size? (If available)
 
-            # Check for explicitly 'MINI' or 'M' suffix on underlying name
-            # Use non-capturing group to avoid pandas UserWarning
-            mini_pattern = r'(?:{}M|{}MINI)'.format(underlying, underlying)
+            # We create a 'rank' column.
+            # 0 = Best (MINI), 1 = Standard
 
-            mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
+            def calculate_rank(row):
+                sym = row['symbol'].upper()
+                name = row['name'].upper()
 
-            if not mini_matches.empty:
-                logger.info(f"Found MCX MINI contract for {underlying}: {mini_matches.iloc[0]['symbol']}")
-                return mini_matches.iloc[0]['symbol']
+                # Check for MINI explicitly
+                if 'MINI' in sym:
+                    return 0
 
-            # Also check if the symbol itself ends with 'M' before some digits (less reliable but possible)
-            # e.g. CRUDEOILM23NOV...
+                # Check for 'M' suffix pattern e.g. SILVERM...
+                # If underlying is SILVER, and symbol is SILVERM...
+                if name + 'M' in sym:
+                    return 0
 
-            logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
+                # Check lot size if available
+                if 'lot_size' in row and row['lot_size'] > 0:
+                    # Heuristic: smaller lots are likely mini/micro
+                    # But hard to compare without context.
+                    # We will stick to name matching for priority 0.
+                    pass
 
-        # Return nearest expiry
+                return 1
+
+            matches['rank'] = matches.apply(calculate_rank, axis=1)
+
+            # Sort by Rank (asc), then Expiry (asc)
+            matches = matches.sort_values(['rank', 'expiry'])
+
+            best = matches.iloc[0]
+            if best['rank'] == 0:
+                 logger.info(f"Resolved MCX MINI: {best['symbol']}")
+            else:
+                 logger.info(f"Resolved MCX Standard (No MINI found): {best['symbol']}")
+
+            return best['symbol']
+
+        # Return nearest expiry for NSE
         return matches.iloc[0]['symbol']
 
     def _resolve_option(self, config):
@@ -212,6 +241,7 @@ class SymbolResolver:
             if same_month_expiries:
                 return same_month_expiries[-1]
             else:
+                # If no expiries left in this month (e.g. today is last day?), fallback to nearest
                 return nearest_expiry
 
         return nearest_expiry
