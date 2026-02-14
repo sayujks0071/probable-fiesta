@@ -46,7 +46,7 @@ PARAMS = {
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(f"MCX_Arbitrage_{SYMBOL}")
+logger = logging.getLogger(f"MCX_Arbitrage")
 
 class MCXGlobalArbitrageStrategy:
     def __init__(self, symbol, global_symbol, params, api_client=None):
@@ -62,6 +62,10 @@ class MCXGlobalArbitrageStrategy:
         # Session Reference Points (Opening Price of the session/day)
         self.session_ref_mcx = None
         self.session_ref_global = None
+
+        logger.info(f"Initialized Strategy for {symbol} vs {global_symbol}")
+        logger.info(f"Fundamental Score: {params.get('fundamental_score', 'N/A')}")
+        logger.info(f"Global Alignment Score: {params.get('global_alignment_score', 'N/A')}")
 
     def fetch_data(self):
         """Fetch live MCX and Global prices. Returns True on success."""
@@ -174,6 +178,15 @@ class MCXGlobalArbitrageStrategy:
     def entry(self, side, price, reason):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
         
+        # Position Sizing based on Fundamental Score
+        fund_score = self.params.get('fundamental_score', 50)
+        quantity = 1
+        if fund_score > 70:
+             quantity = 2 # Increase size for strong fundamentals (though arbitrage is usually delta neutral, here it's simple directional arb)
+        elif fund_score < 40:
+             # Maybe skip? But Arbitrage is technical. Let's just keep 1 but log warning.
+             logger.warning("Fundamental Score is Low, proceeding with caution.")
+
         order_placed = False
         if self.api_client:
             try:
@@ -184,10 +197,10 @@ class MCXGlobalArbitrageStrategy:
                     exchange="MCX",
                     price_type="MARKET",
                     product="MIS",
-                    quantity=1,
-                    position_size=1
+                    quantity=quantity,
+                    position_size=quantity
                 )
-                logger.info(f"[ENTRY] Order placed: {side} {self.symbol} @ {price:.2f}")
+                logger.info(f"[ENTRY] Order placed: {side} {self.symbol} @ {price:.2f} Qty: {quantity}")
                 order_placed = True
             except Exception as e:
                 logger.error(f"[ENTRY] Order placement failed: {e}")
@@ -195,12 +208,14 @@ class MCXGlobalArbitrageStrategy:
             logger.warning(f"[ENTRY] No API client available - signal logged but order not placed")
         
         if order_placed or not self.api_client: # Assume success if no client (testing)
-            self.position = 1 if side == "BUY" else -1
+            self.position = quantity if side == "BUY" else -quantity
             self.last_trade_time = time.time()
 
     def exit(self, side, price, reason):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
         
+        qty = abs(self.position)
+
         order_placed = False
         if self.api_client:
             try:
@@ -211,7 +226,7 @@ class MCXGlobalArbitrageStrategy:
                     exchange="MCX",
                     price_type="MARKET",
                     product="MIS",
-                    quantity=abs(self.position),
+                    quantity=qty,
                     position_size=0
                 )
                 logger.info(f"[EXIT] Order placed: {side} {self.symbol} @ {price:.2f}")
@@ -240,6 +255,16 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key')
 
+    # New Arguments
+    parser.add_argument('--fundamental_score', type=int, default=50, help='Fundamental Score (0-100)')
+    parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
+
+    # Ignored args to prevent crash if passed from orchestrator
+    parser.add_argument('--usd_inr_trend', type=str, default='Neutral')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0)
+    parser.add_argument('--seasonality_score', type=int, default=50)
+    parser.add_argument('--underlying', type=str)
+
     args = parser.parse_args()
 
     # Use command-line args or env vars
@@ -254,6 +279,10 @@ if __name__ == "__main__":
     
     if args.api_key: API_KEY = args.api_key
     else: API_KEY = os.getenv('OPENALGO_APIKEY', API_KEY)
+
+    # Update PARAMS
+    PARAMS['fundamental_score'] = args.fundamental_score
+    PARAMS['global_alignment_score'] = args.global_alignment_score
 
     # Validate symbol or resolve default
     if not SYMBOL:
