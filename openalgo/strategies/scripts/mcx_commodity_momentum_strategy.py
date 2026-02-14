@@ -2,7 +2,7 @@
 """
 MCX Commodity Momentum Strategy
 Momentum strategy using ADX and RSI with proper API integration.
-Enhanced with Multi-Factor inputs (USD/INR, Seasonality).
+Enhanced with Multi-Factor inputs (USD/INR, Seasonality, Fundamentals).
 """
 import os
 import sys
@@ -51,7 +51,10 @@ class MCXMomentumStrategy:
 
         # Log active filters
         logger.info(f"Initialized Strategy for {symbol}")
-        logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
+        logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, "
+                    f"USD_Vol={params.get('usd_inr_volatility', 'N/A')}, "
+                    f"Fundamental={params.get('fundamental_score', 'N/A')}, "
+                    f"Global={params.get('global_alignment_score', 'N/A')}")
 
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
@@ -97,11 +100,15 @@ class MCXMomentumStrategy:
 
         # Factors
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
+        fundamental_ok = self.params.get('fundamental_score', 50) >= 40
 
         action = 'HOLD'
 
         if not seasonality_ok:
             return 'HOLD', 0.0, {'reason': 'Seasonality Weak'}
+
+        if not fundamental_ok:
+            return 'HOLD', 0.0, {'reason': 'Fundamentals Weak'}
 
         # Volatility Filter
         min_atr = self.params.get('min_atr', 0)
@@ -195,6 +202,7 @@ class MCXMomentumStrategy:
         # Multi-Factor Checks
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
         global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
+        fundamental_ok = self.params.get('fundamental_score', 50) >= 40
         usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
 
         # Adjust Position Size
@@ -209,6 +217,10 @@ class MCXMomentumStrategy:
 
         if not global_alignment_ok and not has_position:
             logger.info("Global Alignment Weak: Skipping new entries.")
+            return
+
+        if not fundamental_ok and not has_position:
+            logger.info(f"Fundamental Score Weak ({self.params.get('fundamental_score')}): Skipping new entries.")
             return
 
         # Entry Logic
@@ -271,9 +283,10 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
+    parser.add_argument('--fundamental_score', type=int, default=50, help='Fundamental Score (0-100)')
 
     args = parser.parse_args()
 
@@ -288,7 +301,8 @@ if __name__ == "__main__":
         'usd_inr_trend': args.usd_inr_trend,
         'usd_inr_volatility': args.usd_inr_volatility,
         'seasonality_score': args.seasonality_score,
-        'global_alignment_score': args.global_alignment_score
+        'global_alignment_score': args.global_alignment_score,
+        'fundamental_score': args.fundamental_score
     }
 
     # Symbol Resolution
