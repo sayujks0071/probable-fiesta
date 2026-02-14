@@ -252,14 +252,14 @@ def run_strategy():
     parser.add_argument('--sector', type=str, default='NIFTY 50', help='Sector Benchmark')
 
     args = parser.parse_args()
-    
+
     # Use command-line args if provided, otherwise fall back to environment variables
     symbol = args.symbol or os.getenv('SYMBOL')
     if not symbol:
         print("ERROR: --symbol argument or SYMBOL environment variable is required")
         parser.print_help()
         sys.exit(1)
-    
+
     port = args.port or int(os.getenv('OPENALGO_PORT', '5001'))
     api_key = args.api_key or os.getenv('OPENALGO_APIKEY', 'demo_key')
     threshold = args.threshold or float(os.getenv('THRESHOLD', '0.01'))

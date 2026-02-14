@@ -12,9 +12,14 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
+# Add vendor to path
+VENDOR_DIR = os.path.join(REPO_ROOT, 'vendor')
+if VENDOR_DIR not in sys.path:
+    sys.path.insert(0, VENDOR_DIR)
+
+DATA_DIR = os.path.join(REPO_ROOT, 'vendor', 'openalgo', 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
-CONFIG_FILE = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategies.json')
+CONFIG_FILE = os.path.join(REPO_ROOT, 'vendor', 'openalgo', 'strategies', 'active_strategies.json')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
 # Regex for MCX Symbols
@@ -23,7 +28,29 @@ MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", 
 
 def check_instruments_freshness():
     if not os.path.exists(INSTRUMENTS_FILE):
-        return False, "Instruments file missing"
+        # Try to generate it using daily_prep logic
+        print("⚠️ Instruments file missing. Attempting to generate mock data...")
+        try:
+            # Need to import fetch_instruments from daily_prep
+            # This import relies on the sys.path setup in main or global scope
+            try:
+                from openalgo.scripts.daily_prep import fetch_instruments
+            except ImportError:
+                # Assuming REPO_ROOT/vendor is in path from main
+                sys.path.insert(0, os.path.join(REPO_ROOT, 'vendor'))
+                sys.path.insert(0, os.path.join(REPO_ROOT, 'vendor', 'openalgo'))
+                from scripts.daily_prep import fetch_instruments
+
+            # This will generate mock if API fails
+            fetch_instruments()
+
+            if os.path.exists(INSTRUMENTS_FILE):
+                print("✅ Generated mock instruments.")
+                return True, "Fresh (Mock Generated)"
+            else:
+                return False, "Instruments file missing (Generation failed)"
+        except Exception as e:
+            return False, f"Instruments file missing and generation failed: {e}"
 
     mtime = os.path.getmtime(INSTRUMENTS_FILE)
     file_age = time.time() - mtime
@@ -79,7 +106,7 @@ def validate_config_symbols(resolver):
 
 def scan_files_for_hardcoded_symbols(instruments):
     issues = []
-    strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    strategies_dir = os.path.join(REPO_ROOT, 'vendor', 'openalgo', 'strategies')
 
     for root, dirs, files in os.walk(strategies_dir):
         # Exclude tests
@@ -156,7 +183,7 @@ def main():
         try:
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
         except ImportError:
-            sys.path.insert(0, os.path.join(REPO_ROOT, 'openalgo'))
+            sys.path.insert(0, os.path.join(REPO_ROOT, 'vendor', 'openalgo'))
             from strategies.utils.symbol_resolver import SymbolResolver
 
         resolver = SymbolResolver(INSTRUMENTS_FILE)
