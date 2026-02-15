@@ -1,12 +1,12 @@
 {
-    "ORB_NIFTY": {
-        "strategy": "orb_strategy",
+    "ML_Momentum_NIFTY": {
+        "strategy": "advanced_ml_momentum_strategy",
         "underlying": "NIFTY",
         "type": "EQUITY",
         "exchange": "NSE",
         "params": {
-            "quantity": 50,
-            "timeframe": 15
+            "threshold": 0.01,
+            "sector": "NIFTY 50"
         }
     },
     "SuperTrend_NIFTY": {
@@ -35,6 +35,18 @@
         "exchange": "MCX",
         "params": {
             "quantity": 1
+        }
+    },
+    "NIFTY_WEEKLY_OPT": {
+        "strategy": "supertrend_vwap_strategy",
+        "underlying": "NIFTY",
+        "type": "OPT",
+        "exchange": "NFO",
+        "expiry_preference": "WEEKLY",
+        "option_type": "CE",
+        "strike_criteria": "ATM",
+        "params": {
+            "quantity": 50
         }
     }
 }

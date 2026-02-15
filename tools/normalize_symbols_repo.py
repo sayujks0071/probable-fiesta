@@ -10,7 +10,13 @@ from collections import defaultdict
 
 # Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
+
+# Vendor Path
+VENDOR_DIR = os.path.join(REPO_ROOT, 'vendor', 'openalgo')
+if not os.path.exists(VENDOR_DIR):
+    VENDOR_DIR = os.path.join(REPO_ROOT, 'openalgo')
+
+DATA_DIR = os.path.join(VENDOR_DIR, 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
@@ -123,8 +129,8 @@ def main():
     }
 
     files_to_scan = []
-    # Walk openalgo/strategies
-    strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
+    # Walk vendor/openalgo/strategies
+    strategies_dir = os.path.join(VENDOR_DIR, 'strategies')
     for root, dirs, files in os.walk(strategies_dir):
         # Exclude tests directories
         if 'tests' in dirs:
