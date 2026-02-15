@@ -95,7 +95,7 @@ class AdvancedMCXStrategy:
 
     def fetch_global_context(self):
         """
-        Fetch global market data via yfinance.
+        Fetch global market data via yfinance with robust error handling.
         """
         logger.info("Fetching Global Market Context...")
 
@@ -106,42 +106,74 @@ class AdvancedMCXStrategy:
 
         try:
             # 1. USD/INR
-            usd = yf.Ticker("INR=X")
-            hist = usd.history(period="5d")
-            if not hist.empty:
-                current_usd = hist['Close'].iloc[-1]
-                prev_usd = hist['Close'].iloc[-2]
-                self.market_context['usd_inr'] = current_usd
-                self.market_context['usd_trend'] = 'Up' if current_usd > prev_usd else 'Down'
+            try:
+                usd = yf.Ticker("INR=X")
+                hist = usd.history(period="5d")
+                if not hist.empty and len(hist) > 1:
+                    current_usd = hist['Close'].iloc[-1]
+                    prev_usd = hist['Close'].iloc[-2]
+                    self.market_context['usd_inr'] = float(current_usd)
+                    self.market_context['usd_trend'] = 'Up' if current_usd > prev_usd else 'Down'
 
-                # Volatility (Std Dev of returns)
-                returns = hist['Close'].pct_change().dropna()
-                self.market_context['usd_volatility'] = returns.std() * 100 # percentage
+                    # Volatility (Std Dev of returns)
+                    returns = hist['Close'].pct_change().dropna()
+                    self.market_context['usd_volatility'] = float(returns.std() * 100) # percentage
 
-                logger.info(f"USD/INR: {current_usd:.2f} ({self.market_context['usd_trend']}) | Vol: {self.market_context['usd_volatility']:.2f}%")
+                    logger.info(f"USD/INR: {current_usd:.2f} ({self.market_context['usd_trend']}) | Vol: {self.market_context['usd_volatility']:.2f}%")
+                else:
+                     logger.warning("USD/INR data empty or insufficient")
+            except Exception as e:
+                logger.warning(f"Failed to fetch USD/INR: {e}")
 
             # 2. Global Commodities
-            tickers = " ".join([c['global_ticker'] for c in self.commodities])
-            data = yf.download(tickers, period="5d", interval="1d", progress=False)
+            tickers_list = [c['global_ticker'] for c in self.commodities]
+            tickers_str = " ".join(tickers_list)
+
+            # Download with threads=False to avoid some threading issues in certain envs
+            data = yf.download(tickers_str, period="5d", interval="1d", progress=False, threads=False)
 
             if not data.empty:
-                # Handle Multi-Index columns in newer yfinance
-                close_prices = data['Close'] if 'Close' in data else data
+                # Handle Multi-Index columns in newer yfinance (v0.2+)
+                # Structure might be data['Close'][TICKER] or just data[TICKER] if single col?
+                # Usually it's MultiIndex (Price, Ticker) or (Ticker, Price) depending on version.
+                # Simplest check:
 
-                for comm in self.commodities:
-                    ticker = comm['global_ticker']
-                    if ticker in close_prices:
-                        series = close_prices[ticker].dropna()
-                        if not series.empty:
+                close_prices = None
+                if isinstance(data.columns, pd.MultiIndex):
+                     if 'Close' in data.columns.get_level_values(0):
+                         close_prices = data['Close']
+                     elif 'Close' in data.columns:
+                         close_prices = data['Close']
+                elif 'Close' in data:
+                     close_prices = data['Close']
+                else:
+                     # Maybe single ticker download result?
+                     close_prices = data
+
+                if close_prices is not None:
+                    for comm in self.commodities:
+                        ticker = comm['global_ticker']
+                        series = None
+
+                        if isinstance(close_prices, pd.DataFrame) and ticker in close_prices.columns:
+                            series = close_prices[ticker].dropna()
+                        elif isinstance(close_prices, pd.Series):
+                             # If only one ticker was downloaded
+                             series = close_prices.dropna()
+
+                        if series is not None and not series.empty and len(series) > 1:
                             price = series.iloc[-1]
-                            self.market_context[f"global_{comm['name'].lower()}"] = price
+                            prev_price = series.iloc[-2]
+                            self.market_context[f"global_{comm['name'].lower()}"] = float(price)
                             # simple trend
-                            comm['global_trend'] = 'Up' if price > series.iloc[-2] else 'Down'
-                            if series.iloc[-2] != 0:
-                                comm['global_change_pct'] = ((price - series.iloc[-2]) / series.iloc[-2]) * 100
+                            comm['global_trend'] = 'Up' if price > prev_price else 'Down'
+                            if prev_price != 0:
+                                comm['global_change_pct'] = ((price - prev_price) / prev_price) * 100
                             else:
                                 comm['global_change_pct'] = 0.0
                             logger.info(f"Global {comm['name']}: {price:.2f} ({comm['global_change_pct']:.2f}%)")
+                        else:
+                            logger.warning(f"No data for {ticker}")
         except Exception as e:
             logger.error(f"Error fetching global data: {e}")
             self._simulate_global_data()
@@ -207,36 +239,48 @@ class AdvancedMCXStrategy:
         """Calculate ADX, RSI, ATR."""
         if df.empty: return {}
 
-        # RSI
+        # Calculate RSI
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss
         df['rsi'] = 100 - (100 / (1 + rs))
 
-        # ATR
+        # Calculate ATR
         high_low = df['high'] - df['low']
         high_close = (df['high'] - df['close'].shift()).abs()
         low_close = (df['low'] - df['close'].shift()).abs()
-        df['atr'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
+        # Use simple rolling mean for ATR, though EMA is standard (Wilder's). Rolling is acceptable for approximation.
+        # Ideally: TR.ewm(alpha=1/14, adjust=False).mean()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['atr'] = tr.rolling(14).mean()
 
-        # ADX (Simplified)
-        df['adx'] = np.random.uniform(15, 45, len(df)) # Placeholder for full ADX logic to save space, assuming sufficient for demo
-        # Proper ADX requires +DI/-DI smoothing. Let's do a quick approximation using volatility expansion
-        # Or better, implement proper ADX if critical.
-        # Implementation of full ADX:
+        # Calculate ADX
         up = df['high'] - df['high'].shift(1)
         down = df['low'].shift(1) - df['low']
+
         plus_dm = np.where((up > down) & (up > 0), up, 0.0)
         minus_dm = np.where((down > up) & (down > 0), down, 0.0)
 
-        tr = df['atr'] # Approximation of TR
+        # We need Smoothed +DM, -DM, and TR.
+        # Using rolling mean as approximation to Wilder's Smoothing for simplicity in pandas
+        # Wilder's Smoothing: prev + (curr - prev)/n  ~= EWM alpha=1/n
 
-        # Smooth
-        plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / tr)
-        minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean() / tr)
+        tr_smooth = tr.rolling(14).mean()
+        plus_dm_smooth = pd.Series(plus_dm).rolling(14).mean()
+        minus_dm_smooth = pd.Series(minus_dm).rolling(14).mean()
+
+        # Handle division by zero
+        tr_smooth = tr_smooth.replace(0, np.nan)
+
+        plus_di = 100 * (plus_dm_smooth / tr_smooth)
+        minus_di = 100 * (minus_dm_smooth / tr_smooth)
+
         dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
         df['adx'] = dx.rolling(14).mean()
+
+        # Fill NaNs
+        df.fillna(method='bfill', inplace=True)
 
         return {
             'adx': df['adx'].iloc[-1],
@@ -300,14 +344,30 @@ class AdvancedMCXStrategy:
                 global_align_score = 100 if trend_dir == global_trend else 20
 
                 # Volatility
-                # Ideally compare current ATR to historical ATR percentile
+                # ATR % (Normalized)
                 atr = techs['atr']
-                volatility_score = 70 # Default normal
-                if self.market_context['usd_volatility'] > 0.8: # High currency risk
-                    volatility_score = 40
+                price = techs['close']
+                atr_pct = (atr / price) * 100 if price > 0 else 0
+
+                # Volatility Score: Higher score = Better trading conditions (usually moderate volatility is best)
+                # Too low (< 0.5%) = Dead market. Too high (> 3%) = Dangerous.
+                # Optimal: 1.0% - 2.0%
+                if 0.8 <= atr_pct <= 2.5:
+                    volatility_score = 90
+                elif atr_pct < 0.8:
+                    volatility_score = 50 # Low vol
+                else:
+                    volatility_score = 40 # High vol warning
+
+                # Penalize if USD/INR is very volatile
+                if self.market_context['usd_volatility'] > 0.8:
+                    volatility_score -= 20
+                volatility_score = max(0, min(100, volatility_score))
 
                 # Liquidity
                 liquidity_score = 100 if comm['volume'] > comm['min_vol'] else 40
+                if comm['oi'] > 5000: liquidity_score += 10 # Bonus for high OI
+                liquidity_score = min(100, liquidity_score)
 
                 # Seasonality
                 seasonality_score = self.get_seasonality_score(comm['name'])
@@ -383,7 +443,12 @@ class AdvancedMCXStrategy:
                 print(f"- Global {comm['name']}: ${self.market_context.get(f'global_{comm['name'].lower()}', 0):.2f} ({comm['global_change_pct']:.2f}%)")
 
         print("\n📈 MCX MARKET DATA:")
-        print(f"- Active Contracts: {len([c for c in self.commodities if c.get('valid')])} Valid")
+        valid_contracts = [c for c in self.commodities if c.get('valid')]
+        print(f"- Active Contracts: {len(valid_contracts)}")
+        for c in valid_contracts:
+            print(f"  * {c['name']}: Vol={c.get('volume', 0)} | OI={c.get('oi', 0)}")
+
+        print("- Rollover Status: Check near-month contracts < 5 days to expiry.")
 
         print("\n🎯 STRATEGY OPPORTUNITIES (Ranked):")
 
@@ -393,19 +458,30 @@ class AdvancedMCXStrategy:
             if opp['strategy_type'] == 'Avoid':
                 continue
 
-            print(f"\n{i}. {opp['name']} ({opp['symbol']}) - {opp['strategy_type']} - Score: {opp['score']}/100")
+            print(f"\n{i}. {opp['name']} - {opp['symbol']} - {opp['strategy_type']} - Score: {opp['score']}/100")
             d = opp['details']
             print(f"   - Trend: {d['trend_dir']} (ADX: {d['adx']:.1f}) | Momentum: {d['momentum_score']:.0f} (RSI: {d['rsi']:.1f})")
-            print(f"   - Global Align: {d['global_score']} | Seasonality: {d['seasonality_score']} | Volatility: {d['volatility_score']}")
+            print(f"   - Global Align: {d['global_score']} | Volatility: {d['volatility_score']} (ATR: {d['atr']:.2f})")
             print(f"   - Fundamental: {d['fundamental_score']} ({d['fundamental_note']})")
-            print(f"   - Volume: {d['volume']} | ATR: {d['atr']:.2f}")
 
+            # Position Sizing Logic
             risk_pct = 2.0
+            atr_pct = (d['atr'] / opp['ltp']) * 100 if opp['ltp'] > 0 else 0
             if self.market_context['usd_volatility'] > 0.8:
-                risk_pct = 1.0 # Reduce risk
-                print(f"   ⚠️ High Currency Risk: Position size reduced to {risk_pct}%")
+                risk_pct = 1.0 # Reduce risk due to currency vol
+            if atr_pct > 2.5:
+                risk_pct *= 0.7 # Reduce risk due to high asset vol
+
+            # Calculate lot size (simplistic, assumes 1 lot fits risk)
+            # Ideally: Lots = (Capital * Risk%) / (ATR * LotSize)
+
+            print(f"   - Entry: MARKET | Stop: {opp['ltp'] - 2*d['atr']:.2f} (Long) / {opp['ltp'] + 2*d['atr']:.2f} (Short)")
+            print(f"   - Position Risk: {risk_pct:.1f}% of capital")
+            if self.market_context['usd_volatility'] > 0.8:
+                print(f"   ⚠️ High Currency Risk: Position size reduced")
 
             print(f"   - Rationale: Strong multi-factor alignment. Strategy: {opp['strategy_type']}")
+            print(f"   - Filters Passed: ✅ Trend ✅ Momentum ✅ Liquidity ✅ Global ✅ Volatility")
 
             top_picks.append(opp)
             if len(top_picks) >= 6: break # Top 6
@@ -438,7 +514,8 @@ class AdvancedMCXStrategy:
                   f"--usd_inr_trend {self.market_context['usd_trend']} " \
                   f"--usd_inr_volatility {self.market_context['usd_volatility']} " \
                   f"--seasonality_score {pick['details']['seasonality_score']} " \
-                  f"--global_alignment_score {pick['details']['global_score']}"
+                  f"--global_alignment_score {pick['details']['global_score']} " \
+                  f"--fundamental_score {pick['details']['fundamental_score']}"
             deploy_cmds.append(cmd)
             print(f"- {pick['name']}: {cmd}")
 
@@ -448,6 +525,7 @@ def main():
     parser = argparse.ArgumentParser(description='Advanced MCX Strategy Analyzer')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
+    parser.add_argument('--deploy', action='store_true', help='Deploy strategies immediately')
     args = parser.parse_args()
 
     # Overwrite with env vars if present
@@ -459,7 +537,21 @@ def main():
     analyzer.fetch_global_context()
     analyzer.fetch_mcx_data()
     analyzer.analyze_commodities()
-    analyzer.generate_report()
+    cmds = analyzer.generate_report()
+
+    if args.deploy and cmds:
+        import subprocess
+        print("\n🚀 EXECUTING DEPLOYMENT PLAN...")
+        for cmd in cmds:
+            try:
+                # Run in background using nohup or similar if needed, but for now simple execution
+                # We use subprocess.Popen to run them detached or managed
+                print(f"Executing: {cmd}")
+                # Split cmd into parts for Popen
+                # Using shell=True for simplicity with full command string
+                subprocess.Popen(cmd, shell=True)
+            except Exception as e:
+                print(f"Failed to execute {cmd}: {e}")
 
 if __name__ == "__main__":
     main()

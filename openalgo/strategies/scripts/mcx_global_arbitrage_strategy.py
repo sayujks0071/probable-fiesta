@@ -23,13 +23,16 @@ if str(utils_path) not in sys.path:
 try:
     from trading_utils import APIClient
     from symbol_resolver import SymbolResolver
+    from risk_manager import RiskManager
 except ImportError:
     try:
         from openalgo.strategies.utils.trading_utils import APIClient
         from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+        from openalgo.strategies.utils.risk_manager import RiskManager
     except ImportError:
         APIClient = None
         SymbolResolver = None
+        RiskManager = None
 
 # Configuration
 SYMBOL = os.getenv('SYMBOL', None)
@@ -58,6 +61,11 @@ class MCXGlobalArbitrageStrategy:
         self.api_client = api_client
         self.last_trade_time = 0
         self.cooldown_seconds = 300
+
+        # Initialize Risk Manager
+        self.rm = None
+        if RiskManager:
+            self.rm = RiskManager(f"MCX_Arbitrage_{symbol}", exchange="MCX", capital=500000)
 
         # Session Reference Points (Opening Price of the session/day)
         self.session_ref_mcx = None
@@ -148,6 +156,24 @@ class MCXGlobalArbitrageStrategy:
 
         logger.info(f"MCX Chg: {mcx_change_pct:.2f}% | Global Chg: {global_change_pct:.2f}% | Divergence: {divergence_pct:.2f}%")
         
+        # Risk Checks
+        if self.rm:
+            # EOD check
+            if self.rm.should_square_off_eod():
+                if self.position != 0:
+                    side = "BUY" if self.position == -1 else "SELL"
+                    self._execute_trade(side, current['mcx_price'], 1, "EOD Square-off")
+                return
+
+            # Stop Loss (if implemented in logic, though arbitrage relies on convergence)
+            # We can use RiskManager's stop loss for catastrophic protection
+            if self.position != 0:
+                stop_hit, stop_reason = self.rm.check_stop_loss(self.symbol, current['mcx_price'])
+                if stop_hit:
+                    side = "BUY" if self.position == -1 else "SELL"
+                    self._execute_trade(side, current['mcx_price'], 1, f"Stop Loss: {stop_reason}")
+                    return
+
         # Entry Logic
         current_time = time.time()
         time_since_last_trade = current_time - self.last_trade_time
@@ -156,22 +182,28 @@ class MCXGlobalArbitrageStrategy:
             if time_since_last_trade < self.cooldown_seconds:
                 return
             
+            # Check Risk Permission
+            if self.rm:
+                can_trade, reason = self.rm.can_trade()
+                if not can_trade:
+                    return
+
             # MCX is Overpriced -> Sell MCX
             if divergence_pct > self.params['divergence_threshold']:
-                self.entry("SELL", current['mcx_price'], f"MCX Premium > {self.params['divergence_threshold']}% (Rel to Global)")
+                self._execute_trade("SELL", current['mcx_price'], 1, f"MCX Premium > {self.params['divergence_threshold']}%")
 
             # MCX is Underpriced -> Buy MCX
             elif divergence_pct < -self.params['divergence_threshold']:
-                self.entry("BUY", current['mcx_price'], f"MCX Discount > {self.params['divergence_threshold']}% (Rel to Global)")
+                self._execute_trade("BUY", current['mcx_price'], 1, f"MCX Discount > {self.params['divergence_threshold']}%")
 
         # Exit Logic
         elif self.position != 0:
             abs_div = abs(divergence_pct)
             if abs_div < self.params['convergence_threshold']:
                 side = "BUY" if self.position == -1 else "SELL"
-                self.exit(side, current['mcx_price'], "Convergence reached")
+                self._execute_trade(side, current['mcx_price'], 1, "Convergence reached")
 
-    def entry(self, side, price, reason):
+    def _execute_trade(self, side, price, qty, reason):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
         
         order_placed = False
@@ -184,45 +216,34 @@ class MCXGlobalArbitrageStrategy:
                     exchange="MCX",
                     price_type="MARKET",
                     product="MIS",
-                    quantity=1,
-                    position_size=1
+                    quantity=qty,
+                    position_size=qty
                 )
-                logger.info(f"[ENTRY] Order placed: {side} {self.symbol} @ {price:.2f}")
+                logger.info(f"Order placed: {side} {self.symbol} @ {price:.2f}")
                 order_placed = True
             except Exception as e:
-                logger.error(f"[ENTRY] Order placement failed: {e}")
+                logger.error(f"Order placement failed: {e}")
         else:
-            logger.warning(f"[ENTRY] No API client available - signal logged but order not placed")
+            logger.warning(f"No API client available - signal logged but order not placed")
+            # Simulation mode: assume success
+            order_placed = True
         
-        if order_placed or not self.api_client: # Assume success if no client (testing)
-            self.position = 1 if side == "BUY" else -1
-            self.last_trade_time = time.time()
+        if order_placed:
+            if side == "BUY":
+                if self.position < 0: # Closing Short
+                    self.position = 0
+                    if self.rm: self.rm.register_exit(self.symbol, price, qty)
+                else: # Opening Long
+                    self.position = 1
+                    if self.rm: self.rm.register_entry(self.symbol, qty, price, side)
+            elif side == "SELL":
+                if self.position > 0: # Closing Long
+                    self.position = 0
+                    if self.rm: self.rm.register_exit(self.symbol, price, qty)
+                else: # Opening Short
+                    self.position = -1
+                    if self.rm: self.rm.register_entry(self.symbol, qty, price, side)
 
-    def exit(self, side, price, reason):
-        logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
-        
-        order_placed = False
-        if self.api_client:
-            try:
-                response = self.api_client.placesmartorder(
-                    strategy="MCX Global Arbitrage",
-                    symbol=self.symbol,
-                    action=side,
-                    exchange="MCX",
-                    price_type="MARKET",
-                    product="MIS",
-                    quantity=abs(self.position),
-                    position_size=0
-                )
-                logger.info(f"[EXIT] Order placed: {side} {self.symbol} @ {price:.2f}")
-                order_placed = True
-            except Exception as e:
-                logger.error(f"[EXIT] Order placement failed: {e}")
-        else:
-            logger.warning(f"[EXIT] No API client available - signal logged but order not placed")
-        
-        if order_placed or not self.api_client:
-            self.position = 0
             self.last_trade_time = time.time()
 
     def run(self):
