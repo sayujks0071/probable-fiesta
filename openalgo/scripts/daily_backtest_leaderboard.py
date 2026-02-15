@@ -4,6 +4,7 @@ import sys
 import json
 import logging
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 import importlib.util
 
@@ -18,6 +19,25 @@ except ImportError:
     # Fallback path logic
     sys.path.append(os.path.join(repo_root, 'openalgo', 'strategies', 'utils'))
     from simple_backtest_engine import SimpleBacktestEngine
+
+# Mock API Client to avoid connection refused errors during backtest
+class MockAPIClient:
+    def __init__(self, api_key=None, host=None):
+        self.host = host
+        self.api_key = api_key
+
+    def history(self, symbol, exchange=None, interval="15m", start_date=None, end_date=None):
+        # Return VIX data fast
+        if "VIX" in str(symbol).upper():
+            start = pd.to_datetime(start_date)
+            end = pd.to_datetime(end_date)
+            dates = pd.date_range(start=start, end=end, freq="D")
+            df = pd.DataFrame(index=dates)
+            df['close'] = 15.0
+            return df
+
+        # Return synthetic data for others
+        return generate_synthetic_data(symbol, start_date, end_date, interval)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Leaderboard")
@@ -54,20 +74,54 @@ STRATEGIES = [
 TUNING_CONFIG = {
     "SuperTrend_VWAP": {
         "stop_pct": [1.5, 2.0],
-        "threshold": [150, 160]
+        "adx_threshold": [15, 20]
     },
     "MCX_Momentum": {
-        "adx_threshold": [20, 30],
-        "period_rsi": [10, 14]
+        "adx_threshold": [20, 25],
+        "period_rsi": [14]
     },
     "AI_Hybrid": {
-        "rsi_lower": [25, 35],
-        "rsi_upper": [60, 70]
+        "rsi_lower": [30, 35],
+        "rsi_upper": [60, 65]
     },
     "ML_Momentum": {
         "threshold": [0.01, 0.02]
     }
 }
+
+def generate_synthetic_data(symbol, start_date, end_date, interval="15m"):
+    # Generate dates
+    start = pd.to_datetime(start_date)
+    end = pd.to_datetime(end_date)
+    # Map 15m to 15min for pandas
+    freq = interval.replace('m', 'min') if interval.endswith('m') else interval
+    dates = pd.date_range(start=start, end=end, freq=freq)
+
+    n = len(dates)
+    if n == 0: return pd.DataFrame()
+
+    # Random walk
+    np.random.seed(42)
+    returns = np.random.normal(0, 0.002, n)
+
+    # Add Regimes
+    trend = np.zeros(n)
+    trend[:n//3] = 0.0005 # Up
+    trend[n//3:2*n//3] = 0.0 # Flat
+    trend[2*n//3:] = -0.0005 # Down
+
+    returns += trend
+
+    price = 10000 * np.exp(np.cumsum(returns))
+
+    df = pd.DataFrame(index=dates)
+    df['close'] = price
+    df['open'] = price * (1 + np.random.normal(0, 0.001, n))
+    df['high'] = df[['open', 'close']].max(axis=1) * (1 + abs(np.random.normal(0, 0.002, n)))
+    df['low'] = df[['open', 'close']].min(axis=1) * (1 - abs(np.random.normal(0, 0.002, n)))
+    df['volume'] = np.random.randint(1000, 10000, n)
+
+    return df
 
 def generate_variants(base_name, grid):
     import itertools
@@ -98,10 +152,51 @@ def load_strategy_module(filepath):
         logger.error(f"Failed to load strategy {filepath}: {e}")
         return None
 
-def run_leaderboard():
+def run_leaderboard(mock=False):
     engine = SimpleBacktestEngine(initial_capital=100000.0)
 
-    start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    if mock:
+        # Force mock client on engine instance
+        engine.client = MockAPIClient()
+
+        # Monkey Patch load_historical_data
+        original_load = engine.load_historical_data
+        def mock_load(symbol, exchange, start_date, end_date, interval="15m"):
+            logger.info(f"Mocking data for {symbol}")
+            return generate_synthetic_data(symbol, start_date, end_date, interval)
+        engine.load_historical_data = mock_load
+
+        # Monkey Patch APIClient in the module where SimpleBacktestEngine is defined
+        import sys
+        # Patch SimpleBacktestEngine's reference
+        if 'openalgo.strategies.utils.simple_backtest_engine' in sys.modules:
+            sys.modules['openalgo.strategies.utils.simple_backtest_engine'].APIClient = MockAPIClient
+        elif 'simple_backtest_engine' in sys.modules:
+            sys.modules['simple_backtest_engine'].APIClient = MockAPIClient
+
+        # Patch trading_utils reference (used by strategies)
+        # Try to import it first to ensure it's in sys.modules
+        try:
+            import openalgo.strategies.utils.trading_utils as tu
+            tu.APIClient = MockAPIClient
+        except ImportError:
+            pass
+
+        try:
+            import trading_utils as tu_local
+            tu_local.APIClient = MockAPIClient
+        except ImportError:
+            pass
+
+        # Patch in sys.modules directly if present
+        for module_name in list(sys.modules.keys()):
+            if 'trading_utils' in module_name:
+                try:
+                    sys.modules[module_name].APIClient = MockAPIClient
+                except AttributeError:
+                    pass
+
+    start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d") # Increased to 5 days
     end_date = datetime.now().strftime("%Y-%m-%d")
 
     results = []
@@ -204,4 +299,8 @@ def run_leaderboard():
     logger.info("Leaderboard generated: LEADERBOARD.md")
 
 if __name__ == "__main__":
-    run_leaderboard()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mock", action="store_true", help="Run with mock data")
+    args = parser.parse_args()
+    run_leaderboard(mock=args.mock)

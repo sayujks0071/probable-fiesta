@@ -39,13 +39,17 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("MCX_Momentum")
 
 class MCXMomentumStrategy:
-    def __init__(self, symbol, api_key, host, params):
+    def __init__(self, symbol, api_key, host, params, client=None):
         self.symbol = symbol
         self.api_key = api_key
         self.host = host
         self.params = params
 
-        self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
+        if client:
+            self.client = client
+        else:
+            self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
+
         self.pm = PositionManager(symbol) if PositionManager else None
         self.data = pd.DataFrame()
 
@@ -92,33 +96,40 @@ class MCXMomentumStrategy:
         self.calculate_indicators()
 
         # Check signals (Reusing existing logic but adapting return)
+        # Use completed candle for logic (iloc[-2])
         current = self.data.iloc[-1]
-        prev = self.data.iloc[-2]
+        prev = self.data.iloc[-2] # Completed
+        prev_minus_1 = self.data.iloc[-3]
 
         # Factors
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
 
         action = 'HOLD'
+        atr = prev.get('atr', 0)
 
         if not seasonality_ok:
             return 'HOLD', 0.0, {'reason': 'Seasonality Weak'}
 
         # Volatility Filter
         min_atr = self.params.get('min_atr', 0)
-        if current.get('atr', 0) < min_atr:
+        if atr < min_atr:
              return 'HOLD', 0.0, {'reason': 'Low Volatility'}
 
-        if (current['adx'] > self.params['adx_threshold'] and
-            current['rsi'] > 50 and
-            current['close'] > prev['close']):
+        # Regime Filter: Avoid Range (ADX < 20)
+        if prev['adx'] < 20:
+             return 'HOLD', 0.0, {'reason': 'Choppy Market (ADX < 20)'}
+
+        if (prev['adx'] > self.params['adx_threshold'] and
+            prev['rsi'] > 50 and
+            prev['close'] > prev_minus_1['close']):
             action = 'BUY'
 
-        elif (current['adx'] > self.params['adx_threshold'] and
-              current['rsi'] < 50 and
-              current['close'] < prev['close']):
+        elif (prev['adx'] > self.params['adx_threshold'] and
+              prev['rsi'] < 50 and
+              prev['close'] < prev_minus_1['close']):
             action = 'SELL'
 
-        return action, 1.0, {'atr': current.get('atr', 0)}
+        return action, 1.0, {'atr': atr}
 
     def calculate_indicators(self):
         """Calculate technical indicators."""
@@ -182,7 +193,8 @@ class MCXMomentumStrategy:
             return
 
         current = self.data.iloc[-1]
-        prev = self.data.iloc[-2]
+        prev = self.data.iloc[-2] # Completed
+        prev_minus_1 = self.data.iloc[-3]
 
         # Log current state
         # logger.info(f"Price: {current['close']:.2f}, RSI: {current['rsi']:.2f}, ADX: {current['adx']:.2f}")
@@ -211,23 +223,28 @@ class MCXMomentumStrategy:
             logger.info("Global Alignment Weak: Skipping new entries.")
             return
 
+        # Regime Filter
+        if prev['adx'] < 20 and not has_position:
+             logger.info("Choppy Market (ADX < 20). Skipping new entries.")
+             return
+
         # Entry Logic
         if not has_position:
             # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
-            if (current['adx'] > self.params['adx_threshold'] and
-                current['rsi'] > 55 and
-                current['close'] > prev['close']):
+            if (prev['adx'] > self.params['adx_threshold'] and
+                prev['rsi'] > 55 and
+                prev['close'] > prev_minus_1['close']):
 
-                logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={prev['rsi']:.2f}, ADX={prev['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
             # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
-            elif (current['adx'] > self.params['adx_threshold'] and
-                  current['rsi'] < 45 and
-                  current['close'] < prev['close']):
+            elif (prev['adx'] > self.params['adx_threshold'] and
+                  prev['rsi'] < 45 and
+                  prev['close'] < prev_minus_1['close']):
 
-                logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={prev['rsi']:.2f}, ADX={prev['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
 
@@ -241,12 +258,23 @@ class MCXMomentumStrategy:
             # Simple Exit: Trend Fades (ADX < 20) or RSI Reversal
 
             if pos_qty > 0: # Long
-                if current['rsi'] < 45 or current['adx'] < 20:
-                     logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                if prev['rsi'] < 45 or prev['adx'] < 20:
+                     logger.info(f"EXIT LONG: Trend Faded. RSI={prev['rsi']:.2f}, ADX={prev['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                # Trailing Stop (Manual check)
+                atr = prev.get('atr', 0)
+                if atr > 0 and current['close'] < (entry_price - 2 * atr): # Initial SL check example
+                     logger.info(f"EXIT LONG: SL Hit. Price={current['close']}")
+                     self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+
             elif pos_qty < 0: # Short
-                if current['rsi'] > 55 or current['adx'] < 20:
-                     logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                if prev['rsi'] > 55 or prev['adx'] < 20:
+                     logger.info(f"EXIT SHORT: Trend Faded. RSI={prev['rsi']:.2f}, ADX={prev['adx']:.2f}")
+                     self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                # Trailing Stop (Manual check)
+                atr = prev.get('atr', 0)
+                if atr > 0 and current['close'] > (entry_price + 2 * atr): # Initial SL check example
+                     logger.info(f"EXIT SHORT: SL Hit. Price={current['close']}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
 
     def run(self):
@@ -348,9 +376,16 @@ def generate_signal(df, client=None, symbol=None, params=None):
     api_key = client.api_key if client and hasattr(client, 'api_key') else "BACKTEST"
     host = client.host if client and hasattr(client, 'host') else "http://127.0.0.1:5001"
 
-    strat = MCXMomentumStrategy(symbol or "TEST", api_key, host, strat_params)
+    strat = MCXMomentumStrategy(symbol or "TEST", api_key, host, strat_params, client=client)
 
     # Set Time Stop for Engine
     setattr(strat, 'TIME_STOP_BARS', 12) # 3 Hours (12 * 15m)
 
+    # Set ATR Exit
+    setattr(strat, 'ATR_SL_MULTIPLIER', 2.0)
+    setattr(strat, 'ATR_TP_MULTIPLIER', 4.0)
+
     return strat.generate_signal(df)
+
+ATR_SL_MULTIPLIER = 2.0
+ATR_TP_MULTIPLIER = 4.0
