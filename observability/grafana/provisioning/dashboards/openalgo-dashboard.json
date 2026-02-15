@@ -32,7 +32,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
+        "w": 4,
         "x": 0,
         "y": 0
       },
@@ -75,8 +75,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 6,
+        "w": 4,
+        "x": 4,
         "y": 0
       },
       "id": 2,
@@ -110,8 +110,78 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "id": 5,
+      "options": {
+        "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false },
+        "orientation": "auto", "textMode": "auto", "colorMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "count_over_time({job=\"openalgo\"} |= \"Order Rejected\" [5m])",
+          "legendFormat": "Orders Rejected",
+          "refId": "A"
+        }
+      ],
+      "title": "Orders Rejected (5m)",
+      "type": "stat"
+    },
+    {
+      "datasource": "Loki",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+           "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
         "x": 12,
+        "y": 0
+      },
+      "id": 6,
+      "options": {
+        "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false },
+        "orientation": "auto", "textMode": "auto", "colorMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "count_over_time({job=\"openalgo\"} |= \"Order Filled\" [5m])",
+          "legendFormat": "Orders Filled",
+          "refId": "A"
+        }
+      ],
+      "title": "Orders Filled (5m)",
+      "type": "stat"
+    },
+    {
+      "datasource": "Loki",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+           "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
         "y": 0
       },
       "id": 4,

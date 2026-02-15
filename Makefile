@@ -10,7 +10,7 @@ help:
 	@echo "make obs-up       : Start Observability Stack (Loki, Promtail, Grafana)"
 	@echo "make obs-down     : Stop Observability Stack"
 	@echo "make obs-logs     : Tail Promtail logs and OpenAlgo app logs"
-	@echo "make run          : Run OpenAlgo daily startup"
+	@echo "make run          : Run OpenAlgo daily startup and start the app"
 	@echo "make status       : Check health of OpenAlgo and Observability"
 	@echo "make install-obs  : Install healthcheck schedulers"
 
@@ -26,7 +26,7 @@ obs-logs:
 	@(trap 'kill 0' SIGINT; tail -f logs/openalgo.log & docker compose -f observability/docker-compose.yml logs -f promtail)
 
 run:
-	python3 daily_startup.py
+	python3 daily_startup.py && python3 openalgo/app.py
 
 status:
 	@echo "--- Docker Services ---"
