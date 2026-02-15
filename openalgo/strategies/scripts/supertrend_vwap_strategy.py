@@ -25,43 +25,37 @@ sys.path.insert(0, utils_dir)
 try:
     from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
     from symbol_resolver import SymbolResolver
+    from risk_manager import RiskManager
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
         from utils.symbol_resolver import SymbolResolver
+        from utils.risk_manager import RiskManager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+            from openalgo.strategies.utils.risk_manager import RiskManager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
             SymbolResolver = None
+            RiskManager = None
             normalize_symbol = lambda s: s
             is_market_open = lambda: True
-            def calculate_intraday_vwap(df):
-                df = df.copy()
-                if 'datetime' not in df.columns:
-                    if isinstance(df.index, pd.DatetimeIndex):
-                        df['datetime'] = df.index
-                    elif 'timestamp' in df.columns:
-                        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-                    else:
-                        df['datetime'] = pd.to_datetime(df.index)
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df['date'] = df['datetime'].dt.date
-                typical_price = (df['high'] + df['low'] + df['close']) / 3
-                df['pv'] = typical_price * df['volume']
-                df['cum_pv'] = df.groupby('date')['pv'].cumsum()
-                df['cum_vol'] = df.groupby('date')['volume'].cumsum()
-                df['vwap'] = df['cum_pv'] / df['cum_vol']
-                df['vwap_dev'] = (df['close'] - df['vwap']) / df['vwap']
-                return df
+            def calculate_intraday_vwap(df): return df
+
+# Setup Logging
+try:
+    from openalgo_observability.logging_setup import setup_logging
+    setup_logging()
+except ImportError:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class SuperTrendVWAPStrategy:
-    def __init__(self, symbol, quantity, api_key=None, host=None, ignore_time=False, sector_benchmark='NIFTY BANK', logfile=None, client=None):
+    def __init__(self, symbol, quantity, api_key=None, host=None, ignore_time=False, sector_benchmark='NIFTY BANK', logfile=None, client=None, threshold=150, stop_pct=1.8, adx_threshold=20, max_daily_loss=5000):
         self.symbol = symbol
         self.quantity = quantity
         self.api_key = api_key or os.getenv('OPENALGO_APIKEY')
@@ -73,9 +67,9 @@ class SuperTrendVWAPStrategy:
         self.sector_benchmark = sector_benchmark
 
         # Optimization Parameters
-        self.threshold = 150
-        self.stop_pct = 1.8
-        self.adx_threshold = 20  # Added ADX Filter
+        self.threshold = threshold
+        self.stop_pct = stop_pct
+        self.adx_threshold = adx_threshold
         self.adx_period = 14
 
         # State
@@ -84,17 +78,11 @@ class SuperTrendVWAPStrategy:
 
         # Setup Logger
         self.logger = logging.getLogger(f"VWAP_{symbol}")
-        self.logger.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-        # Console Handler
-        ch = logging.StreamHandler()
-        ch.setFormatter(formatter)
-        self.logger.addHandler(ch)
-
-        # File Handler
+        # Restore File Handler if logfile provided
         if logfile:
             fh = logging.FileHandler(logfile)
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
             fh.setFormatter(formatter)
             self.logger.addHandler(fh)
 
@@ -102,6 +90,23 @@ class SuperTrendVWAPStrategy:
             self.client = client
         else:
             self.client = APIClient(api_key=self.api_key, host=self.host)
+
+        # Initialize Risk Manager
+        if RiskManager:
+            self.risk_manager = RiskManager(
+                strategy_name=f"SuperTrendVWAP_{symbol}",
+                exchange="NSE" if "NIFTY" in symbol else "MCX", # Heuristic
+                capital=100000, # Default capital
+                config={
+                    'max_loss_per_trade_pct': stop_pct,
+                    'max_daily_loss_pct': 5.0,
+                    'trailing_stop_enabled': True,
+                    'trailing_stop_pct': 1.5
+                }
+            )
+        else:
+            self.risk_manager = None
+            self.logger.warning("RiskManager not available - running without risk checks!")
 
         self.pm = PositionManager(symbol) if PositionManager else None
 
@@ -362,38 +367,81 @@ class SuperTrendVWAPStrategy:
                 is_above_poc = last['close'] > poc_price
                 is_not_overextended = abs(last['vwap_dev']) < dev_threshold
 
-                if self.pm and self.pm.has_position():
-                    # Manage Position (Trailing Stop)
-                    sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
+                # Risk Manager / Position Check
+                has_position = False
+                if self.risk_manager:
+                    # Check circuit breaker
+                    can_trade, reason = self.risk_manager.can_trade()
+                    if not can_trade and not self.risk_manager.get_open_positions():
+                         self.logger.warning(f"Risk Block: {reason}")
+                         time.sleep(60)
+                         continue
 
-                    if self.trailing_stop == 0:
-                        self.trailing_stop = last['close'] - (sl_mult * self.atr) # Initial SL
+                    # Check if we have an open position in Risk Manager
+                    open_positions = self.risk_manager.get_open_positions()
+                    if self.symbol in open_positions:
+                        has_position = True
 
-                    # Update Trailing Stop (Only move up)
-                    new_stop = last['close'] - (sl_mult * self.atr)
-                    if new_stop > self.trailing_stop:
-                        self.trailing_stop = new_stop
-                        self.logger.info(f"Trailing Stop Updated: {self.trailing_stop:.2f}")
+                elif self.pm and self.pm.has_position():
+                     has_position = True
 
-                    # Check Exit
-                    if last['close'] < self.trailing_stop:
-                        self.logger.info(f"Trailing Stop Hit at {last['close']:.2f}")
-                        self.pm.update_position(self.quantity, last['close'], 'SELL')
-                        self.trailing_stop = 0.0
-                    elif last['close'] < last['vwap']:
-                        self.logger.info(f"Price crossed below VWAP at {last['close']:.2f}. Exiting.")
-                        self.pm.update_position(self.quantity, last['close'], 'SELL')
-                        self.trailing_stop = 0.0
+                if has_position:
+                    # Manage Position
+                    should_exit = False
+                    exit_reason = ""
+
+                    # 1. Check Risk Manager Stops
+                    if self.risk_manager:
+                        stop_hit, stop_msg = self.risk_manager.check_stop_loss(self.symbol, last['close'])
+                        if stop_hit:
+                            should_exit = True
+                            exit_reason = stop_msg
+
+                        # Update Trailing Stop
+                        self.risk_manager.update_trailing_stop(self.symbol, last['close'])
+
+                        # EOD Check
+                        if self.risk_manager.should_square_off_eod():
+                            should_exit = True
+                            exit_reason = "EOD Square-off"
+
+                    # 2. Strategy Exit (VWAP Cross)
+                    if not should_exit and last['close'] < last['vwap']:
+                        should_exit = True
+                        exit_reason = f"Price crossed below VWAP at {last['close']:.2f}"
+
+                    if should_exit:
+                        self.logger.info(f"Exiting Position: {exit_reason}")
+                        if self.risk_manager:
+                            self.risk_manager.register_exit(self.symbol, last['close'])
+                        elif self.pm:
+                            self.pm.update_position(self.quantity, last['close'], 'SELL')
+                            self.trailing_stop = 0.0
 
                 else:
                     # Entry Logic
                     sector_bullish = self.check_sector_correlation()
 
                     if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish:
+
+                        # Risk Check before Entry
+                        if self.risk_manager:
+                            can_trade, reason = self.risk_manager.can_trade()
+                            if not can_trade:
+                                self.logger.warning(f"Entry Skipped - Risk Block: {reason}")
+                                time.sleep(60)
+                                continue
+
                         adj_qty = int(self.quantity * size_multiplier)
                         if adj_qty < 1: adj_qty = 1 # Minimum 1
+
                         self.logger.info(f"VWAP Crossover Buy. Price: {last['close']:.2f}, POC: {poc_price:.2f}, Vol: {last['volume']}, Sector: Bullish, Dev: {last['vwap_dev']:.4f}, Qty: {adj_qty} (VIX: {vix})")
-                        if self.pm:
+
+                        if self.risk_manager:
+                            # Use ATR for stop loss calculation if needed, or let RM handle default
+                            sl_price = last['close'] - (3.0 * self.atr)
+                            self.risk_manager.register_entry(self.symbol, adj_qty, last['close'], 'LONG', stop_loss=sl_price)
+                        elif self.pm:
                             self.pm.update_position(adj_qty, last['close'], 'BUY')
                             sl_mult = getattr(self, 'ATR_SL_MULTIPLIER', 3.0)
                             self.trailing_stop = last['close'] - (sl_mult * self.atr)
@@ -415,6 +463,10 @@ def run_strategy():
     parser.add_argument("--ignore_time", action="store_true", help="Ignore market hours")
     parser.add_argument("--sector", type=str, default="NIFTY BANK", help="Sector Benchmark")
     parser.add_argument("--logfile", type=str, help="Log file path")
+    parser.add_argument("--threshold", type=float, default=150, help="Threshold")
+    parser.add_argument("--stop_pct", type=float, default=1.8, help="Stop Loss %%")
+    parser.add_argument("--adx_threshold", type=float, default=20, help="ADX Threshold")
+    parser.add_argument("--max_daily_loss", type=float, default=5000, help="Max Daily Loss")
 
     args = parser.parse_args()
 
@@ -447,7 +499,11 @@ def run_strategy():
         host=args.host,
         ignore_time=args.ignore_time,
         sector_benchmark=args.sector,
-        logfile=logfile
+        logfile=logfile,
+        threshold=args.threshold,
+        stop_pct=args.stop_pct,
+        adx_threshold=args.adx_threshold,
+        max_daily_loss=args.max_daily_loss
     )
     strategy.run()
 
