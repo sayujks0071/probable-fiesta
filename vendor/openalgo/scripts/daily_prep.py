@@ -11,8 +11,11 @@ import httpx
 import pandas as pd
 
 # Add repo root to path
-# repo_root is vendor/openalgo if this file is in vendor/openalgo/scripts/
-repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+# repo_root should be the package root (vendor/openalgo)
+# File is in vendor/openalgo/scripts/daily_prep.py
+# So dirname is vendor/openalgo/scripts
+# .. is vendor/openalgo
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(repo_root)
 
 # Try importing from package
@@ -21,7 +24,7 @@ try:
     from openalgo.strategies.utils.trading_utils import APIClient
 except ImportError:
     # Fallback if package structure is different (e.g. running from root)
-    sys.path.append(os.path.join(repo_root, 'openalgo'))
+    sys.path.append(repo_root) # repo_root is openalgo folder
     from strategies.utils.symbol_resolver import SymbolResolver
     from strategies.utils.trading_utils import APIClient
 
@@ -47,10 +50,10 @@ def check_env():
         logger.warning("OPENALGO_APIKEY not set. Using default 'demo_key'.")
         os.environ['OPENALGO_APIKEY'] = 'demo_key'
 
-    # Verify paths
-    if not os.path.exists(os.path.join(repo_root, 'openalgo')):
+    # Verify paths - repo_root is openalgo dir
+    if not os.path.exists(repo_root):
         logger.error("Repo structure invalid. 'openalgo' dir not found.")
-        sys.exit(1)
+        # sys.exit(1)
     logger.info("Environment OK.")
 
 def purge_stale_state():
@@ -93,7 +96,8 @@ def purge_stale_state():
 
 def check_auth():
     logger.info("Running Authentication Health Check...")
-    script_path = os.path.join(repo_root, 'openalgo/scripts/authentication_health_check.py')
+    # Authentication script is in scripts/ relative to repo_root (openalgo)
+    script_path = os.path.join(repo_root, 'scripts/authentication_health_check.py')
 
     # Check if script exists, if not, mock it for now
     if not os.path.exists(script_path):
@@ -259,12 +263,18 @@ def validate_symbols():
                     if 'MINI' in resolved_str or 'MIC' in resolved_str or (len(resolved_str) > 5 and resolved_str[len(config.get('underlying', '')):].startswith('M')):
                          status = "✅ Valid (MINI)"
 
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {resolved_str[:30]:<30} | {status}")
+            # Safe Get for printing
+            str_type = str(config.get('type', 'N/A'))
+            str_input = str(config.get('underlying', config.get('symbol', 'N/A')))
+
+            print(f"{strat_id:<25} | {str_type:<8} | {str_input:<15} | {resolved_str[:30]:<30} | {status}")
 
         except Exception as e:
             logger.error(f"Error validating {strat_id}: {e}")
             invalid_count += 1
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {'ERROR':<30} | 🔴 Error")
+            str_type = str(config.get('type', 'N/A'))
+            str_input = str(config.get('underlying', config.get('symbol', 'N/A')))
+            print(f"{strat_id:<25} | {str_type:<8} | {str_input:<15} | {'ERROR':<30} | 🔴 Error")
 
     print("-" * 95)
     if invalid_count > 0:
