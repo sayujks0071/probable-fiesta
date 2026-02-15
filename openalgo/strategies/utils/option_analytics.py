@@ -11,15 +11,27 @@ def norm_pdf(x):
     """Probability density function for the standard normal distribution"""
     return (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x**2)
 
+def calculate_black_scholes(S, K, T, r, sigma, option_type='ce'):
+    """
+    Calculate Option Price using Black-Scholes Model.
+    """
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return 0.0
+
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+
+    if option_type.lower() in ['ce', 'call']:
+        price = S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
+    else:
+        price = K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
+
+    return price
+
 def calculate_greeks(S, K, T, r, sigma, option_type='ce'):
     """
     Calculate Greeks using Black-Scholes Model.
-    S: Spot Price
-    K: Strike Price
-    T: Time to Expiry (in years)
-    r: Risk-free rate (decimal, e.g., 0.05)
-    sigma: Implied Volatility (decimal, e.g., 0.20)
-    option_type: 'ce' for Call, 'pe' for Put
+    Returns Vega scaled for 1% change in IV.
     """
     try:
         # Handle edge cases
@@ -31,17 +43,23 @@ def calculate_greeks(S, K, T, r, sigma, option_type='ce'):
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
         d2 = d1 - sigma * math.sqrt(T)
 
-        if option_type.lower() == 'ce' or option_type.lower() == 'call':
-            delta = norm_cdf(d1)
-            theta = (- (S * norm_pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm_cdf(d2)) / 365.0
-            rho = K * T * math.exp(-r * T) * norm_cdf(d2)
-        else:
-            delta = -norm_cdf(-d1)
-            theta = (- (S * norm_pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * norm_cdf(-d2)) / 365.0
-            rho = -K * T * math.exp(-r * T) * norm_cdf(-d2)
+        pdf_d1 = norm_pdf(d1)
+        cdf_d1 = norm_cdf(d1)
+        cdf_d2 = norm_cdf(d2)
+        cdf_neg_d1 = norm_cdf(-d1)
+        cdf_neg_d2 = norm_cdf(-d2)
 
-        gamma = norm_pdf(d1) / (S * sigma * math.sqrt(T))
-        vega = S * math.sqrt(T) * norm_pdf(d1) / 100.0 # Standard convention: change for 1% IV change
+        if option_type.lower() in ['ce', 'call']:
+            delta = cdf_d1
+            theta = (- (S * pdf_d1 * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * cdf_d2) / 365.0
+            rho = K * T * math.exp(-r * T) * cdf_d2
+        else:
+            delta = -cdf_neg_d1
+            theta = (- (S * pdf_d1 * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * cdf_neg_d2) / 365.0
+            rho = -K * T * math.exp(-r * T) * cdf_neg_d2
+
+        gamma = pdf_d1 / (S * sigma * math.sqrt(T))
+        vega = S * math.sqrt(T) * pdf_d1 / 100.0 # 1% IV change
 
         return {
             "delta": round(delta, 4),
@@ -58,29 +76,27 @@ def calculate_iv(price, S, K, T, r, option_type='ce', tol=1e-5, max_iter=100):
     """
     Calculate Implied Volatility using Newton-Raphson method.
     """
+    if price <= 0: return 0.0
+
     sigma = 0.5 # Initial guess
     for i in range(max_iter):
         greeks = calculate_greeks(S, K, T, r, sigma, option_type)
-
-        # Calculate theoretical price using BS
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-
-        if option_type.lower() == 'ce' or option_type.lower() == 'call':
-            theo_price = S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
-        else:
-            theo_price = K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
+        theo_price = calculate_black_scholes(S, K, T, r, sigma, option_type)
 
         diff = theo_price - price
 
         if abs(diff) < tol:
             return round(sigma, 4)
 
-        vega = greeks['vega'] * 100 # Adjust back from 1% unit
-        if vega == 0:
+        vega = greeks['vega'] * 100 # Scale to unit Vega
+        if abs(vega) < 1e-8:
             break
 
         sigma = sigma - diff / vega
+
+        # Clamp sigma to reasonable bounds to prevent divergence
+        if sigma <= 0: sigma = 0.001
+        if sigma > 5.0: sigma = 5.0
 
     return 0.0 # Failed to converge
 
@@ -90,26 +106,41 @@ def calculate_max_pain(chain_data):
     chain_data: List of dicts with 'strike', 'ce_oi', 'pe_oi'
     """
     try:
-        strikes = [item['strike'] for item in chain_data]
-        strikes.sort()
+        strikes = []
+        for item in chain_data:
+            if 'strike' in item:
+                 strikes.append(item['strike'])
+
+        strikes = sorted(list(set(strikes)))
+        if not strikes: return None
 
         total_loss = []
-        for strike in strikes:
+        for strike_price in strikes: # Expiry price
             loss = 0
             for item in chain_data:
-                k = item['strike']
+                k = item.get('strike')
+                if not k: continue
+
                 ce_oi = item.get('ce_oi', 0)
                 pe_oi = item.get('pe_oi', 0)
 
-                # If market expires at 'strike'
-                # Call writers lose if strike > k
-                if strike > k:
-                    loss += (strike - k) * ce_oi
+                # Handling nested structure if present (though logic below assumes flat)
+                if 'ce' in item and isinstance(item['ce'], dict):
+                     ce_oi = item['ce'].get('oi', 0)
+                if 'pe' in item and isinstance(item['pe'], dict):
+                     pe_oi = item['pe'].get('oi', 0)
 
-                # Put writers lose if strike < k
-                if strike < k:
-                    loss += (k - strike) * pe_oi
+                # Call writers lose if expiry (strike_price) > k (strike of option)
+                if strike_price > k:
+                    loss += (strike_price - k) * ce_oi
+
+                # Put writers lose if expiry (strike_price) < k
+                if strike_price < k:
+                    loss += (k - strike_price) * pe_oi
+
             total_loss.append(loss)
+
+        if not total_loss: return None
 
         min_loss_idx = total_loss.index(min(total_loss))
         return strikes[min_loss_idx]
