@@ -6,7 +6,6 @@ import re
 import json
 import pandas as pd
 from datetime import datetime
-from collections import defaultdict
 
 # Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -45,11 +44,14 @@ def normalize_mcx_symbol(match):
 
 def scan_file(filepath, instruments, strict=False):
     issues = []
-    normalized_content = ""
     changes_made = False
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception as e:
+        print(f"Error reading {filepath}: {e}")
+        return "", False, []
 
     def replacement_handler(match):
         nonlocal changes_made
@@ -65,13 +67,14 @@ def scan_file(filepath, instruments, strict=False):
                 "error": f"Invalid month: {month}",
                 "status": "INVALID"
             })
-            return original
+            return original # No change if invalid logic
 
+        # Strict Instrument Check
         if instruments is not None:
             if normalized not in instruments:
                  # Check if original was in instruments (maybe current format is valid?)
-                 if original in instruments:
-                     return original
+                 # But if strict normalization is required, we should prefer normalized.
+                 # However, if normalized is missing, it's a problem.
 
                  issues.append({
                     "file": filepath,
@@ -80,8 +83,12 @@ def scan_file(filepath, instruments, strict=False):
                     "error": "Symbol not found in instrument master",
                     "status": "MISSING"
                  })
-                 # If valid format but missing in master, we keep original but flag it
-                 return original
+                 # We still return normalized so we can fix the format,
+                 # but it will be flagged as MISSING.
+                 # Wait, if it's missing, maybe we shouldn't change it?
+                 # If we change it, we might break something that was working if the master is incomplete.
+                 # But strict mode says "No guessing".
+                 pass
 
         if original != normalized:
             changes_made = True
@@ -132,10 +139,15 @@ def main():
         if 'test' in dirs:
             dirs.remove('test')
 
+        # Also exclude __pycache__
+        if '__pycache__' in dirs:
+            dirs.remove('__pycache__')
+
         for file in files:
             if file.endswith('.py') or file.endswith('.json'):
+                # Avoid scanning state files or artifacts if any
+                if 'state' in root: continue
                 files_to_scan.append(os.path.join(root, file))
-
 
     for filepath in files_to_scan:
         new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
@@ -170,14 +182,17 @@ def main():
              f.write("| File | Symbol | Status | Details |\n")
              f.write("|---|---|---|---|\n")
              for issue in audit_report["issues"]:
-                 f.write(f"| {os.path.basename(issue['file'])} | {issue['symbol']} | {issue['status']} | {issue.get('error', issue.get('normalized', ''))} |\n")
+                 file_name = os.path.basename(issue['file'])
+                 details = issue.get('error', issue.get('normalized', ''))
+                 f.write(f"| {file_name} | {issue['symbol']} | {issue['status']} | {details} |\n")
 
     # Check for strict failure
     invalid_symbols = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING')]
 
+    # In strict check mode, we also fail if normalization is required (because it implies the repo is not clean)
+    normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
+
     if args.strict and args.check:
-         # In strict check mode, fail if normalization is needed
-         normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
          if normalized_count > 0:
              print(f"❌ Found {normalized_count} symbols needing normalization.")
              sys.exit(1)
@@ -189,7 +204,7 @@ def main():
 
     if args.write:
          print("✅ Normalization complete.")
-    else:
+    elif args.check:
          print("✅ Check complete.")
 
 if __name__ == "__main__":

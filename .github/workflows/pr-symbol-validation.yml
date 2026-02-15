@@ -24,9 +24,10 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install pandas httpx pytz
 
       - name: Sync Instruments
+        id: sync
         run: python3 tools/sync_instruments.py
 
       - name: Run Strict Validation

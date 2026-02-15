@@ -23,7 +23,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install pandas httpx pytz
 
       - name: A) Sync Instruments
         id: sync
@@ -47,13 +47,23 @@ jobs:
 
       - name: Gate Check
         id: gate
+        if: always()
         run: |
-          if [[ "${{ steps.precheck.outcome }}" == "success" && "${{ steps.postcheck.outcome }}" == "success" ]]; then
+          # Gate passes ONLY if precheck passed AND postcheck passed (if it ran)
+          # Note: If precheck fails, postcheck is skipped. So gate should fail.
+
+          PRECHECK="${{ steps.precheck.outcome }}"
+          POSTCHECK="${{ steps.postcheck.outcome }}"
+
+          echo "Pre-check: $PRECHECK"
+          echo "Post-check: $POSTCHECK"
+
+          if [[ "$PRECHECK" == "success" && "$POSTCHECK" == "success" ]]; then
             echo "gate_ok=true" >> $GITHUB_OUTPUT
-            echo "Gate passed."
+            echo "✅ Gate passed."
           else
             echo "gate_ok=false" >> $GITHUB_OUTPUT
-            echo "Gate failed."
+            echo "❌ Gate failed."
           fi
 
       - name: Generate Reports Artifact
@@ -88,7 +98,6 @@ jobs:
             const fs = require('fs');
             let body = "Daily symbol audit failed. Please check the attached artifacts.\n\n";
             try {
-              // Read report if exists
               if (fs.existsSync('reports/symbol_audit.md')) {
                 const report = fs.readFileSync('reports/symbol_audit.md', 'utf8');
                 body += report;
@@ -97,7 +106,6 @@ jobs:
               body += "Could not read audit report.";
             }
 
-            // Create Issue
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
