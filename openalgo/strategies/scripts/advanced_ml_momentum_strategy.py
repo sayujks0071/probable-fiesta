@@ -22,18 +22,22 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from risk_manager import RiskManager
 except ImportError:
     try:
         # Try absolute import
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.risk_manager import RiskManager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.risk_manager import RiskManager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            RiskManager = None
             is_market_open = lambda: True
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -45,6 +49,13 @@ class MLMomentumStrategy:
         self.client = APIClient(api_key=api_key, host=self.host)
         self.logger = logging.getLogger(f"MLMomentum_{symbol}")
         self.pm = PositionManager(symbol) if PositionManager else None
+
+        # Initialize Risk Manager
+        if RiskManager:
+            self.rm = RiskManager(strategy_name="MLMomentum", exchange="NSE", capital=100000)
+        else:
+            self.rm = None
+            self.logger.warning("RiskManager not available. Running without risk controls!")
 
         self.roc_threshold = threshold
         self.stop_pct = stop_pct
@@ -73,10 +84,6 @@ class MLMomentumStrategy:
         current_price = last['close']
 
         # Simplifications for Backtest (Missing Index/Sector Data)
-        # We assume RS and Sector conditions are met if data missing, or strict if we want.
-        # Let's assume 'rs_excess > 0' and 'sector_outperformance > 0' are TRUE for baseline logic
-        # unless we pass index data in 'df' (which we don't usually).
-
         rs_excess = 0.01 # Mock positive
         sector_outperformance = 0.01 # Mock positive
         sentiment = 0.5 # Mock positive
@@ -136,6 +143,28 @@ class MLMomentumStrategy:
             if not is_market_open():
                 time.sleep(60)
                 continue
+
+            # Risk Manager: EOD Check
+            if self.rm and self.rm.should_square_off_eod():
+                if self.pm and self.pm.has_position():
+                    self.logger.info("EOD Square-off Triggered.")
+                    # In real scenario, we'd place market exit here
+                    current_quote = self.client.get_quote(self.symbol, "NSE")
+                    exit_price = float(current_quote['ltp']) if current_quote else 0
+
+                    self.pm.update_position(abs(self.pm.position), exit_price, 'SELL')
+                    self.rm.register_exit(self.symbol, exit_price)
+
+                time.sleep(60)
+                continue
+
+            # Risk Manager: Circuit Breaker Check
+            if self.rm:
+                can_trade, reason = self.rm.can_trade()
+                if not can_trade:
+                    self.logger.warning(f"Risk Manager Block: {reason}")
+                    time.sleep(300)
+                    continue
 
             # Time Filter
             if not self.check_time_filter():
@@ -204,14 +233,27 @@ class MLMomentumStrategy:
                     pnl = self.pm.get_pnl(current_price)
                     entry = self.pm.entry_price
 
+                    # Check Risk Manager Stop Loss
+                    if self.rm:
+                        stop_hit, stop_reason = self.rm.check_stop_loss(self.symbol, current_price)
+                        if stop_hit:
+                             self.logger.info(f"RiskManager Stop Loss: {stop_reason}")
+                             self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                             self.rm.register_exit(self.symbol, current_price)
+                             time.sleep(60)
+                             continue
+
+                    # Manual Stop Loss (Legacy/Fallback)
                     if (self.pm.position > 0 and current_price < entry * (1 - self.stop_pct/100)):
-                        self.logger.info(f"Stop Loss Hit. PnL: {pnl}")
+                        self.logger.info(f"Strategy Stop Loss Hit. PnL: {pnl}")
                         self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                        if self.rm: self.rm.register_exit(self.symbol, current_price)
 
                     # Exit if Momentum Fades (RSI < 50)
                     elif (self.pm.position > 0 and last['rsi'] < 50):
                          self.logger.info(f"Momentum Faded (RSI < 50). Exit. PnL: {pnl}")
                          self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                         if self.rm: self.rm.register_exit(self.symbol, current_price)
 
                     time.sleep(60)
                     continue
@@ -234,8 +276,20 @@ class MLMomentumStrategy:
                     # Volume check
                     avg_vol = df['volume'].rolling(20).mean().iloc[-1]
                     if last['volume'] > avg_vol * 0.5: # At least decent volume
+
+                        # Final Risk Check
+                        if self.rm:
+                            can_trade, reason = self.rm.can_trade()
+                            if not can_trade:
+                                self.logger.warning(f"Trade Skipped by Risk Manager: {reason}")
+                                time.sleep(60)
+                                continue
+
                         self.logger.info(f"Strong Momentum Signal (ROC: {last['roc']:.3f}, RS: {rs_excess:.3f}). BUY.")
-                        self.pm.update_position(100, current_price, 'BUY')
+
+                        qty = 100 # Default
+                        self.pm.update_position(qty, current_price, 'BUY')
+                        if self.rm: self.rm.register_entry(self.symbol, qty, current_price, 'LONG')
 
             except Exception as e:
                 self.logger.error(f"Error in ML Momentum strategy for {self.symbol}: {e}", exc_info=True)
@@ -247,7 +301,7 @@ def run_strategy():
     parser = argparse.ArgumentParser(description='ML Momentum Strategy')
     parser.add_argument('--symbol', type=str, help='Stock Symbol')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
-    parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
+    parser.add_argument('--api_key', type=str, help='API Key')
     parser.add_argument('--threshold', type=float, default=0.01, help='ROC Threshold')
     parser.add_argument('--sector', type=str, default='NIFTY 50', help='Sector Benchmark')
 
@@ -261,7 +315,13 @@ def run_strategy():
         sys.exit(1)
     
     port = args.port or int(os.getenv('OPENALGO_PORT', '5001'))
-    api_key = args.api_key or os.getenv('OPENALGO_APIKEY', 'demo_key')
+
+    # API Key Priority: Args > Env > Error
+    api_key = args.api_key or os.getenv('OPENALGO_APIKEY')
+    if not api_key:
+        print("ERROR: --api_key or OPENALGO_APIKEY env var required.")
+        sys.exit(1)
+
     threshold = args.threshold or float(os.getenv('THRESHOLD', '0.01'))
 
     strategy = MLMomentumStrategy(symbol, api_key, port, threshold=threshold, sector=args.sector)
@@ -278,6 +338,7 @@ def generate_signal(df, client=None, symbol=None, params=None):
     if params:
         strat_params.update(params)
 
+    # Note: Backtesting usually bypasses RiskManager or mocks it
     strat = MLMomentumStrategy(
         symbol=symbol or "TEST",
         api_key="dummy",

@@ -13,15 +13,24 @@ project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+try:
+    from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+    from openalgo.strategies.utils.risk_manager import RiskManager
+except ImportError:
+    # Fallback for direct execution
+    sys.path.append(str(project_root / "openalgo" / "strategies" / "utils"))
+    from trading_utils import APIClient, PositionManager, is_market_open
+    from risk_manager import RiskManager
 
 # Configure logging
+log_dir = project_root / "openalgo" / "log" / "strategies"
+log_dir.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(project_root / "openalgo" / "strategies" / "logs" / "gap_fade.log")
+        logging.FileHandler(log_dir / "gap_fade.log")
     ]
 )
 logger = logging.getLogger("GapFadeStrategy")
@@ -34,8 +43,17 @@ class GapFadeStrategy:
         self.gap_threshold = gap_threshold # Percentage
         self.pm = PositionManager(f"{symbol}_GapFade")
 
+        # Initialize Risk Manager
+        self.rm = RiskManager(strategy_name="GapFade", exchange="NSE", capital=100000)
+
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
+
+        # Risk Check
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.error(f"Risk Manager Blocked Trade: {reason}")
+            return
 
         # 1. Get Previous Close
         # Using history API for last 2 days
@@ -115,7 +133,16 @@ class GapFadeStrategy:
         # 5. Place Order (Simulation)
         # self.client.placesmartorder(...)
         logger.info(f"Executing {option_type} Buy for {qty} qty.")
-        self.pm.update_position(qty, 100, "BUY") # Mock update
+
+        # Register with Risk Manager first
+        side = "LONG" # Since we are buying options
+
+        # Calculate approximate stop loss (e.g., 20% of premium or based on underlying)
+        # For simulation, we use current price as premium mock
+        premium = 100.0 # Mock premium
+
+        self.pm.update_position(qty, premium, "BUY")
+        self.rm.register_entry(strike_symbol, qty, premium, side)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -125,7 +152,12 @@ def main():
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
     args = parser.parse_args()
 
-    client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
+    api_key = os.getenv("OPENALGO_APIKEY") or os.getenv("OPENALGO_API_KEY")
+    if not api_key:
+        print("Error: OPENALGO_APIKEY environment variable not set.")
+        sys.exit(1)
+
+    client = APIClient(api_key=api_key, host=f"http://127.0.0.1:{args.port}")
     strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold)
     strategy.execute()
 
