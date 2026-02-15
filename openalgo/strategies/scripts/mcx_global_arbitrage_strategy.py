@@ -23,13 +23,23 @@ if str(utils_path) not in sys.path:
 try:
     from trading_utils import APIClient
     from symbol_resolver import SymbolResolver
+    from risk_manager import RiskManager
 except ImportError:
     try:
         from openalgo.strategies.utils.trading_utils import APIClient
         from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+        from openalgo.strategies.utils.risk_manager import RiskManager
     except ImportError:
         APIClient = None
         SymbolResolver = None
+        RiskManager = None
+
+# Setup Logging
+try:
+    from openalgo_observability.logging_setup import setup_logging
+    setup_logging()
+except ImportError:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Configuration
 SYMBOL = os.getenv('SYMBOL', None)
@@ -44,9 +54,7 @@ PARAMS = {
     'lookback_period': 20,
 }
 
-# Setup Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(f"MCX_Arbitrage_{SYMBOL}")
+logger = logging.getLogger(f"MCX_Arbitrage")
 
 class MCXGlobalArbitrageStrategy:
     def __init__(self, symbol, global_symbol, params, api_client=None):
@@ -59,9 +67,59 @@ class MCXGlobalArbitrageStrategy:
         self.last_trade_time = 0
         self.cooldown_seconds = 300
 
-        # Session Reference Points (Opening Price of the session/day)
+        # Session Reference Points
         self.session_ref_mcx = None
         self.session_ref_global = None
+
+        # State Persistence
+        import json
+        self.state_file = Path(__file__).parent.parent / "state" / f"mcx_arbitrage_{symbol}.json"
+
+        # Initialize Risk Manager
+        if RiskManager:
+            self.risk_manager = RiskManager(
+                strategy_name=f"MCXArbitrage_{symbol}",
+                exchange="MCX",
+                capital=200000,
+                config={
+                    'max_daily_loss_pct': 3.0,
+                    'mcx_eod_square_off_time': '23:25',
+                }
+            )
+        else:
+            self.risk_manager = None
+            logger.warning("RiskManager not available!")
+
+        self.load_state()
+
+    def load_state(self):
+        """Load session references."""
+        import json
+        if self.state_file.exists():
+            try:
+                with open(self.state_file, 'r') as f:
+                    data = json.load(f)
+                    if data.get('date') == datetime.now().strftime('%Y-%m-%d'):
+                        self.session_ref_mcx = data.get('ref_mcx')
+                        self.session_ref_global = data.get('ref_global')
+                        logger.info(f"Loaded session refs: MCX={self.session_ref_mcx}, Global={self.session_ref_global}")
+            except Exception as e:
+                logger.error(f"Failed to load state: {e}")
+
+    def save_state(self):
+        """Save session references."""
+        import json
+        try:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                'date': datetime.now().strftime('%Y-%m-%d'),
+                'ref_mcx': self.session_ref_mcx,
+                'ref_global': self.session_ref_global
+            }
+            with open(self.state_file, 'w') as f:
+                json.dump(data, f)
+        except Exception as e:
+            logger.error(f"Failed to save state: {e}")
 
     def fetch_data(self):
         """Fetch live MCX and Global prices. Returns True on success."""
@@ -114,6 +172,7 @@ class MCXGlobalArbitrageStrategy:
             if self.session_ref_mcx is None:
                 self.session_ref_mcx = mcx_price
                 self.session_ref_global = global_price
+                self.save_state()
                 logger.info(f"Session Start Reference: MCX={mcx_price}, Global={global_price}")
 
             new_row = pd.DataFrame({
@@ -139,6 +198,31 @@ class MCXGlobalArbitrageStrategy:
 
         current = self.data.iloc[-1]
 
+        # Risk Manager: Check Stops & Circuit Breakers
+        if self.risk_manager:
+            # Check Circuit Breaker
+            can_trade, reason = self.risk_manager.can_trade()
+            if not can_trade and self.position == 0:
+                logger.info(f"Trading Halted: {reason}")
+                return
+
+            # Check Stop Loss if In Position
+            if self.position != 0:
+                stop_hit, msg = self.risk_manager.check_stop_loss(self.symbol, current['mcx_price'])
+                if stop_hit:
+                    side = "BUY" if self.position == -1 else "SELL"
+                    self.exit(side, current['mcx_price'], msg)
+                    return # Exit processed
+
+                # Update Trailing Stop
+                self.risk_manager.update_trailing_stop(self.symbol, current['mcx_price'])
+
+                # EOD Check
+                if self.risk_manager.should_square_off_eod():
+                    side = "BUY" if self.position == -1 else "SELL"
+                    self.exit(side, current['mcx_price'], "EOD Square-off")
+                    return
+
         # Calculate Percentage Change from Session Start
         mcx_change_pct = ((current['mcx_price'] - self.session_ref_mcx) / self.session_ref_mcx) * 100
         global_change_pct = ((current['global_price'] - self.session_ref_global) / self.session_ref_global) * 100
@@ -153,6 +237,12 @@ class MCXGlobalArbitrageStrategy:
         time_since_last_trade = current_time - self.last_trade_time
         
         if self.position == 0:
+            # Risk Check
+            if self.risk_manager:
+                can_trade, reason = self.risk_manager.can_trade()
+                if not can_trade:
+                    return
+
             if time_since_last_trade < self.cooldown_seconds:
                 return
             
@@ -164,7 +254,7 @@ class MCXGlobalArbitrageStrategy:
             elif divergence_pct < -self.params['divergence_threshold']:
                 self.entry("BUY", current['mcx_price'], f"MCX Discount > {self.params['divergence_threshold']}% (Rel to Global)")
 
-        # Exit Logic
+        # Exit Logic (Convergence)
         elif self.position != 0:
             abs_div = abs(divergence_pct)
             if abs_div < self.params['convergence_threshold']:
@@ -197,6 +287,8 @@ class MCXGlobalArbitrageStrategy:
         if order_placed or not self.api_client: # Assume success if no client (testing)
             self.position = 1 if side == "BUY" else -1
             self.last_trade_time = time.time()
+            if self.risk_manager:
+                 self.risk_manager.register_entry(self.symbol, 1, price, side)
 
     def exit(self, side, price, reason):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
@@ -224,6 +316,8 @@ class MCXGlobalArbitrageStrategy:
         if order_placed or not self.api_client:
             self.position = 0
             self.last_trade_time = time.time()
+            if self.risk_manager:
+                self.risk_manager.register_exit(self.symbol, price)
 
     def run(self):
         logger.info(f"Starting MCX Global Arbitrage Strategy for {self.symbol} vs {self.global_symbol}")

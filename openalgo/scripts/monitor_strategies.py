@@ -7,12 +7,51 @@ import sys
 import time
 import subprocess
 import re
+import json
+import glob
 from datetime import datetime
 
 # Adjust paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR) # openalgo/
 LOG_DIR = os.path.join(REPO_ROOT, "log", "strategies")
+STATE_DIR = os.path.join(REPO_ROOT, "strategies", "state")
+
+def get_risk_state(script_name, symbol):
+    """Try to find and read the risk state file."""
+    if not symbol or symbol == "UNKNOWN":
+        return {}
+
+    # Map script names to likely strategy prefixes
+    # This is a heuristic based on how strategies name themselves in RiskManager
+    prefix_map = {
+        "supertrend_vwap_strategy.py": "SuperTrendVWAP",
+        "mcx_global_arbitrage_strategy.py": "MCXArbitrage",
+        "sentiment_reversal_strategy.py": "SentimentReversal",
+        "delta_neutral_iron_condor_nifty.py": "IronCondor",
+        "gap_fade_strategy.py": "GapFade",
+    }
+
+    # Try specific name first
+    prefix = prefix_map.get(script_name, "")
+    candidates = []
+    if prefix:
+        candidates.append(os.path.join(STATE_DIR, f"{prefix}_{symbol}_risk_state.json"))
+
+    # Generic fallback: {symbol}_risk_state.json
+    candidates.append(os.path.join(STATE_DIR, f"{symbol}_risk_state.json"))
+
+    # Search for any file ending in {symbol}_risk_state.json
+    candidates.extend(glob.glob(os.path.join(STATE_DIR, f"*{symbol}_risk_state.json")))
+
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    return json.load(f)
+            except:
+                pass
+    return {}
 
 def get_running_strategies():
     """Find running strategy processes."""
@@ -76,12 +115,22 @@ def main():
         print("No strategies running.")
         return
 
-    print(f"{'PID':<8} {'SYMBOL':<10} {'STRATEGY':<30} {'LOG FILE'}")
-    print("-" * 80)
+    print(f"{'PID':<8} {'SYMBOL':<15} {'STRATEGY':<30} {'PnL':<12} {'TRADES':<8} {'STATUS':<10} {'LOG FILE'}")
+    print("-" * 120)
 
     for s in strategies:
         log_display = s['logfile'] if s['logfile'] else "N/A"
-        print(f"{s['pid']:<8} {s['symbol']:<10} {s['script']:<30} {log_display}")
+
+        # Fetch Risk State
+        risk_state = get_risk_state(s['script'], s['symbol'])
+        daily_pnl = risk_state.get('daily_pnl', 'N/A')
+        if daily_pnl != 'N/A': daily_pnl = f"{float(daily_pnl):.2f}"
+
+        daily_trades = risk_state.get('daily_trades', 'N/A')
+        cb = risk_state.get('circuit_breaker', False)
+        status = "HALTED" if cb else "RUNNING"
+
+        print(f"{s['pid']:<8} {s['symbol']:<15} {s['script']:<30} {daily_pnl:<12} {str(daily_trades):<8} {status:<10} {log_display}")
 
         # If we have a logfile, show last line
         if s['logfile']:
