@@ -20,6 +20,9 @@ def check_and_clone():
             sys.exit(1)
     else:
         logging.info(f"Directory '{TARGET_DIR}' exists.")
+        # Validate it's not empty and looks like the repo
+        if not os.path.exists(os.path.join(TARGET_DIR, "app.py")):
+             logging.warning(f"Warning: '{TARGET_DIR}' exists but does not contain 'app.py'. It might be invalid.")
 
 def run_script(script_path, description):
     if not os.path.exists(script_path):
@@ -32,7 +35,7 @@ def run_script(script_path, description):
         env['PYTHONPATH'] = os.getcwd() + ":" + env.get('PYTHONPATH', '')
 
         # Use venv if exists, else system python
-        venv_python = os.path.join("openalgo", "venv", "bin", "python3")
+        venv_python = os.path.join(TARGET_DIR, "venv", "bin", "python3")
         python_exec = venv_python if os.path.exists(venv_python) else sys.executable
 
         subprocess.check_call([python_exec, script_path], env=env)
@@ -43,7 +46,10 @@ def run_script(script_path, description):
 
 def main():
     # Initialize Observability Logging
-    setup_logging()
+    try:
+        setup_logging()
+    except Exception:
+        logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser(description="OpenAlgo Daily Startup Routine")
     parser.add_argument("--backtest", action="store_true", help="Run backtest and leaderboard generation after prep")
@@ -55,12 +61,12 @@ def main():
     check_and_clone()
 
     # 2. Daily Prep
-    prep_script = os.path.join("openalgo", "scripts", "daily_prep.py")
+    prep_script = os.path.join(TARGET_DIR, "scripts", "daily_prep.py")
     run_script(prep_script, "Daily Prep")
 
     # 3. Backtest (Optional)
     if args.backtest:
-        backtest_script = os.path.join("openalgo", "scripts", "daily_backtest_leaderboard.py")
+        backtest_script = os.path.join(TARGET_DIR, "scripts", "daily_backtest_leaderboard.py")
         run_script(backtest_script, "Daily Backtest & Leaderboard")
 
     logging.info("=== DAILY ROUTINE COMPLETE ===")

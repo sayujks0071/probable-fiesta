@@ -58,6 +58,19 @@ class SymbolResolver:
             logger.error(f"Unknown instrument type: {itype}")
             return None
 
+    def resolve_symbol(self, config):
+        """
+        Unified method to get a single tradable symbol string.
+        For Options, returns a sample symbol if strike not resolved.
+        """
+        res = self.resolve(config)
+        if isinstance(res, dict):
+            # For options, resolve returns a dict with status/expiry/sample_symbol
+            if res.get('status') == 'valid':
+                return res.get('sample_symbol')
+            return None
+        return res
+
     def get_tradable_symbol(self, config, spot_price=None):
         """
         Get a specific tradable symbol for execution.
@@ -120,18 +133,29 @@ class SymbolResolver:
             # 1. Symbol contains 'MINI'
             # 2. Symbol matches Name + 'M' + Date (e.g., SILVERM...) vs SILVER...
 
-            # Check for explicitly 'MINI' or 'M' suffix on underlying name
-            # Use non-capturing group to avoid pandas UserWarning
-            mini_pattern = r'(?:{}M|{}MINI)'.format(underlying, underlying)
+            # 1. Explicit MINI
+            mini_mask = matches['symbol'].str.contains('MINI', case=False, na=False)
+            mini_matches = matches[mini_mask]
 
-            mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
+            if mini_matches.empty:
+                # 2. Pattern check: {UNDERLYING}M...
+                # Matches GOLDM19FEB26FUT vs GOLD19FEB26FUT
+                # We want symbols where the prefix is underlying + "M"
+
+                # Regex: Starts with underlying, followed by M, followed by digits/dates
+                # Be careful not to match 'SILVERMIC' if underlying is 'SILVER' (it matches SILVERM...)
+                # Wait, SILVERMIC *is* MINI.
+                # So just checking startswith(underlying + 'M') might handle both SILVERMIC and GOLDM.
+
+                prefix = f"{underlying}M"
+                m_mask = matches['symbol'].str.startswith(prefix)
+                mini_matches = matches[m_mask]
 
             if not mini_matches.empty:
+                # If multiple MINI contracts (different expiries), pick the nearest one
+                mini_matches = mini_matches.sort_values('expiry')
                 logger.info(f"Found MCX MINI contract for {underlying}: {mini_matches.iloc[0]['symbol']}")
                 return mini_matches.iloc[0]['symbol']
-
-            # Also check if the symbol itself ends with 'M' before some digits (less reliable but possible)
-            # e.g. CRUDEOILM23NOV...
 
             logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
 
@@ -152,7 +176,7 @@ class SymbolResolver:
                (self.df['exchange'] == exchange) & \
                (self.df['expiry'] >= now)
 
-        # Pre-filter by Option Type if possible (though we might need both for straddles, here we resolve for specific type)
+        # Pre-filter by Option Type if possible
         if option_type:
              mask &= self.df['symbol'].str.endswith(option_type)
 
@@ -201,6 +225,9 @@ class SymbolResolver:
             # Logic: Select the last expiry of the *current month cycle*.
             # If nearest_expiry is in Oct, find the last expiry in Oct.
 
+            # However, if today is end of Oct, nearest might be Nov.
+            # We base "current month" on the nearest expiry found.
+
             target_year = nearest_expiry.year
             target_month = nearest_expiry.month
 
@@ -247,14 +274,8 @@ class SymbolResolver:
             return None
 
         # Extract Strike Price
-        # Assuming symbol format or having a 'strike' column.
-        # If 'strike' column doesn't exist, we must parse symbol or assume 'strike' exists in master.
-        # OpenAlgo/Kite master usually has 'strike'.
-
         if 'strike' not in chain.columns:
             # Try to parse strike from symbol (e.g. NIFTY23OCT19500CE)
-            # This is brittle but a fallback.
-            # Regex: look for digits before CE/PE
             def parse_strike(sym):
                 m = re.search(r'(\d+)(CE|PE)$', sym)
                 return float(m.group(1)) if m else 0
@@ -264,16 +285,18 @@ class SymbolResolver:
         chain = chain.sort_values('strike')
 
         # Find ATM Strike
-        # Simple logic: closest to spot
         chain['diff'] = abs(chain['strike'] - spot_price)
         atm_row = chain.loc[chain['diff'].idxmin()]
         atm_strike = atm_row['strike']
 
         selected_strike = atm_strike
 
-        # Adjust for ITM/OTM (Simple 1-step logic, can be enhanced)
+        # Adjust for ITM/OTM
         strikes = sorted(chain['strike'].unique())
-        atm_index = strikes.index(atm_strike)
+        try:
+            atm_index = strikes.index(atm_strike)
+        except ValueError:
+            atm_index = 0
 
         if strike_criteria == 'ITM':
             # Call ITM = Lower Strike, Put ITM = Higher Strike
