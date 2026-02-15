@@ -39,10 +39,13 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class MLMomentumStrategy:
-    def __init__(self, symbol, api_key, port, threshold=0.01, stop_pct=1.0, sector='NIFTY 50', vol_multiplier=0.5):
+    def __init__(self, symbol, api_key, port, threshold=0.01, stop_pct=1.0, sector='NIFTY 50', vol_multiplier=0.5, client=None):
         self.symbol = symbol
         self.host = f"http://127.0.0.1:{port}"
-        self.client = APIClient(api_key=api_key, host=self.host)
+        if client:
+            self.client = client
+        else:
+            self.client = APIClient(api_key=api_key, host=self.host)
         self.logger = logging.getLogger(f"MLMomentum_{symbol}")
         self.pm = PositionManager(symbol) if PositionManager else None
 
@@ -51,11 +54,7 @@ class MLMomentumStrategy:
         self.sector = sector
         self.vol_multiplier = vol_multiplier
 
-    def calculate_signal(self, df):
-        """Calculate signal for backtesting."""
-        if df.empty or len(df) < 50:
-            return 'HOLD', 0.0, {}
-
+    def calculate_indicators(self, df):
         # Indicators
         df['roc'] = df['close'].pct_change(periods=10)
 
@@ -69,30 +68,53 @@ class MLMomentumStrategy:
         # SMA for Trend
         df['sma50'] = df['close'].rolling(50).mean()
 
-        last = df.iloc[-1]
-        current_price = last['close']
+        # ATR for sizing
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift()).abs()
+        low_close = (df['low'] - df['close'].shift()).abs()
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        df['atr'] = true_range.rolling(14).mean()
+
+        return df
+
+    def calculate_signal(self, df):
+        """Calculate signal for backtesting."""
+        if df.empty or len(df) < 50:
+            return 'HOLD', 0.0, {}
+
+        df = self.calculate_indicators(df)
+
+        # Use completed candle for signal generation (iloc[-2])
+        # Use current candle for execution price (iloc[-1])
+        last_completed = df.iloc[-2]
+        current = df.iloc[-1]
+        current_price = current['close']
 
         # Simplifications for Backtest (Missing Index/Sector Data)
-        # We assume RS and Sector conditions are met if data missing, or strict if we want.
-        # Let's assume 'rs_excess > 0' and 'sector_outperformance > 0' are TRUE for baseline logic
-        # unless we pass index data in 'df' (which we don't usually).
-
         rs_excess = 0.01 # Mock positive
         sector_outperformance = 0.01 # Mock positive
         sentiment = 0.5 # Mock positive
 
         # Entry Logic
-        if (last['roc'] > self.roc_threshold and
-            last['rsi'] > 55 and
+        if (last_completed['roc'] > self.roc_threshold and
+            last_completed['rsi'] > 55 and
             rs_excess > 0 and
             sector_outperformance > 0 and
-            current_price > last['sma50'] and
+            last_completed['close'] > last_completed['sma50'] and
             sentiment >= 0):
 
             # Volume check
-            avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-            if last['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
-                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi']}
+            avg_vol = df['volume'].rolling(20).mean().iloc[-2]
+            if last_completed['volume'] > avg_vol * self.vol_multiplier:
+                # Sizing
+                atr = last_completed['atr'] if not np.isnan(last_completed['atr']) else current['close']*0.01
+                qty = 100
+                if atr > 0:
+                    qty = int(1000 / (2 * atr)) # Risk 1000 per trade
+                    qty = max(1, qty)
+
+                return 'BUY', 1.0, {'roc': last_completed['roc'], 'rsi': last_completed['rsi'], 'quantity': qty}
 
         return 'HOLD', 0.0, {}
 
@@ -101,8 +123,8 @@ class MLMomentumStrategy:
 
         # Align timestamps (simplistic approach using last N periods)
         try:
-            stock_roc = df['close'].pct_change(10).iloc[-1]
-            index_roc = index_df['close'].pct_change(10).iloc[-1]
+            stock_roc = df['close'].pct_change(10).iloc[-2] # Use completed
+            index_roc = index_df['close'].pct_change(10).iloc[-2] # Use completed
             return stock_roc - index_roc # Excess Return
         except:
             return 0.0
@@ -168,20 +190,11 @@ class MLMomentumStrategy:
                                            start_date=start_date, end_date=end_date)
 
                 # 3. Indicators
-                df['roc'] = df['close'].pct_change(periods=10)
+                df = self.calculate_indicators(df)
 
-                # RSI
-                delta = df['close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs_val = gain / loss
-                df['rsi'] = 100 - (100 / (1 + rs_val))
-
-                # SMA for Trend
-                df['sma50'] = df['close'].rolling(50).mean()
-
-                last = df.iloc[-1]
-                current_price = last['close']
+                last_completed = df.iloc[-2]
+                current = df.iloc[-1]
+                current_price = current['close']
 
                 # Relative Strength vs NIFTY
                 rs_excess = self.calculate_relative_strength(df, index_df)
@@ -190,8 +203,8 @@ class MLMomentumStrategy:
                 sector_outperformance = 0.0
                 if not sector_df.empty:
                     try:
-                         sector_roc = sector_df['close'].pct_change(10).iloc[-1]
-                         sector_outperformance = last['roc'] - sector_roc
+                         sector_roc = sector_df['close'].pct_change(10).iloc[-2]
+                         sector_outperformance = last_completed['roc'] - sector_roc
                     except: pass
                 else:
                     sector_outperformance = 0.001 # Assume positive if missing to not block
@@ -209,7 +222,7 @@ class MLMomentumStrategy:
                         self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
 
                     # Exit if Momentum Fades (RSI < 50)
-                    elif (self.pm.position > 0 and last['rsi'] < 50):
+                    elif (self.pm.position > 0 and last_completed['rsi'] < 50):
                          self.logger.info(f"Momentum Faded (RSI < 50). Exit. PnL: {pnl}")
                          self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
 
@@ -217,25 +230,24 @@ class MLMomentumStrategy:
                     continue
 
                 # Entry Logic
-                # ROC > Threshold
-                # RSI > 55
-                # Relative Strength > 0 (Outperforming NIFTY)
-                # Sector Outperformance > 0 (Outperforming Sector)
-                # Price > SMA50 (Uptrend)
-                # Sentiment > 0 (Not Negative)
-
-                if (last['roc'] > self.roc_threshold and
-                    last['rsi'] > 55 and
+                if (last_completed['roc'] > self.roc_threshold and
+                    last_completed['rsi'] > 55 and
                     rs_excess > 0 and
                     sector_outperformance > 0 and
-                    current_price > last['sma50'] and
+                    last_completed['close'] > last_completed['sma50'] and
                     sentiment >= 0):
 
                     # Volume check
-                    avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-                    if last['volume'] > avg_vol * 0.5: # At least decent volume
-                        self.logger.info(f"Strong Momentum Signal (ROC: {last['roc']:.3f}, RS: {rs_excess:.3f}). BUY.")
-                        self.pm.update_position(100, current_price, 'BUY')
+                    avg_vol = df['volume'].rolling(20).mean().iloc[-2]
+                    if last_completed['volume'] > avg_vol * self.vol_multiplier:
+                        atr = last_completed['atr'] if not np.isnan(last_completed['atr']) else current_price*0.01
+                        qty = 100
+                        if atr > 0:
+                            qty = int(1000 / (2 * atr)) # Risk 1000 per trade
+                            qty = max(1, qty)
+
+                        self.logger.info(f"Strong Momentum Signal (ROC: {last_completed['roc']:.3f}, RS: {rs_excess:.3f}). BUY {qty}.")
+                        self.pm.update_position(qty, current_price, 'BUY')
 
             except Exception as e:
                 self.logger.error(f"Error in ML Momentum strategy for {self.symbol}: {e}", exc_info=True)
@@ -285,7 +297,8 @@ def generate_signal(df, client=None, symbol=None, params=None):
         threshold=float(strat_params.get('threshold', 0.01)),
         stop_pct=float(strat_params.get('stop_pct', 1.0)),
         sector=strat_params.get('sector', 'NIFTY 50'),
-        vol_multiplier=float(strat_params.get('vol_multiplier', 0.5))
+        vol_multiplier=float(strat_params.get('vol_multiplier', 0.5)),
+        client=client
     )
 
     # Silence logger

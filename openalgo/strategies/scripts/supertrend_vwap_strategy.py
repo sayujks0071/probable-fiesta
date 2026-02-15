@@ -124,8 +124,9 @@ class SuperTrendVWAPStrategy:
         self.atr = self.calculate_atr(df)
         last = df.iloc[-1]
 
-        # Volume Profile
-        poc_price, poc_vol = self.analyze_volume_profile(df)
+        # Volume Profile (Optional for backtest speed/data issues)
+        # poc_price, poc_vol = self.analyze_volume_profile(df)
+        poc_price = 0 # Dummy
 
         # Dynamic Deviation
         vix = self.get_vix()
@@ -144,17 +145,19 @@ class SuperTrendVWAPStrategy:
 
         vol_mean = df['volume'].rolling(20).mean().iloc[-1]
         vol_std = df['volume'].rolling(20).std().iloc[-1]
-        dynamic_threshold = vol_mean + (1.5 * vol_std)
+
+        # Relaxed Volume Spike (1.0 std instead of 1.5)
+        dynamic_threshold = vol_mean + (1.0 * vol_std)
         is_volume_spike = last['volume'] > dynamic_threshold
 
-        is_above_poc = last['close'] > poc_price
+        # is_above_poc = last['close'] > poc_price # Disabled for backtest
         is_not_overextended = abs(last['vwap_dev']) < dev_threshold
 
         # ADX Filter
         adx = self.calculate_adx(df, period=self.adx_period)
         is_strong_trend = adx > self.adx_threshold
 
-        # Sector check (Mocked for backtest usually, or passed via client)
+        # Sector check (Bypassed for backtest)
         sector_bullish = True
 
         score = 0
@@ -162,15 +165,12 @@ class SuperTrendVWAPStrategy:
             'close': last['close'],
             'vwap': last['vwap'],
             'atr': self.atr,
-            'poc': poc_price,
             'adx': adx
         }
 
-        if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish and is_strong_trend and is_uptrend:
+        # Removed is_above_poc and sector check is forced True
+        if is_above_vwap and is_volume_spike and is_not_overextended and is_strong_trend and is_uptrend:
             return 'BUY', 1.0, details
-
-        # Sell Logic (Inverse for completeness?)
-        # For now, just Buy based on VWAP Breakout
 
         return 'HOLD', 0.0, details
 

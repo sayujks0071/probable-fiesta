@@ -40,10 +40,13 @@ except ImportError:
             is_market_open = lambda: True
 
 class AIHybridStrategy:
-    def __init__(self, symbol, api_key, port, rsi_lower=30, rsi_upper=60, stop_pct=1.0, sector='NIFTY 50', earnings_date=None, logfile=None, time_stop_bars=12):
+    def __init__(self, symbol, api_key, port, rsi_lower=30, rsi_upper=60, stop_pct=1.0, sector='NIFTY 50', earnings_date=None, logfile=None, time_stop_bars=12, client=None):
         self.symbol = symbol
         self.host = f"http://127.0.0.1:{port}"
-        self.client = APIClient(api_key=api_key, host=self.host)
+        if client:
+            self.client = client
+        else:
+            self.client = APIClient(api_key=api_key, host=self.host)
 
         # Setup Logger
         self.logger = logging.getLogger(f"AIHybrid_{symbol}")
@@ -72,7 +75,7 @@ class AIHybridStrategy:
 
     def calculate_signal(self, df):
         """Calculate signal for a given dataframe (Backtesting support)."""
-        if df.empty or len(df) < 20:
+        if df.empty or len(df) < 50:
             return 'HOLD', 0.0, {}
 
         # Indicators
@@ -87,50 +90,79 @@ class AIHybridStrategy:
         df['upper'] = df['sma20'] + (2 * df['std'])
         df['lower'] = df['sma20'] - (2 * df['std'])
 
+        # ADX Calculation
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift()).abs()
+        low_close = (df['low'] - df['close'].shift()).abs()
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        df['atr'] = true_range.rolling(14).mean()
+
+        up = df['high'] - df['high'].shift(1)
+        down = df['low'].shift(1) - df['low']
+        plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+        minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+
+        # Series need to be aligned
+        plus_dm = pd.Series(plus_dm, index=df.index)
+        minus_dm = pd.Series(minus_dm, index=df.index)
+
+        tr_smooth = true_range.rolling(14).mean()
+        plus_dm_smooth = plus_dm.rolling(14).mean()
+        minus_dm_smooth = minus_dm.rolling(14).mean()
+
+        # Avoid div by zero
+        tr_smooth = tr_smooth.replace(0, np.nan)
+
+        plus_di = 100 * (plus_dm_smooth / tr_smooth)
+        minus_di = 100 * (minus_dm_smooth / tr_smooth)
+        dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
+        df['adx'] = dx.rolling(14).mean()
+
         # Regime Filter (SMA200)
         df['sma200'] = df['close'].rolling(200).mean()
 
-        last = df.iloc[-1]
+        # Use completed candle for signal (iloc[-2])
+        # Use current candle for execution (iloc[-1])
+        last_completed = df.iloc[-2]
+        current = df.iloc[-1]
+        current_price = current['close']
 
         # Volatility Sizing (Target Risk)
-        # Robust Sizing: Risk 1% of Capital (1000) per trade
-        # Stop Loss distance is roughly 2 * ATR
-        # Risk = Qty * 2 * ATR  => Qty = Risk / (2 * ATR)
-
-        atr = df['high'].diff().abs().rolling(14).mean().iloc[-1] # Simple ATR approx
-
+        atr = last_completed['atr'] if not np.isnan(last_completed['atr']) else current_price*0.01
         risk_amount = 1000.0 # 1% of 100k
-
+        qty = 50
         if atr > 0:
             qty = int(risk_amount / (2.0 * atr))
-            qty = max(1, min(qty, 500)) # Cap to reasonable limits
-        else:
-            qty = 50 # Safe default
-
-        # Note: External filters (Sector, Earnings, Breadth) are skipped in simple backtest
-        # unless mocked via client or params. Here we focus on price action.
+            qty = max(1, min(qty, 500))
 
         # Check Regime
         is_bullish_regime = True
-        if not pd.isna(last.get('sma200')) and last['close'] < last['sma200']:
+        if not pd.isna(last_completed.get('sma200')) and last_completed['close'] < last_completed['sma200']:
             is_bullish_regime = False
 
+        adx = last_completed.get('adx', 0)
+        if pd.isna(adx): adx = 0
+
         # Reversion Logic: RSI < 30 and Price < Lower BB (Oversold)
-        if last['rsi'] < self.rsi_lower and last['close'] < last['lower']:
-            avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-            # Enhanced Volume Confirmation (Stricter than average)
-            if last['volume'] > avg_vol * 1.2:
-                # Reversion can trade against trend, so maybe ignore regime or be strict?
-                # Let's say Reversion is allowed in any regime if oversold enough.
-                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+        # Added ADX < 25 for Range Regime
+        if last_completed['rsi'] < self.rsi_lower and last_completed['close'] < last_completed['lower']:
+            avg_vol = df['volume'].rolling(20).mean().iloc[-2]
+            # Enhanced Volume Confirmation
+            if last_completed['volume'] > avg_vol * 1.2:
+                 # Only take Reversion if ADX is low (Range)
+                 if adx < 25:
+                     return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last_completed['rsi'], 'close': current_price, 'quantity': qty}
 
         # Breakout Logic: RSI > 60 and Price > Upper BB
-        elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
-            avg_vol = df['volume'].rolling(20).mean().iloc[-1]
+        elif last_completed['rsi'] > self.rsi_upper and last_completed['close'] > last_completed['upper']:
+            avg_vol = df['volume'].rolling(20).mean().iloc[-2]
             # Breakout needs significant volume (2x avg)
-            # Breakout ONLY in Bullish Regime
-            if last['volume'] > avg_vol * 2.0 and is_bullish_regime:
-                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+            # Breakout ONLY in Bullish Regime and ADX rising/high
+            if last_completed['volume'] > avg_vol * 2.0 and is_bullish_regime:
+                 # Only take Breakout if ADX is high or rising (Trend)
+                 if adx > 20:
+                     return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last_completed['rsi'], 'close': current_price, 'quantity': qty}
 
         return 'HOLD', 0.0, {}
 
@@ -372,7 +404,8 @@ def generate_signal(df, client=None, symbol=None, params=None):
         rsi_lower=float(strat_params.get('rsi_lower', 30.0)),
         rsi_upper=float(strat_params.get('rsi_upper', 60.0)),
         stop_pct=float(strat_params.get('stop_pct', 1.0)),
-        sector=strat_params.get('sector', 'NIFTY 50')
+        sector=strat_params.get('sector', 'NIFTY 50'),
+        client=client
     )
 
     # Silence logger for backtest
