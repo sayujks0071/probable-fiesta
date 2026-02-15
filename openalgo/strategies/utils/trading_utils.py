@@ -36,6 +36,33 @@ def normalize_symbol(symbol):
 
     return symbol
 
+def verify_daily_prep():
+    """
+    Verify that Daily Prep has passed for today.
+    Raises SystemExit if not passed.
+    """
+    # Marker is at openalgo/.daily_prep_passed
+    # This file is at openalgo/strategies/utils/trading_utils.py
+    # So ../../.daily_prep_passed
+    marker_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../.daily_prep_passed'))
+
+    if not os.path.exists(marker_path):
+        logger.error(f"Daily Prep marker not found at {marker_path}. Run daily_prep.py first.")
+        raise SystemExit("Daily Prep NOT Passed. Trading Aborted.")
+
+    try:
+        with open(marker_path, 'r') as f:
+            ts = f.read().strip()
+        prep_time = datetime.fromisoformat(ts)
+        if prep_time.date() != datetime.now().date():
+             logger.error(f"Daily Prep marker is stale (from {prep_time}). Run daily_prep.py for today.")
+             raise SystemExit("Daily Prep stale. Trading Aborted.")
+    except Exception as e:
+        logger.error(f"Daily Prep marker invalid: {e}")
+        raise SystemExit("Daily Prep marker invalid. Trading Aborted.")
+
+    logger.info("Daily Prep Verified ✅")
+
 def is_mcx_market_open():
     """
     Check if MCX market is open (09:00 - 23:30 IST) on weekdays.

@@ -20,18 +20,19 @@ utils_dir = os.path.join(strategies_dir, 'utils')
 sys.path.insert(0, utils_dir)
 
 try:
-    from trading_utils import APIClient, PositionManager, is_market_open
+    from trading_utils import APIClient, PositionManager, is_market_open, verify_daily_prep
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.trading_utils import APIClient, PositionManager, is_market_open, verify_daily_prep
     except ImportError:
         try:
-            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open, verify_daily_prep
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            verify_daily_prep = lambda: True
             is_market_open = lambda: True
 
 # Setup Logging
@@ -250,6 +251,7 @@ class MCXMomentumStrategy:
                      self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
 
     def run(self):
+        verify_daily_prep()
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
         while True:
             if not is_market_open():

@@ -23,16 +23,16 @@ utils_dir = os.path.join(strategies_dir, 'utils')
 sys.path.insert(0, utils_dir)
 
 try:
-    from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+    from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol, verify_daily_prep
     from symbol_resolver import SymbolResolver
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+        from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol, verify_daily_prep
         from utils.symbol_resolver import SymbolResolver
     except ImportError:
         try:
-            from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+            from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol, verify_daily_prep
             from openalgo.strategies.utils.symbol_resolver import SymbolResolver
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
@@ -40,6 +40,7 @@ except ImportError:
             PositionManager = None
             SymbolResolver = None
             normalize_symbol = lambda s: s
+            verify_daily_prep = lambda: True
             is_market_open = lambda: True
             def calculate_intraday_vwap(df):
                 df = df.copy()
@@ -277,6 +278,9 @@ class SuperTrendVWAPStrategy:
         return 15.0 # Default
 
     def run(self):
+        # 1. Safety Check
+        verify_daily_prep()
+
         self.symbol = normalize_symbol(self.symbol)
         self.logger.info(f"Starting SuperTrend VWAP for {self.symbol}")
 
