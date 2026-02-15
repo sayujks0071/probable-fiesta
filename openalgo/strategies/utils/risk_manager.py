@@ -12,7 +12,7 @@ This module provides essential risk management features that MUST be used by all
 CRITICAL: All strategies MUST use this module to prevent catastrophic losses.
 
 Author: OpenAlgo Risk Management
-Version: 1.0.0
+Version: 1.0.1
 """
 
 import os

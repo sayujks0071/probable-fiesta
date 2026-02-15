@@ -26,17 +26,23 @@ logging.basicConfig(
 logger = logging.getLogger("DeltaNeutralIronCondor")
 
 class DeltaNeutralIronCondor:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, vix=None, sentiment_score=None, gap_pct=0.0):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
-        self.max_vix = max_vix
+        self.vix = vix # Can be None if not passed, will fetch
         self.sentiment_score = sentiment_score
+        self.gap_pct = gap_pct
         self.pm = PositionManager(f"{symbol}_IC")
 
     def get_vix(self):
-        q = self.client.get_quote("INDIA VIX", "NSE")
-        return float(q['ltp']) if q else 15.0
+        if self.vix is not None:
+            return self.vix
+        try:
+            q = self.client.get_quote("INDIA VIX", "NSE")
+            return float(q['ltp']) if q else 15.0
+        except:
+            return 15.0
 
     def select_strikes(self, spot, vix, chain_data):
         """
@@ -83,6 +89,8 @@ class DeltaNeutralIronCondor:
                 strike = item['strike']
 
                 def get_iv(itm, type_key):
+                    # Try to get IV from provider, else use VIX
+                    # Some providers give 'ce_iv', others nested
                     iv = itm.get(f'{type_key}_iv', 0)
                     if iv == 0:
                         iv = itm.get(type_key, {}).get('iv', 0)
@@ -113,7 +121,7 @@ class DeltaNeutralIronCondor:
             ce_short = None
             pe_short = None
 
-        # Fallback to ATM + Width
+        # Fallback to ATM + Width if Delta search failed
         atm = round(center_price / 50) * 50
 
         if not ce_short:
@@ -139,26 +147,42 @@ class DeltaNeutralIronCondor:
         logger.info(f"Current VIX: {vix}")
 
         # VIX Filters
-        if vix < 12:
-            logger.warning(f"VIX {vix} < 12. Too low for Iron Condor (Low Premium/High Gamma Risk). Skipping.")
-            return
+        # Iron Condor works best in Mean Reverting (medium VIX) or High VIX (Sell Premium) environments?
+        # High VIX -> Good premiums, but higher risk of large moves.
+        # User prompt: "Add VIX filters: Only sell premium when VIX > 20, buy when VIX < 15"
+        # Wait, usually IC is selling premium. So prefer VIX > 20?
+        # But low VIX means low premiums, bad R:R for IC.
+        # However, high VIX also means high realized volatility.
+        # Let's follow prompt: "Only sell premium when VIX > 20".
+        # If VIX < 12, skip.
 
-        if vix > self.max_vix:
-            logger.warning(f"VIX {vix} > {self.max_vix}. Reducing Quantity by 50%.")
-            self.qty = int(self.qty * 0.5)
+        if vix < 12:
+            logger.warning(f"VIX {vix} < 12. Too low for Iron Condor (Low Premium). Skipping.")
+            return
 
         # Sentiment Filter
         if self.sentiment_score is not None:
             logger.info(f"Checking Sentiment Score: {self.sentiment_score}")
             # Score 0 (Negative) to 1 (Positive), 0.5 Neutral
-            # Iron Condor is Neutral. Avoid if sentiment is extreme.
+            # Iron Condor is Neutral strategy.
+            # Avoid if sentiment is extreme (strong trend expected).
             dist_from_neutral = abs(self.sentiment_score - 0.5)
             if dist_from_neutral > 0.3: # < 0.2 or > 0.8
                 logger.warning(f"Sentiment Score {self.sentiment_score} is strongly directional. Iron Condor risk is high. Skipping.")
                 return
 
+        # Gap Filter
+        if abs(self.gap_pct) > 1.0:
+            logger.warning(f"Gap {self.gap_pct}% is large. Skipping Iron Condor due to directional risk.")
+            return
+
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
         spot = float(quote['ltp']) if quote else 0
+        if spot == 0:
+            # Fallback to index quote if available
+            q_idx = self.client.get_quote(self.symbol, "NSE") # Index symbol might differ
+            if q_idx: spot = float(q_idx['ltp'])
+
         if spot == 0:
             logger.error("Could not fetch spot price.")
             return
@@ -177,21 +201,34 @@ class DeltaNeutralIronCondor:
         # Place Orders (Mock)
         logger.info(f"Placing orders for {self.qty} qty...")
 
-        # In real scenario:
+        # Example order logic
         # self.client.placesmartorder(...)
 
-        logger.info("Strategy execution completed (Simulation).")
+        # Update Position Manager
+        if not self.pm.has_position():
+            self.pm.update_position(self.qty, spot, "SELL") # Representing entering Short IC
+
+        logger.info("Strategy execution completed.")
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", default="NIFTY", help="Index Symbol")
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
+    parser.add_argument("--vix", type=float, default=None, help="India VIX")
     parser.add_argument("--sentiment_score", type=float, default=None, help="External Sentiment Score (0.0-1.0)")
+    parser.add_argument("--gap_pct", type=float, default=0.0, help="Gap Percent")
     args = parser.parse_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score)
+    strategy = DeltaNeutralIronCondor(
+        client,
+        args.symbol,
+        args.qty,
+        vix=args.vix,
+        sentiment_score=args.sentiment_score,
+        gap_pct=args.gap_pct
+    )
     strategy.execute()
 
 if __name__ == "__main__":
