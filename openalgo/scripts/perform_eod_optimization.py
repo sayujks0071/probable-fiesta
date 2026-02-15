@@ -24,9 +24,11 @@ logger = logging.getLogger("EOD_Optimizer")
 # Tunable Parameters Definition
 # Mapping strategy names (partial) to their tunable parameters
 TUNABLE_PARAMS = {
-    'supertrend_vwap': ['threshold', 'stop_pct'],
+    'supertrend_vwap': ['adx_threshold', 'stop_pct'],
     'ai_hybrid': ['rsi_lower', 'rsi_upper', 'stop_pct'],
     'orb': ['range_minutes', 'stop_loss_pct'],
+    'gap_fade_strategy': ['threshold'],
+    'advanced_ml_momentum_strategy': ['threshold', 'stop_pct'],
     'default': ['threshold', 'stop_pct', 'stop_loss_pct', 'target_pct']
 }
 
@@ -69,8 +71,18 @@ class StrategyOptimizer:
 
                 # Entry Detection
                 if "BUY" in line or "SELL" in line:
+                    # Allow separate line entries or same line. Original logic was strict nesting or AND.
+                    # Simplified: If "BUY" is logged, it's an entry.
+                    # To be safe, check if it's an order execution log.
+                    # But dummy logs now have "Signal detected: BUY..." so it's fine.
+                    # Keeping it simple: Just count BUY/SELL lines as entries if they seem to be execution logs.
+                    # But the dummy logs generation was fixed to include "Signal" on same line.
                     if "Signal" in line or "Crossover" in line: # Avoid double counting updates
                         entries += 1
+                    # Fallback for strategies that log differently?
+                    # gap_fade logs "Signal: Buy..." -> Matches "Signal" and "Buy".
+                    # supertrend logs "VWAP Crossover Buy..." -> Matches "Crossover" and "Buy".
+                    # So strict check is fine for now given dummy logs compliance.
 
                 # Exit / PnL Detection
                 if "PnL:" in line:
@@ -105,11 +117,12 @@ class StrategyOptimizer:
                 error_free_rate = max(0, 1 - (errors / (len(lines) if len(lines) > 0 else 1)))
 
             # Score Calculation
-            # Score = (Win Rate × 0.3) + (Profit Factor × 0.3) + (Sharpe × 0.2) + (Entry Rate × 0.1) + (Error-Free Rate × 0.1)
-            # Sharpe is hard to calc from daily summary, use R:R as proxy or set to 1.0
-            sharpe_proxy = min(rr_ratio, 3.0) # Cap at 3
+            pf_scaled = min(profit_factor, 5) * 20
+            sharpe_proxy_scaled = min(rr_ratio, 5) * 20
+            entry_rate_scaled = (entries/signals * 100) if signals > 0 else 0
+            error_rate_scaled = error_free_rate * 100
 
-            score = (win_rate * 0.3) + (min(profit_factor, 10) * 10 * 0.3) + (sharpe_proxy * 20 * 0.2) + ((entries/signals if signals else 0) * 100 * 0.1) + (error_free_rate * 100 * 0.1)
+            score = (win_rate * 0.3) + (pf_scaled * 0.3) + (sharpe_proxy_scaled * 0.2) + (entry_rate_scaled * 0.1) + (error_rate_scaled * 0.1)
 
             self.metrics[strategy_name] = {
                 'symbol': symbol,
@@ -146,82 +159,109 @@ class StrategyOptimizer:
                     target_params = TUNABLE_PARAMS[key]
                     break
 
-            # 1. High Rejection Rate (> 70%) -> Lower Threshold
+            # Helper to update param
+            def update_param(content, param_name, operation, change_desc):
+                # Check class attribute: self.param = X
+                # Regex handles integer or float
+                pattern_cls = r"(self\." + param_name + r"\s*=\s*)(\d+\.?\d*)"
+                match = re.search(pattern_cls, content)
+                if match:
+                    current_val = float(match.group(2))
+                    new_val = operation(current_val)
+                    # Preserve int if original was int (heuristic: no decimal point in string match)
+                    if '.' not in match.group(2):
+                        new_val = int(new_val)
+
+                    # Smart Formatting
+                    if isinstance(new_val, float):
+                        if abs(new_val) < 0.1:
+                            val_str = f"{new_val:.4f}".rstrip('0').rstrip('.')
+                        else:
+                            val_str = f"{new_val:.2f}".rstrip('0').rstrip('.')
+                    else:
+                        val_str = str(new_val)
+
+                    content = content.replace(match.group(0), f"{match.group(1)}{val_str}")
+                    return content, f"{param_name}: {current_val} -> {val_str} ({change_desc})", True
+
+                # Check argparse: parser.add_argument('--param', ... default=X
+                # Handle single or double quotes for arg name
+                pattern_arg = r"(parser\.add_argument\(['\"]--" + param_name + r"['\"].*default=)(\d+\.?\d*)"
+                match = re.search(pattern_arg, content)
+                if match:
+                    current_val = float(match.group(2))
+                    new_val = operation(current_val)
+                    if '.' not in match.group(2):
+                         new_val = int(new_val)
+
+                    if isinstance(new_val, float):
+                        if abs(new_val) < 0.1:
+                            val_str = f"{new_val:.4f}".rstrip('0').rstrip('.')
+                        else:
+                            val_str = f"{new_val:.2f}".rstrip('0').rstrip('.')
+                    else:
+                        val_str = str(new_val)
+
+                    content = content.replace(match.group(0), f"{match.group(1)}{val_str}")
+                    return content, f"{param_name}: {current_val} -> {val_str} ({change_desc})", True
+
+                return content, None, False
+
+            # 1. High Rejection Rate (> 70%) -> Lower Threshold (Relax)
             if data['rejection'] > 70:
-                param = 'threshold'
-                if param in target_params:
-                    # Look for self.threshold = X or default=X
-                    match = re.search(r"(self\.threshold\s*=\s*)(\d+)", content)
-                    if match:
-                        current_val = int(match.group(2))
-                        new_val = max(0, current_val - 5)
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
-                        changes.append(f"threshold: {current_val} -> {new_val} (Lowered due to Rejection {data['rejection']:.1f}%)")
-                        modified = True
+                for param in ['threshold', 'adx_threshold']:
+                    if param in target_params:
+                        # Logic: Lower threshold by ~5% or 5 units
+                        op = lambda x: max(0, x - 5) if x > 1 else max(0, x * 0.95)
+                        new_content, change, ok = update_param(new_content, param, op, f"Lowered due to Rejection {data['rejection']:.1f}%")
+                        if ok:
+                            changes.append(change)
+                            modified = True
 
             # 2. Low Win Rate (< 60%) -> Tighten Filters
             if data['wr'] < 60:
                 # Tighten RSI Lower (make it lower)
                 if 'rsi_lower' in target_params:
-                     match = re.search(r"(parser\.add_argument\('--rsi_lower'.*default=)(\d+\.?\d*)", content)
-                     if match:
-                        current_val = float(match.group(2))
-                        new_val = max(10, current_val - 5)
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
-                        changes.append(f"rsi_lower: {current_val} -> {new_val} (Tightened due to WR {data['wr']:.1f}%)")
-                        modified = True
+                     op = lambda x: max(10, x - 5)
+                     new_content, change, ok = update_param(new_content, 'rsi_lower', op, f"Tightened due to WR {data['wr']:.1f}%")
+                     if ok:
+                         changes.append(change)
+                         modified = True
 
                 # Tighten Threshold (make it higher)
-                if 'threshold' in target_params and not modified: # Don't double adjust if handled by rejection
-                     match = re.search(r"(self\.threshold\s*=\s*)(\d+)", content)
-                     if match:
-                        current_val = int(match.group(2))
-                        new_val = current_val + 5
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
-                        changes.append(f"threshold: {current_val} -> {new_val} (Tightened due to WR {data['wr']:.1f}%)")
-                        modified = True
+                for param in ['threshold', 'adx_threshold']:
+                    if param in target_params and not modified:
+                         op = lambda x: x + 5 if x > 1 else x * 1.05
+                         new_content, change, ok = update_param(new_content, param, op, f"Tightened due to WR {data['wr']:.1f}%")
+                         if ok:
+                             changes.append(change)
+                             modified = True
 
             # 3. High Win Rate (> 80%) -> Relax Filters
             elif data['wr'] > 80:
                 if 'rsi_lower' in target_params:
-                     match = re.search(r"(parser\.add_argument\('--rsi_lower'.*default=)(\d+\.?\d*)", content)
-                     if match:
-                        current_val = float(match.group(2))
-                        new_val = min(40, current_val + 5)
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
-                        changes.append(f"rsi_lower: {current_val} -> {new_val} (Relaxed due to WR {data['wr']:.1f}%)")
-                        modified = True
+                     op = lambda x: min(40, x + 5)
+                     new_content, change, ok = update_param(new_content, 'rsi_lower', op, f"Relaxed due to WR {data['wr']:.1f}%")
+                     if ok:
+                         changes.append(change)
+                         modified = True
 
-                if 'threshold' in target_params:
-                     match = re.search(r"(self\.threshold\s*=\s*)(\d+)", content)
-                     if match:
-                        current_val = int(match.group(2))
-                        new_val = max(0, current_val - 5)
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
-                        changes.append(f"threshold: {current_val} -> {new_val} (Relaxed due to WR {data['wr']:.1f}%)")
-                        modified = True
+                for param in ['threshold', 'adx_threshold']:
+                    if param in target_params:
+                         op = lambda x: max(0, x - 5) if x > 1 else max(0, x * 0.95)
+                         new_content, change, ok = update_param(new_content, param, op, f"Relaxed due to WR {data['wr']:.1f}%")
+                         if ok:
+                             changes.append(change)
+                             modified = True
 
             # 4. Low R:R (< 1.5) -> Tighten Stop (reduce stop_pct)
-            if data['rr'] < 1.5 and data['wr'] < 80: # If WR is super high, maybe low RR is fine (scalping)
+            if data['rr'] < 1.5 and data['wr'] < 80:
                 if 'stop_pct' in target_params:
-                    # Regex for self.stop_pct = X or default=X
-                    # Check class attr
-                    match = re.search(r"(self\.stop_pct\s*=\s*)(\d+\.?\d*)", content)
-                    if match:
-                        current_val = float(match.group(2))
-                        new_val = max(0.5, current_val - 0.2)
-                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val:.1f}")
-                        changes.append(f"stop_pct: {current_val} -> {new_val:.1f} (Tightened due to R:R {data['rr']:.2f})")
-                        modified = True
-                    else:
-                        # Check argparse
-                        match = re.search(r"(parser\.add_argument\('--stop_pct'.*default=)(\d+\.?\d*)", content)
-                        if match:
-                             current_val = float(match.group(2))
-                             new_val = max(0.5, current_val - 0.2)
-                             new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val:.1f}")
-                             changes.append(f"stop_pct: {current_val} -> {new_val:.1f} (Tightened due to R:R {data['rr']:.2f})")
-                             modified = True
+                    op = lambda x: max(0.5, x - 0.2)
+                    new_content, change, ok = update_param(new_content, 'stop_pct', op, f"Tightened due to R:R {data['rr']:.2f}")
+                    if ok:
+                         changes.append(change)
+                         modified = True
 
             if modified:
                 # Add comment with date
