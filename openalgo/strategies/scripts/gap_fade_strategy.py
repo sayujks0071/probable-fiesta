@@ -14,6 +14,7 @@ if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 
 # Configure logging
 logging.basicConfig(
@@ -36,6 +37,11 @@ class GapFadeStrategy:
 
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
+
+        # Risk Check
+        if not self.pm.check_risk_limits():
+            logger.error("Risk Limit Hit. Exiting.")
+            return
 
         # 1. Get Previous Close
         # Using history API for last 2 days
@@ -98,10 +104,26 @@ class GapFadeStrategy:
 
         # 3. Select Option Strike (ATM)
         atm = round(current_price / 50) * 50
-        strike_symbol = f"{self.symbol}{today.strftime('%y%b').upper()}{atm}{option_type}" # Symbol format varies
-        # Simplified: Just log the intent
 
-        logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade)")
+        # Use Resolver
+        resolver = SymbolResolver()
+        config = {
+            'underlying': self.symbol,
+            'type': 'OPT',
+            'option_type': option_type,
+            'strike_criteria': 'ATM', # We calculated ATM but resolver does it too.
+            'expiry_preference': 'WEEKLY',
+            'exchange': 'NFO'
+        }
+        # Use resolver's ATM logic which is robust (spot based) or force ATM
+        # Resolver.get_tradable_option_symbol takes spot_price
+        strike_symbol = resolver.get_tradable_option_symbol(config, spot_price=current_price)
+
+        if not strike_symbol:
+            logger.error(f"Could not resolve option symbol for {self.symbol} {option_type}")
+            return
+
+        logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade) -> {strike_symbol}")
 
         # 4. Check VIX for Sizing (inherited from general rules)
         vix_quote = self.client.get_quote("INDIA VIX", "NSE")

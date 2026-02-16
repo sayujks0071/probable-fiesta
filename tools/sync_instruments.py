@@ -21,6 +21,9 @@ except ImportError:
 
 def main():
     print("🔄 Syncing instruments...")
+    # Ensure sys.argv is passed or handled if fetch_instruments relies on it
+    # daily_prep.fetch_instruments checks sys.argv for '--mock'
+
     try:
         fetch_instruments()
         print("✅ Instruments synced.")

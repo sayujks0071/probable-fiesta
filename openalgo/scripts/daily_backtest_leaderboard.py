@@ -11,6 +11,9 @@ import importlib.util
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.append(repo_root)
 
+# Import SymbolResolver
+from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+
 # Import Backtest Engine
 try:
     from openalgo.strategies.utils.simple_backtest_engine import SimpleBacktestEngine
@@ -22,49 +25,23 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Leaderboard")
 
-STRATEGIES = [
-    {
-        "name": "SuperTrend_VWAP",
-        "file": "openalgo/strategies/scripts/supertrend_vwap_strategy.py",
-        "symbol": "NIFTY", # Default test symbol
-        "exchange": "NSE_INDEX"
-    },
-    {
-        "name": "MCX_Momentum",
-        "file": "openalgo/strategies/scripts/mcx_commodity_momentum_strategy.py",
-        "symbol": "SILVERMIC", # Will try to resolve if needed, but engine needs raw symbol usually?
-                               # Engine loads data. We can use a proxy symbol like 'SILVER' if using mock data,
-                               # but usually specific symbol needed.
-        "exchange": "MCX"
-    },
-    {
-        "name": "AI_Hybrid",
-        "file": "openalgo/strategies/scripts/ai_hybrid_reversion_breakout.py",
-        "symbol": "NIFTY",
-        "exchange": "NSE_INDEX"
-    },
-    {
-        "name": "ML_Momentum",
-        "file": "openalgo/strategies/scripts/advanced_ml_momentum_strategy.py",
-        "symbol": "NIFTY",
-        "exchange": "NSE_INDEX"
-    }
-]
+CONFIG_FILE = os.path.join(repo_root, 'openalgo/strategies/active_strategies.json')
+STRATEGIES_DIR = os.path.join(repo_root, 'openalgo/strategies/scripts')
 
 TUNING_CONFIG = {
-    "SuperTrend_VWAP": {
+    "supertrend_vwap_strategy": {
         "stop_pct": [1.5, 2.0],
         "threshold": [150, 160]
     },
-    "MCX_Momentum": {
+    "mcx_commodity_momentum_strategy": {
         "adx_threshold": [20, 30],
         "period_rsi": [10, 14]
     },
-    "AI_Hybrid": {
+    "ai_hybrid_reversion_breakout": {
         "rsi_lower": [25, 35],
         "rsi_upper": [60, 70]
     },
-    "ML_Momentum": {
+    "advanced_ml_momentum_strategy": {
         "threshold": [0.01, 0.02]
     }
 }
@@ -87,9 +64,13 @@ def generate_variants(base_name, grid):
 
 def load_strategy_module(filepath):
     """Load a strategy script as a module."""
+    if not os.path.exists(filepath):
+        logger.warning(f"Strategy file not found: {filepath}")
+        return None
+
     try:
         module_name = os.path.basename(filepath).replace('.py', '')
-        spec = importlib.util.spec_from_file_location(module_name, os.path.join(repo_root, filepath))
+        spec = importlib.util.spec_from_file_location(module_name, filepath)
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
@@ -98,16 +79,72 @@ def load_strategy_module(filepath):
         logger.error(f"Failed to load strategy {filepath}: {e}")
         return None
 
+def get_active_strategies():
+    strategies = []
+
+    if not os.path.exists(CONFIG_FILE):
+        logger.warning(f"Config file not found: {CONFIG_FILE}")
+        return strategies
+
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+            content = f.read()
+            if not content.strip():
+                return strategies
+            configs = json.loads(content)
+    except Exception as e:
+        logger.error(f"Failed to load config: {e}")
+        return strategies
+
+    resolver = SymbolResolver()
+
+    for strat_id, config in configs.items():
+        strat_name = config.get('strategy')
+        if not strat_name: continue
+
+        file_path = os.path.join(STRATEGIES_DIR, f"{strat_name}.py")
+
+        # Resolve Symbol
+        res = resolver.resolve(config)
+        symbol = None
+
+        if isinstance(res, dict):
+            symbol = res.get('sample_symbol') # Use sample for backtest if option
+        else:
+            symbol = res
+
+        if not symbol:
+            logger.warning(f"Skipping {strat_id}: Could not resolve symbol")
+            continue
+
+        strategies.append({
+            "name": strat_id, # Use Config ID as name (e.g. ORB_NIFTY)
+            "strategy_type": strat_name, # Script name (e.g. orb_strategy)
+            "file": file_path,
+            "symbol": symbol,
+            "exchange": config.get('exchange', 'NSE'),
+            "params": config.get('params', {})
+        })
+
+    return strategies
+
 def run_leaderboard():
+    # 1. Load Strategies
+    strategies = get_active_strategies()
+
+    if not strategies:
+        logger.warning("No active strategies found to backtest.")
+        return
+
     engine = SimpleBacktestEngine(initial_capital=100000.0)
 
-    start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
     end_date = datetime.now().strftime("%Y-%m-%d")
 
     results = []
 
-    for strat_config in STRATEGIES:
-        logger.info(f"Backtesting {strat_config['name']}...")
+    for strat_config in strategies:
+        logger.info(f"Backtesting {strat_config['name']} ({strat_config['symbol']})...")
 
         module = load_strategy_module(strat_config['file'])
         if not module:
@@ -118,39 +155,42 @@ def run_leaderboard():
             continue
 
         # Determine variants to run
-        runs = [{"name": strat_config['name'], "params": None}]
+        # Include the base config from active_strategies.json
+        runs = [{"name": strat_config['name'], "params": strat_config['params']}]
 
-        if strat_config['name'] in TUNING_CONFIG:
-            variants = generate_variants(strat_config['name'], TUNING_CONFIG[strat_config['name']])
-            # Limit to top 3 variants if too many? For now run all (small grid)
+        # Add tuning variants if configured
+        strat_type = strat_config['strategy_type']
+        if strat_type in TUNING_CONFIG:
+            variants = generate_variants(strat_config['name'], TUNING_CONFIG[strat_type])
             runs.extend(variants)
 
         for run in runs:
             logger.info(f"  > Variant: {run['name']} Params: {run['params']}")
 
-            # Monkey patch module to accept params if needed, or pass via run_backtest extension?
-            # SimpleBacktestEngine.run_backtest calls module.generate_signal(..., symbol=symbol)
-            # It doesn't pass 'params'.
-            # We need to wrap the module or monkey patch generate_signal.
-
             original_gen = module.generate_signal
 
             # Create a partial/wrapper
             params = run['params']
-            if params:
-                def wrapped_gen(df, client=None, symbol=None):
-                    return original_gen(df, client, symbol, params=params)
 
-                # Create a temporary object acting as module
-                class ModuleWrapper:
-                    pass
-                wrapper = ModuleWrapper()
-                wrapper.generate_signal = wrapped_gen
-                wrapper.ATR_SL_MULTIPLIER = getattr(module, 'ATR_SL_MULTIPLIER', 1.5)
-                wrapper.ATR_TP_MULTIPLIER = getattr(module, 'ATR_TP_MULTIPLIER', 2.5)
-                target_module = wrapper
-            else:
-                target_module = module
+            # Helper to wrap
+            def make_wrapper(func, p, mod):
+                def wrapped(df, client=None, symbol=None):
+                    return func(df, client, symbol, params=p)
+                return wrapped
+
+            wrapped_gen = make_wrapper(original_gen, params, module)
+
+            # Create a temporary object acting as module
+            class ModuleWrapper:
+                pass
+            wrapper = ModuleWrapper()
+            wrapper.generate_signal = wrapped_gen
+            # Copy attributes
+            wrapper.ATR_SL_MULTIPLIER = getattr(module, 'ATR_SL_MULTIPLIER', 1.5)
+            wrapper.ATR_TP_MULTIPLIER = getattr(module, 'ATR_TP_MULTIPLIER', 2.5)
+            wrapper.TIME_STOP_BARS = getattr(module, 'TIME_STOP_BARS', None)
+
+            target_module = wrapper
 
             try:
                 # Run Backtest

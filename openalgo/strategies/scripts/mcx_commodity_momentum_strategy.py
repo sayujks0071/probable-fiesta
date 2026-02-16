@@ -21,17 +21,21 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from symbol_resolver import SymbolResolver
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.symbol_resolver import SymbolResolver
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            SymbolResolver = None
             is_market_open = lambda: True
 
 # Setup Logging
@@ -271,7 +275,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
@@ -296,17 +300,6 @@ if __name__ == "__main__":
 
     # Try to resolve from underlying using SymbolResolver
     if not symbol and args.underlying:
-        try:
-            from symbol_resolver import SymbolResolver
-        except ImportError:
-            try:
-                from utils.symbol_resolver import SymbolResolver
-            except ImportError:
-                try:
-                    from openalgo.strategies.utils.symbol_resolver import SymbolResolver
-                except ImportError:
-                    SymbolResolver = None
-
         if SymbolResolver:
             resolver = SymbolResolver()
             res = resolver.resolve({'underlying': args.underlying, 'type': 'FUT', 'exchange': 'MCX'})

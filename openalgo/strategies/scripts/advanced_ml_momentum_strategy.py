@@ -22,18 +22,22 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from symbol_resolver import SymbolResolver
 except ImportError:
     try:
         # Try absolute import
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.symbol_resolver import SymbolResolver
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            SymbolResolver = None
             is_market_open = lambda: True
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -246,6 +250,7 @@ class MLMomentumStrategy:
 def run_strategy():
     parser = argparse.ArgumentParser(description='ML Momentum Strategy')
     parser.add_argument('--symbol', type=str, help='Stock Symbol')
+    parser.add_argument('--underlying', type=str, help='Underlying Asset')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
     parser.add_argument('--threshold', type=float, default=0.01, help='ROC Threshold')
@@ -255,8 +260,20 @@ def run_strategy():
     
     # Use command-line args if provided, otherwise fall back to environment variables
     symbol = args.symbol or os.getenv('SYMBOL')
+
+    # Resolve from Underlying if symbol missing
+    if not symbol and args.underlying:
+        if SymbolResolver:
+            resolver = SymbolResolver()
+            res = resolver.resolve({'underlying': args.underlying, 'type': 'EQUITY', 'exchange': 'NSE'})
+            if res:
+                symbol = res
+                print(f"Resolved {args.underlying} -> {symbol}")
+        else:
+            print("Warning: SymbolResolver not available, cannot resolve underlying.")
+
     if not symbol:
-        print("ERROR: --symbol argument or SYMBOL environment variable is required")
+        print("ERROR: --symbol or --underlying argument (or SYMBOL env var) is required")
         parser.print_help()
         sys.exit(1)
     

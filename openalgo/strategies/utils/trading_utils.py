@@ -130,6 +130,7 @@ class PositionManager:
         self.position = 0
         self.entry_price = 0.0
         self.pnl = 0.0
+        self.max_daily_loss = float(os.getenv('MAX_DAILY_LOSS', -5000.0)) # Default -5000
 
         self.load_state()
 
@@ -141,7 +142,21 @@ class PositionManager:
                     self.position = data.get('position', 0)
                     self.entry_price = data.get('entry_price', 0.0)
                     self.pnl = data.get('pnl', 0.0)
-                    logger.info(f"Loaded state for {self.symbol}: Pos={self.position} @ {self.entry_price}")
+                    # Check if date mismatch? PnL resets daily usually?
+                    # "Daily-Ready" implies PnL reset daily.
+                    # We check last_updated date.
+                    last_updated = data.get('last_updated', '')
+                    if last_updated:
+                        try:
+                            last_date = datetime.strptime(last_updated, "%Y-%m-%d %H:%M:%S").date()
+                            if last_date != datetime.now().date():
+                                logger.info(f"Resetting PnL for new day (Last: {last_date})")
+                                self.pnl = 0.0
+                                # Position? Depends if we carry over. Assuming intraday mainly or persistent.
+                                # If strategy is persistent, keep position.
+                        except: pass
+
+                    logger.info(f"Loaded state for {self.symbol}: Pos={self.position} @ {self.entry_price}, PnL={self.pnl}")
             except Exception as e:
                 logger.error(f"Failed to load state for {self.symbol}: {e}")
 
@@ -158,11 +173,24 @@ class PositionManager:
         except Exception as e:
             logger.error(f"Failed to save state for {self.symbol}: {e}")
 
+    def check_risk_limits(self):
+        """Check if trading should be halted."""
+        if self.pnl < self.max_daily_loss:
+            logger.error(f"MAX DAILY LOSS HIT: {self.pnl} < {self.max_daily_loss}. Halted.")
+            return False
+        return True
+
     def update_position(self, qty, price, side):
         """
         Update position state.
         side: 'BUY' or 'SELL'
         """
+        if not self.check_risk_limits() and self.position == 0:
+             # Only allow closing positions if limit hit
+             logger.warning("Risk Limit Hit. Only closing allowed.")
+             # But this function updates state, it doesn't block order placement directly (strategy calls it AFTER).
+             # Strategy must call check_risk_limits BEFORE placing order.
+             pass
         side = side.upper()
 
         if side == 'BUY':

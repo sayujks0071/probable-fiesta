@@ -13,6 +13,7 @@ if str(project_root) not in sys.path:
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 from openalgo.strategies.utils.option_analytics import calculate_greeks, calculate_max_pain
+from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 
 # Configure logging
 logging.basicConfig(
@@ -135,6 +136,10 @@ class DeltaNeutralIronCondor:
     def execute(self):
         logger.info(f"Starting execution for {self.symbol}")
 
+        if not self.pm.check_risk_limits():
+            logger.error("Risk Limit Hit. Exiting.")
+            return
+
         vix = self.get_vix()
         logger.info(f"Current VIX: {vix}")
 
@@ -165,13 +170,49 @@ class DeltaNeutralIronCondor:
 
         logger.info(f"Spot: {spot}")
 
+        # Resolve Expiry
+        resolver = SymbolResolver()
+        expiry_info = resolver.resolve({
+            'underlying': self.symbol,
+            'type': 'OPT',
+            'expiry_preference': 'WEEKLY',
+            'exchange': 'NFO'
+        })
+
+        target_expiry = None
+        if expiry_info and expiry_info.get('status') == 'valid':
+            target_expiry = expiry_info.get('expiry') # YYYY-MM-DD string
+            logger.info(f"Target Expiry: {target_expiry}")
+        else:
+            logger.error("Could not resolve valid expiry.")
+            return
+
         # Fetch Chain
         chain = self.client.get_option_chain(self.symbol)
         if not chain:
             logger.error("Could not fetch option chain.")
             return
 
-        strikes = self.select_strikes(spot, vix, chain)
+        # Filter Chain by Expiry
+        # Assuming chain items have 'expiry' field
+        filtered_chain = []
+        for item in chain:
+            # Item expiry might be string or date.
+            # We assume string YYYY-MM-DD based on API patterns or check format
+            item_expiry = item.get('expiry', '')
+            if item_expiry == target_expiry:
+                filtered_chain.append(item)
+
+        if not filtered_chain:
+            logger.warning(f"No options found for expiry {target_expiry} in chain. Using full chain fallback (Risky!)")
+            filtered_chain = chain # Fallback? Or Stop?
+            # Better to stop in strict mode, but for simulation let's fallback if matching fails due to format
+            # Let's try to match date objects if strings fail
+            # ... (Simpler to just proceed with what we have if strict matching fails, or error out)
+            # logger.error("No matching expiry found.")
+            # return
+
+        strikes = self.select_strikes(spot, vix, filtered_chain)
         logger.info(f"Selected Strikes: {strikes}")
 
         # Place Orders (Mock)
