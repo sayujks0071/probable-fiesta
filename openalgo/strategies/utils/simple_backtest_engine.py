@@ -68,6 +68,7 @@ class Position:
     stop_loss: float
     take_profit: float
     atr: float
+    metadata: Dict[str, Any] = None
 
 class SimpleBacktestEngine:
     """
@@ -486,7 +487,8 @@ class SimpleBacktestEngine:
                             side=action,
                             stop_loss=stop_loss,
                             take_profit=take_profit,
-                            atr=atr
+                            atr=atr,
+                            metadata=details
                         )
                         
                         self.positions.append(position)
