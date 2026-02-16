@@ -117,7 +117,7 @@ def fetch_instruments():
     os.makedirs(DATA_DIR, exist_ok=True)
     csv_path = os.path.join(DATA_DIR, 'instruments.csv')
 
-    api_key = os.getenv('OPENALGO_APIKEY')
+    api_key = os.getenv('OPENALGO_APIKEY', 'demo_key')
     host = os.getenv('OPENALGO_HOST', 'http://127.0.0.1:5001')
 
     # Try multiple endpoints or exchanges

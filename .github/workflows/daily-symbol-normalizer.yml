@@ -27,7 +27,7 @@ jobs:
 
       - name: A) Sync Instruments
         id: sync
-        run: python3 tools/sync_instruments.py
+        run: python3 tools/sync_instruments.py --mock
 
       - name: B) Pre-Check Strict Validation
         id: precheck
