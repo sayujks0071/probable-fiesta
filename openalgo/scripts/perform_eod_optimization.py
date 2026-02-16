@@ -27,6 +27,7 @@ TUNABLE_PARAMS = {
     'supertrend_vwap': ['threshold', 'stop_pct'],
     'ai_hybrid': ['rsi_lower', 'rsi_upper', 'stop_pct'],
     'orb': ['range_minutes', 'stop_loss_pct'],
+    'mcx_commodity_momentum': ['adx_threshold'],
     'default': ['threshold', 'stop_pct', 'stop_loss_pct', 'target_pct']
 }
 
@@ -181,6 +182,16 @@ class StrategyOptimizer:
                         changes.append(f"threshold: {current_val} -> {new_val} (Tightened due to WR {data['wr']:.1f}%)")
                         modified = True
 
+                # Tighten ADX Threshold (Increase it)
+                if 'adx_threshold' in target_params:
+                     match = re.search(r"(parser\.add_argument\('--adx_threshold'.*default=)(\d+)", content)
+                     if match:
+                        current_val = int(match.group(2))
+                        new_val = min(50, current_val + 2)
+                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
+                        changes.append(f"adx_threshold: {current_val} -> {new_val} (Tightened due to WR {data['wr']:.1f}%)")
+                        modified = True
+
             # 3. High Win Rate (> 80%) -> Relax Filters
             elif data['wr'] > 80:
                 if 'rsi_lower' in target_params:
@@ -199,6 +210,15 @@ class StrategyOptimizer:
                         new_val = max(0, current_val - 5)
                         new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
                         changes.append(f"threshold: {current_val} -> {new_val} (Relaxed due to WR {data['wr']:.1f}%)")
+                        modified = True
+
+                if 'adx_threshold' in target_params:
+                     match = re.search(r"(parser\.add_argument\('--adx_threshold'.*default=)(\d+)", content)
+                     if match:
+                        current_val = int(match.group(2))
+                        new_val = max(15, current_val - 2)
+                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
+                        changes.append(f"adx_threshold: {current_val} -> {new_val} (Relaxed due to WR {data['wr']:.1f}%)")
                         modified = True
 
             # 4. Low R:R (< 1.5) -> Tighten Stop (reduce stop_pct)
