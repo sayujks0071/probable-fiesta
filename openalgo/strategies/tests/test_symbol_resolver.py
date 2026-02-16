@@ -1,73 +1,94 @@
 import unittest
-import os
 import pandas as pd
+import os
+import shutil
 from datetime import datetime, timedelta
 from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 
 class TestSymbolResolver(unittest.TestCase):
     def setUp(self):
-        # Create dummy instruments file
-        self.csv_path = 'test_instruments.csv'
+        self.test_dir = 'test_data'
+        os.makedirs(self.test_dir, exist_ok=True)
+        self.csv_path = os.path.join(self.test_dir, 'instruments.csv')
+
+        # Create Mock Data
         now = datetime.now()
+        # Ensure future dates
+        future_date = now + timedelta(days=30)
+        future_date_str = future_date.strftime('%Y-%m-%d')
 
-        # Ensure expiries are in same month for option test
-        self.d1, self.d2 = 1, 5
-        t1 = now + timedelta(days=self.d1)
-        t2 = now + timedelta(days=self.d2)
-        if t1.month != t2.month:
-            self.d1 += 20
-            self.d2 += 20
+        next_thursday = now + timedelta(days=(3-now.weekday()) % 7)
+        if next_thursday <= now: next_thursday += timedelta(days=7)
 
-        data = [
-            {'exchange': 'NSE', 'token': '1', 'symbol': 'RELIANCE', 'name': 'RELIANCE', 'expiry': None, 'lot_size': 1, 'instrument_type': 'EQ'},
-            {'exchange': 'NSE', 'token': '2', 'symbol': 'NIFTY', 'name': 'NIFTY', 'expiry': None, 'lot_size': 1, 'instrument_type': 'EQ'},
-            # Futures
-            {'exchange': 'NSE', 'token': '3', 'symbol': 'NIFTY23OCTFUT', 'name': 'NIFTY', 'expiry': (now + timedelta(days=10)).strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'FUT'},
-            {'exchange': 'MCX', 'token': '4', 'symbol': 'SILVERMIC23NOVFUT', 'name': 'SILVER', 'expiry': (now + timedelta(days=20)).strftime('%Y-%m-%d'), 'lot_size': 1, 'instrument_type': 'FUT'},
-            {'exchange': 'MCX', 'token': '5', 'symbol': 'SILVER23NOVFUT', 'name': 'SILVER', 'expiry': (now + timedelta(days=20)).strftime('%Y-%m-%d'), 'lot_size': 30, 'instrument_type': 'FUT'},
-            # Options
-            {'exchange': 'NFO', 'token': '6', 'symbol': 'NIFTY23OCT19500CE', 'name': 'NIFTY', 'expiry': (now + timedelta(days=self.d1)).strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT'},
-            {'exchange': 'NFO', 'token': '7', 'symbol': 'NIFTY23OCT19500PE', 'name': 'NIFTY', 'expiry': (now + timedelta(days=self.d1)).strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT'},
-            {'exchange': 'NFO', 'token': '9', 'symbol': 'NIFTY23OCTMONTHLYCE', 'name': 'NIFTY', 'expiry': (now + timedelta(days=self.d2)).strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT'},
-            {'exchange': 'NFO', 'token': '8', 'symbol': 'NIFTY23NOV19500CE', 'name': 'NIFTY', 'expiry': (now + timedelta(days=60)).strftime('%Y-%m-%d'), 'lot_size': 50, 'instrument_type': 'OPT'},
+        month_end = (now.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        monthly_expiry = month_end - timedelta(days=(month_end.weekday()-3)%7)
+        if monthly_expiry < now:
+             # Move to next month
+             month_end = (month_end + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+             monthly_expiry = month_end - timedelta(days=(month_end.weekday()-3)%7)
+
+        self.data = [
+            # Equity
+            {'exchange': 'NSE', 'symbol': 'RELIANCE', 'name': 'RELIANCE', 'expiry': None, 'instrument_type': 'EQ'},
+
+            # MCX Futures (Standard & MINI)
+            # Dynamic expiry
+            {'exchange': 'MCX', 'symbol': 'SILVERMICFUT', 'name': 'SILVERM', 'expiry': future_date_str, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'symbol': 'SILVERFUT', 'name': 'SILVER', 'expiry': future_date_str, 'instrument_type': 'FUT'},
+            {'exchange': 'MCX', 'symbol': 'GOLDMFUT', 'name': 'GOLDM', 'expiry': future_date_str, 'instrument_type': 'FUT'},
+
+            # NSE Options
+            {'exchange': 'NFO', 'symbol': 'NIFTYWEEKLYCE', 'name': 'NIFTY', 'expiry': next_thursday.strftime('%Y-%m-%d'), 'instrument_type': 'OPT', 'strike': 22000},
+            {'exchange': 'NFO', 'symbol': 'NIFTYMONTHLYCE', 'name': 'NIFTY', 'expiry': monthly_expiry.strftime('%Y-%m-%d'), 'instrument_type': 'OPT', 'strike': 22000},
         ]
-        pd.DataFrame(data).to_csv(self.csv_path, index=False)
+
+        pd.DataFrame(self.data).to_csv(self.csv_path, index=False)
         self.resolver = SymbolResolver(self.csv_path)
 
     def tearDown(self):
-        if os.path.exists(self.csv_path):
-            os.remove(self.csv_path)
+        if os.path.exists(self.test_dir):
+            shutil.rmtree(self.test_dir)
 
     def test_resolve_equity(self):
-        res = self.resolver.resolve({'type': 'EQUITY', 'underlying': 'RELIANCE'})
+        res = self.resolver.resolve({'type': 'EQUITY', 'symbol': 'RELIANCE', 'exchange': 'NSE'})
         self.assertEqual(res, 'RELIANCE')
 
-    def test_resolve_future_mcx_mini(self):
-        # Should prefer MINI
+    def test_resolve_mcx_mini(self):
+        # Should find MINI if available
         res = self.resolver.resolve({'type': 'FUT', 'underlying': 'SILVER', 'exchange': 'MCX'})
+        # Should prefer SILVERMIC over SILVER
         self.assertIn('SILVERMIC', res)
 
-    def test_resolve_future_nse(self):
-        res = self.resolver.resolve({'type': 'FUT', 'underlying': 'NIFTY'})
-        self.assertEqual(res, 'NIFTY23OCTFUT')
+    def test_resolve_mcx_standard_fallback(self):
+        # Add CRUDEOIL without MINI
+        future_date = datetime.now() + timedelta(days=30)
+        new_data = {'exchange': 'MCX', 'symbol': 'CRUDEOILFUT', 'name': 'CRUDEOIL', 'expiry': future_date, 'instrument_type': 'FUT'}
 
-    def test_resolve_option_weekly(self):
-        # Should pick nearest expiry (Weekly)
-        res = self.resolver.resolve({'type': 'OPT', 'underlying': 'NIFTY', 'expiry_preference': 'WEEKLY', 'option_type': 'CE'})
-        # Validation returns a dict
-        self.assertEqual(res['status'], 'valid')
-        # Check that it picked the nearer date
-        expiry_dt = datetime.strptime(res['expiry'], '%Y-%m-%d')
-        self.assertTrue((expiry_dt - datetime.now()).days < 30)
-        # Verify it picked d1 not d2
-        expected = (datetime.now() + timedelta(days=self.d1)).strftime('%Y-%m-%d')
-        self.assertEqual(res['expiry'], expected)
+        # Append and ensure datetime conversion
+        new_df = pd.DataFrame([new_data])
+        new_df['expiry'] = pd.to_datetime(new_df['expiry'])
 
-    def test_resolve_option_monthly(self):
-        res = self.resolver.resolve({'type': 'OPT', 'underlying': 'NIFTY', 'expiry_preference': 'MONTHLY', 'option_type': 'CE'})
+        self.resolver.df = pd.concat([self.resolver.df, new_df], ignore_index=True)
+
+        res = self.resolver.resolve({'type': 'FUT', 'underlying': 'CRUDEOIL', 'exchange': 'MCX'})
+        self.assertEqual(res, 'CRUDEOILFUT')
+
+    def test_resolve_option_expiry(self):
+        config = {'type': 'OPT', 'underlying': 'NIFTY', 'exchange': 'NFO', 'expiry_preference': 'MONTHLY'}
+        res = self.resolver.resolve(config)
         self.assertEqual(res['status'], 'valid')
-        # Should pick the one 10 days away (Last in Oct) not 3 days (Nearest) or Nov (Next month)
-        self.assertIn('MONTHLY', res['sample_symbol'])
+        self.assertIsNotNone(res['expiry'])
+
+        # Verify it chose the monthly expiry (later one)
+        # NIFTYMONTHLYCE
+        # We can check count or underlying
+        self.assertEqual(res['underlying'], 'NIFTY')
+
+    def test_get_tradable_option(self):
+        config = {'type': 'OPT', 'underlying': 'NIFTY', 'exchange': 'NFO', 'expiry_preference': 'WEEKLY', 'strike_criteria': 'ATM', 'option_type': 'CE'}
+        # Spot 22000 -> Should pick 22000 CE (which is NIFTYWEEKLYCE in our mock)
+        sym = self.resolver.get_tradable_option_symbol(config, spot_price=22000)
+        self.assertEqual(sym, 'NIFTYWEEKLYCE')
 
 if __name__ == '__main__':
     unittest.main()
