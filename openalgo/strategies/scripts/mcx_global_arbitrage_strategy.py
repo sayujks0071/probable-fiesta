@@ -21,15 +21,16 @@ if str(utils_path) not in sys.path:
     sys.path.insert(0, str(utils_path))
 
 try:
-    from trading_utils import APIClient
+    from trading_utils import APIClient, is_mcx_market_open
     from symbol_resolver import SymbolResolver
 except ImportError:
     try:
-        from openalgo.strategies.utils.trading_utils import APIClient
+        from openalgo.strategies.utils.trading_utils import APIClient, is_mcx_market_open
         from openalgo.strategies.utils.symbol_resolver import SymbolResolver
     except ImportError:
         APIClient = None
         SymbolResolver = None
+        is_mcx_market_open = lambda: True
 
 # Configuration
 SYMBOL = os.getenv('SYMBOL', None)
@@ -229,6 +230,11 @@ class MCXGlobalArbitrageStrategy:
         logger.info(f"Starting MCX Global Arbitrage Strategy for {self.symbol} vs {self.global_symbol}")
         
         while True:
+            if not is_mcx_market_open():
+                logger.info("MCX Market is closed. Sleeping...")
+                time.sleep(300)
+                continue
+
             if self.fetch_data():
                 self.check_signals()
             time.sleep(60)
