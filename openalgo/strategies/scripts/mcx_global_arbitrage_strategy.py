@@ -21,15 +21,19 @@ if str(utils_path) not in sys.path:
     sys.path.insert(0, str(utils_path))
 
 try:
-    from trading_utils import APIClient
+    from trading_utils import APIClient, is_market_open
     from symbol_resolver import SymbolResolver
+    from risk_manager import RiskManager
 except ImportError:
     try:
-        from openalgo.strategies.utils.trading_utils import APIClient
+        from openalgo.strategies.utils.trading_utils import APIClient, is_market_open
         from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+        from openalgo.strategies.utils.risk_manager import RiskManager
     except ImportError:
         APIClient = None
         SymbolResolver = None
+        RiskManager = None
+        is_market_open = lambda: True
 
 # Configuration
 SYMBOL = os.getenv('SYMBOL', None)
@@ -58,6 +62,9 @@ class MCXGlobalArbitrageStrategy:
         self.api_client = api_client
         self.last_trade_time = 0
         self.cooldown_seconds = 300
+
+        # Risk Manager
+        self.rm = RiskManager(strategy_name="MCX_Global_Arbitrage", capital=100000) if RiskManager else None
 
         # Session Reference Points (Opening Price of the session/day)
         self.session_ref_mcx = None
@@ -172,8 +179,15 @@ class MCXGlobalArbitrageStrategy:
                 self.exit(side, current['mcx_price'], "Convergence reached")
 
     def entry(self, side, price, reason):
+        # Risk Check
+        if self.rm and not self.rm.can_trade(self.symbol, price):
+            logger.warning("Risk Manager rejected trade.")
+            return
+
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
         
+        quantity = 1 # Default
+
         order_placed = False
         if self.api_client:
             try:
@@ -184,23 +198,29 @@ class MCXGlobalArbitrageStrategy:
                     exchange="MCX",
                     price_type="MARKET",
                     product="MIS",
-                    quantity=1,
-                    position_size=1
+                    quantity=quantity,
+                    position_size=quantity
                 )
                 logger.info(f"[ENTRY] Order placed: {side} {self.symbol} @ {price:.2f}")
                 order_placed = True
+
+                if self.rm:
+                    self.rm.record_trade(self.symbol, side, quantity, price)
+
             except Exception as e:
                 logger.error(f"[ENTRY] Order placement failed: {e}")
         else:
             logger.warning(f"[ENTRY] No API client available - signal logged but order not placed")
         
         if order_placed or not self.api_client: # Assume success if no client (testing)
-            self.position = 1 if side == "BUY" else -1
+            self.position = quantity if side == "BUY" else -quantity
             self.last_trade_time = time.time()
 
     def exit(self, side, price, reason):
         logger.info(f"SIGNAL: {side} {self.symbol} at {price:.2f} | Reason: {reason}")
         
+        quantity = abs(self.position)
+
         order_placed = False
         if self.api_client:
             try:
@@ -211,11 +231,16 @@ class MCXGlobalArbitrageStrategy:
                     exchange="MCX",
                     price_type="MARKET",
                     product="MIS",
-                    quantity=abs(self.position),
+                    quantity=quantity,
                     position_size=0
                 )
                 logger.info(f"[EXIT] Order placed: {side} {self.symbol} @ {price:.2f}")
                 order_placed = True
+
+                if self.rm:
+                    # Record exit (opposite side of entry, effectively closing)
+                    self.rm.record_trade(self.symbol, side, quantity, price)
+
             except Exception as e:
                 logger.error(f"[EXIT] Order placement failed: {e}")
         else:
@@ -229,6 +254,11 @@ class MCXGlobalArbitrageStrategy:
         logger.info(f"Starting MCX Global Arbitrage Strategy for {self.symbol} vs {self.global_symbol}")
         
         while True:
+            if not is_market_open():
+                 logger.info("Market Closed. Sleeping...")
+                 time.sleep(300)
+                 continue
+
             if self.fetch_data():
                 self.check_signals()
             time.sleep(60)

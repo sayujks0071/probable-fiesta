@@ -193,22 +193,34 @@ class MCXMomentumStrategy:
             has_position = self.pm.has_position()
 
         # Multi-Factor Checks
-        seasonality_ok = self.params.get('seasonality_score', 50) > 40
-        global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
-        usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
+        seasonality_score = self.params.get('seasonality_score', 50)
+        global_align_score = self.params.get('global_alignment_score', 50)
+        usd_volatility = self.params.get('usd_inr_volatility', 0)
+
+        seasonality_ok = seasonality_score > 40
+        global_alignment_ok = global_align_score >= 40
+        usd_vol_high = usd_volatility > 1.0
 
         # Adjust Position Size
-        base_qty = 1
+        base_qty = 1 # Default
+
+        # Apply Volatility Sizing
         if usd_vol_high:
-            logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size by 30%.")
-            base_qty = max(1, int(base_qty * 0.7)) # Reduce size, minimum 1
+            reduction_factor = 0.7
+            logger.warning(f"⚠️ High USD/INR Volatility ({usd_volatility:.2f}% > 1.0%): Reducing position size by 30%.")
+            # In a real scenario with >1 lots, this would reduce. For 1 lot, it stays 1 but warns.
+            # If we had risk_per_trade based sizing, we would reduce the risk amount.
+            self.params['risk_per_trade'] = self.params.get('risk_per_trade', 0.02) * reduction_factor
+
+            # If base_qty was larger, we would reduce it:
+            # base_qty = max(1, int(base_qty * reduction_factor))
 
         if not seasonality_ok and not has_position:
-            logger.info("Seasonality Weak: Skipping new entries.")
+            logger.info(f"⛔ Seasonality Filter: Score {seasonality_score} < 40. Skipping new entries.")
             return
 
         if not global_alignment_ok and not has_position:
-            logger.info("Global Alignment Weak: Skipping new entries.")
+            logger.info(f"⛔ Global Alignment Filter: Score {global_align_score} < 40. Skipping new entries.")
             return
 
         # Entry Logic
