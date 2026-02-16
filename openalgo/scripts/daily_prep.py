@@ -120,59 +120,65 @@ def fetch_instruments():
     api_key = os.getenv('OPENALGO_APIKEY', 'demo_key')
     host = os.getenv('OPENALGO_HOST', 'http://127.0.0.1:5001')
 
-    # Try multiple endpoints or exchanges
-    exchanges = ['NSE', 'NFO', 'MCX']
-    dfs = []
+    # Check for mock mode upfront
+    if '--mock' in sys.argv:
+        logger.warning("Mock mode enabled. Skipping API calls.")
+        # Proceed to fallback generation block
+        dfs = []
+    else:
+        # Try multiple endpoints or exchanges
+        exchanges = ['NSE', 'NFO', 'MCX']
+        dfs = []
 
-    with httpx.Client(timeout=30.0) as client:
-        for ex in exchanges:
-            url = f"{host}/instruments/{ex}" # Broker proxy endpoint often
-            # Or /api/v1/instruments?exchange={ex}
+        with httpx.Client(timeout=30.0) as client:
+            for ex in exchanges:
+                url = f"{host}/instruments/{ex}" # Broker proxy endpoint often
+                # Or /api/v1/instruments?exchange={ex}
 
-            # Try /api/v1/instruments first (OpenAlgo native)
-            # fallback to /instruments/{ex} (Kite Connect proxy)
+                # Try /api/v1/instruments first (OpenAlgo native)
+                # fallback to /instruments/{ex} (Kite Connect proxy)
 
-            logger.info(f"Fetching {ex} instruments...")
-            try:
-                # 1. Try OpenAlgo proxy
-                resp = client.get(f"{host}/instruments/{ex}", headers={'X-API-KEY': api_key})
-                if resp.status_code == 200:
-                    from io import StringIO
-                    df = pd.read_csv(StringIO(resp.text), low_memory=False)
-                    if 'exchange' not in df.columns:
-                        df['exchange'] = ex
-                    dfs.append(df)
-                    logger.info(f"Fetched {len(df)} {ex} instruments.")
-                    continue
-
-                # 2. Try generic API
-                resp = client.get(f"{host}/api/v1/instruments?exchange={ex}", headers={'X-API-KEY': api_key})
-                if resp.status_code == 200:
-                    # Might be JSON or CSV
-                    try:
-                        data = resp.json()
-                        if isinstance(data, list):
-                            df = pd.DataFrame(data)
-                        elif isinstance(data, dict) and 'data' in data:
-                            df = pd.DataFrame(data['data'])
-                        else:
-                            # Try CSV
-                            from io import StringIO
-                            df = pd.read_csv(StringIO(resp.text), low_memory=False)
-                    except:
+                logger.info(f"Fetching {ex} instruments...")
+                try:
+                    # 1. Try OpenAlgo proxy
+                    resp = client.get(f"{host}/instruments/{ex}", headers={'X-API-KEY': api_key})
+                    if resp.status_code == 200:
                         from io import StringIO
                         df = pd.read_csv(StringIO(resp.text), low_memory=False)
+                        if 'exchange' not in df.columns:
+                            df['exchange'] = ex
+                        dfs.append(df)
+                        logger.info(f"Fetched {len(df)} {ex} instruments.")
+                        continue
 
-                    if 'exchange' not in df.columns:
-                        df['exchange'] = ex
-                    dfs.append(df)
-                    logger.info(f"Fetched {len(df)} {ex} instruments.")
-                    continue
+                    # 2. Try generic API
+                    resp = client.get(f"{host}/api/v1/instruments?exchange={ex}", headers={'X-API-KEY': api_key})
+                    if resp.status_code == 200:
+                        # Might be JSON or CSV
+                        try:
+                            data = resp.json()
+                            if isinstance(data, list):
+                                df = pd.DataFrame(data)
+                            elif isinstance(data, dict) and 'data' in data:
+                                df = pd.DataFrame(data['data'])
+                            else:
+                                # Try CSV
+                                from io import StringIO
+                                df = pd.read_csv(StringIO(resp.text), low_memory=False)
+                        except:
+                            from io import StringIO
+                            df = pd.read_csv(StringIO(resp.text), low_memory=False)
 
-                logger.warning(f"Failed to fetch {ex}: {resp.status_code}")
+                        if 'exchange' not in df.columns:
+                            df['exchange'] = ex
+                        dfs.append(df)
+                        logger.info(f"Fetched {len(df)} {ex} instruments.")
+                        continue
 
-            except Exception as e:
-                logger.error(f"Error fetching {ex}: {e}")
+                    logger.warning(f"Failed to fetch {ex}: {resp.status_code}")
+
+                except Exception as e:
+                    logger.error(f"Error fetching {ex}: {e}")
 
     if dfs:
         full_df = pd.concat(dfs, ignore_index=True)
