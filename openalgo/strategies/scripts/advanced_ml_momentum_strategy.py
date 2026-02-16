@@ -36,6 +36,19 @@ except ImportError:
             PositionManager = None
             is_market_open = lambda: True
 
+# Import RiskManager
+try:
+    from risk_manager import RiskManager
+except ImportError:
+    try:
+        sys.path.insert(0, strategies_dir)
+        from utils.risk_manager import RiskManager
+    except ImportError:
+        try:
+             from openalgo.strategies.utils.risk_manager import RiskManager
+        except ImportError:
+             RiskManager = None
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class MLMomentumStrategy:
@@ -44,7 +57,13 @@ class MLMomentumStrategy:
         self.host = f"http://127.0.0.1:{port}"
         self.client = APIClient(api_key=api_key, host=self.host)
         self.logger = logging.getLogger(f"MLMomentum_{symbol}")
-        self.pm = PositionManager(symbol) if PositionManager else None
+
+        # Initialize RiskManager
+        if RiskManager:
+            self.rm = RiskManager(strategy_name=f"MLMomentum_{symbol}", exchange="NSE", capital=100000)
+        else:
+            self.rm = None
+            self.logger.warning("RiskManager not available!")
 
         self.roc_threshold = threshold
         self.stop_pct = stop_pct
@@ -69,30 +88,30 @@ class MLMomentumStrategy:
         # SMA for Trend
         df['sma50'] = df['close'].rolling(50).mean()
 
-        last = df.iloc[-1]
-        current_price = last['close']
+        # Use iloc[-2] for completed candle signals
+        signal_candle = df.iloc[-2]
+        prev_candle = df.iloc[-3]
+
+        # Current price for reference (though not for signal)
+        current_price = df.iloc[-1]['close']
 
         # Simplifications for Backtest (Missing Index/Sector Data)
-        # We assume RS and Sector conditions are met if data missing, or strict if we want.
-        # Let's assume 'rs_excess > 0' and 'sector_outperformance > 0' are TRUE for baseline logic
-        # unless we pass index data in 'df' (which we don't usually).
-
         rs_excess = 0.01 # Mock positive
         sector_outperformance = 0.01 # Mock positive
         sentiment = 0.5 # Mock positive
 
         # Entry Logic
-        if (last['roc'] > self.roc_threshold and
-            last['rsi'] > 55 and
+        if (signal_candle['roc'] > self.roc_threshold and
+            signal_candle['rsi'] > 55 and
             rs_excess > 0 and
             sector_outperformance > 0 and
-            current_price > last['sma50'] and
+            signal_candle['close'] > signal_candle['sma50'] and
             sentiment >= 0):
 
             # Volume check
-            avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-            if last['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
-                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi']}
+            avg_vol = df['volume'].rolling(20).mean().iloc[-2]
+            if signal_candle['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
+                return 'BUY', 1.0, {'roc': signal_candle['roc'], 'rsi': signal_candle['rsi']}
 
         return 'HOLD', 0.0, {}
 
@@ -101,8 +120,9 @@ class MLMomentumStrategy:
 
         # Align timestamps (simplistic approach using last N periods)
         try:
-            stock_roc = df['close'].pct_change(10).iloc[-1]
-            index_roc = index_df['close'].pct_change(10).iloc[-1]
+            # Use iloc[-2] to avoid lookahead
+            stock_roc = df['close'].pct_change(10).iloc[-2]
+            index_roc = index_df['close'].pct_change(10).iloc[-2]
             return stock_roc - index_roc # Excess Return
         except:
             return 0.0
@@ -140,7 +160,12 @@ class MLMomentumStrategy:
             # Time Filter
             if not self.check_time_filter():
                 # If we have a position, we might hold, but no new entries
-                if not (self.pm and self.pm.has_position()):
+                # Check RiskManager position
+                has_pos = False
+                if self.rm and self.rm.positions.get(self.symbol):
+                    has_pos = True
+
+                if not has_pos:
                     self.logger.info("Lunch hour (12:00-13:00). Skipping new entries.")
                     time.sleep(300)
                     continue
@@ -180,8 +205,9 @@ class MLMomentumStrategy:
                 # SMA for Trend
                 df['sma50'] = df['close'].rolling(50).mean()
 
-                last = df.iloc[-1]
-                current_price = last['close']
+                # Use iloc[-2] for completed candle signals
+                signal_candle = df.iloc[-2]
+                current_price = df.iloc[-1]['close']
 
                 # Relative Strength vs NIFTY
                 rs_excess = self.calculate_relative_strength(df, index_df)
@@ -190,8 +216,9 @@ class MLMomentumStrategy:
                 sector_outperformance = 0.0
                 if not sector_df.empty:
                     try:
-                         sector_roc = sector_df['close'].pct_change(10).iloc[-1]
-                         sector_outperformance = last['roc'] - sector_roc
+                         # Use iloc[-2] to align with signal candle
+                         sector_roc = sector_df['close'].pct_change(10).iloc[-2]
+                         sector_outperformance = signal_candle['roc'] - sector_roc
                     except: pass
                 else:
                     sector_outperformance = 0.001 # Assume positive if missing to not block
@@ -200,21 +227,37 @@ class MLMomentumStrategy:
                 sentiment = self.get_news_sentiment()
 
                 # Manage Position
-                if self.pm and self.pm.has_position():
-                    pnl = self.pm.get_pnl(current_price)
-                    entry = self.pm.entry_price
+                has_position = False
+                pos_data = {}
+                if self.rm:
+                    # Check Stop Loss
+                    sl_hit, sl_reason = self.rm.check_stop_loss(self.symbol, current_price)
+                    if sl_hit:
+                        self.logger.info(sl_reason)
+                        # Execute Exit
+                        pos_qty = self.rm.positions.get(self.symbol, {}).get('qty', 0)
+                        if pos_qty != 0:
+                            action = "SELL" if pos_qty > 0 else "BUY"
+                            self.client.placesmartorder(strategy="MLMomentum", symbol=self.symbol, action=action,
+                                                exchange=exchange, price_type="MARKET", product="MIS",
+                                                quantity=abs(pos_qty), position_size=0)
+                            self.rm.register_exit(self.symbol, current_price)
+                        continue
 
-                    if (self.pm.position > 0 and current_price < entry * (1 - self.stop_pct/100)):
-                        self.logger.info(f"Stop Loss Hit. PnL: {pnl}")
-                        self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                    pos_data = self.rm.positions.get(self.symbol)
+                    has_position = pos_data is not None
 
-                    # Exit if Momentum Fades (RSI < 50)
-                    elif (self.pm.position > 0 and last['rsi'] < 50):
-                         self.logger.info(f"Momentum Faded (RSI < 50). Exit. PnL: {pnl}")
-                         self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
-
-                    time.sleep(60)
-                    continue
+                    if has_position:
+                         # Exit if Momentum Fades (RSI < 50)
+                         # Use signal_candle (completed)
+                        pos_qty = pos_data.get('qty', 0)
+                        if pos_qty > 0 and signal_candle['rsi'] < 50:
+                             self.logger.info(f"Momentum Faded (RSI < 50). Exit.")
+                             self.client.placesmartorder(strategy="MLMomentum", symbol=self.symbol, action="SELL",
+                                                exchange=exchange, price_type="MARKET", product="MIS",
+                                                quantity=abs(pos_qty), position_size=0)
+                             self.rm.register_exit(self.symbol, current_price)
+                             continue
 
                 # Entry Logic
                 # ROC > Threshold
@@ -224,18 +267,32 @@ class MLMomentumStrategy:
                 # Price > SMA50 (Uptrend)
                 # Sentiment > 0 (Not Negative)
 
-                if (last['roc'] > self.roc_threshold and
-                    last['rsi'] > 55 and
-                    rs_excess > 0 and
-                    sector_outperformance > 0 and
-                    current_price > last['sma50'] and
-                    sentiment >= 0):
+                can_trade = True
+                if self.rm:
+                    can_trade, reason = self.rm.can_trade()
+                    if not can_trade and not has_position:
+                         # self.logger.warning(f"Risk blocked: {reason}")
+                         pass
 
-                    # Volume check
-                    avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-                    if last['volume'] > avg_vol * 0.5: # At least decent volume
-                        self.logger.info(f"Strong Momentum Signal (ROC: {last['roc']:.3f}, RS: {rs_excess:.3f}). BUY.")
-                        self.pm.update_position(100, current_price, 'BUY')
+                if can_trade and not has_position:
+                    if (signal_candle['roc'] > self.roc_threshold and
+                        signal_candle['rsi'] > 55 and
+                        rs_excess > 0 and
+                        sector_outperformance > 0 and
+                        signal_candle['close'] > signal_candle['sma50'] and
+                        sentiment >= 0):
+
+                        # Volume check
+                        avg_vol = df['volume'].rolling(20).mean().iloc[-2]
+                        if signal_candle['volume'] > avg_vol * 0.5: # At least decent volume
+                            self.logger.info(f"Strong Momentum Signal (ROC: {signal_candle['roc']:.3f}, RS: {rs_excess:.3f}). BUY.")
+
+                            qty = 100 # Fixed qty for now, could be dynamic
+                            resp = self.client.placesmartorder(strategy="MLMomentum", symbol=self.symbol, action="BUY",
+                                                exchange=exchange, price_type="MARKET", product="MIS",
+                                                quantity=qty, position_size=qty)
+                            if self.rm:
+                                self.rm.register_entry(self.symbol, qty, current_price, "LONG")
 
             except Exception as e:
                 self.logger.error(f"Error in ML Momentum strategy for {self.symbol}: {e}", exc_info=True)
@@ -247,7 +304,7 @@ def run_strategy():
     parser = argparse.ArgumentParser(description='ML Momentum Strategy')
     parser.add_argument('--symbol', type=str, help='Stock Symbol')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
-    parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
+    parser.add_argument('--api_key', type=str, help='API Key')
     parser.add_argument('--threshold', type=float, default=0.01, help='ROC Threshold')
     parser.add_argument('--sector', type=str, default='NIFTY 50', help='Sector Benchmark')
 
@@ -261,7 +318,11 @@ def run_strategy():
         sys.exit(1)
     
     port = args.port or int(os.getenv('OPENALGO_PORT', '5001'))
-    api_key = args.api_key or os.getenv('OPENALGO_APIKEY', 'demo_key')
+    api_key = args.api_key or os.getenv('OPENALGO_APIKEY')
+    if not api_key:
+        print("WARNING: API Key not provided. Using 'demo_key'.")
+        api_key = 'demo_key'
+
     threshold = args.threshold or float(os.getenv('THRESHOLD', '0.01'))
 
     strategy = MLMomentumStrategy(symbol, api_key, port, threshold=threshold, sector=args.sector)

@@ -34,6 +34,19 @@ except ImportError:
             PositionManager = None
             is_market_open = lambda: True
 
+# Import RiskManager
+try:
+    from risk_manager import RiskManager
+except ImportError:
+    try:
+        sys.path.insert(0, strategies_dir)
+        from utils.risk_manager import RiskManager
+    except ImportError:
+        try:
+             from openalgo.strategies.utils.risk_manager import RiskManager
+        except ImportError:
+             RiskManager = None
+
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("MCX_Momentum")
@@ -46,7 +59,15 @@ class MCXMomentumStrategy:
         self.params = params
 
         self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
-        self.pm = PositionManager(symbol) if PositionManager else None
+
+        # Initialize RiskManager
+        if RiskManager:
+            # Use symbol-specific strategy name to avoid race conditions in multi-process runs
+            self.rm = RiskManager(strategy_name=f"MCX_Momentum_{symbol}", exchange="MCX", capital=500000)
+        else:
+            self.rm = None
+            logger.warning("RiskManager not available. Strategy running without risk checks!")
+
         self.data = pd.DataFrame()
 
         # Log active filters
@@ -86,12 +107,13 @@ class MCXMomentumStrategy:
         """
         Generate signal for backtesting.
         """
-        if df.empty: return 'HOLD', 0.0, {}
+        if df.empty or len(df) < 50: return 'HOLD', 0.0, {}
 
         self.data = df
         self.calculate_indicators()
 
-        # Check signals (Reusing existing logic but adapting return)
+        # Check signals using iloc[-2] (completed candle) to avoid lookahead bias
+        # iloc[-1] is the current forming candle or execution price
         current = self.data.iloc[-1]
         prev = self.data.iloc[-2]
 
@@ -105,28 +127,28 @@ class MCXMomentumStrategy:
 
         # Volatility Filter
         min_atr = self.params.get('min_atr', 0)
-        if current.get('atr', 0) < min_atr:
+        # Check ATR of completed candle
+        if prev.get('atr', 0) < min_atr:
              return 'HOLD', 0.0, {'reason': 'Low Volatility'}
 
-        if (current['adx'] > self.params['adx_threshold'] and
-            current['rsi'] > 50 and
-            current['close'] > prev['close']):
+        # Signal Logic on COMPLETED candle (prev)
+        if (prev['adx'] > self.params['adx_threshold'] and
+            prev['rsi'] > 50 and
+            prev['close'] > self.data.iloc[-3]['close']): # Rising
             action = 'BUY'
 
-        elif (current['adx'] > self.params['adx_threshold'] and
-              current['rsi'] < 50 and
-              current['close'] < prev['close']):
+        elif (prev['adx'] > self.params['adx_threshold'] and
+              prev['rsi'] < 50 and
+              prev['close'] < self.data.iloc[-3]['close']): # Falling
             action = 'SELL'
 
-        return action, 1.0, {'atr': current.get('atr', 0)}
+        return action, 1.0, {'atr': prev.get('atr', 0)}
 
     def calculate_indicators(self):
         """Calculate technical indicators."""
         if self.data.empty:
             return
 
-        # Optimization: If columns already exist and length matches, skip?
-        # But for now, we assume data is fresh.
         df = self.data.copy()
 
         # RSI
@@ -156,7 +178,7 @@ class MCXMomentumStrategy:
         df['plus_dm'] = plus_dm
         df['minus_dm'] = minus_dm
 
-        # Smooth (using simple moving average for simplicity as originally intended in simple mock)
+        # Smooth
         tr_smooth = true_range.rolling(window=self.params['period_adx']).mean()
         plus_dm_smooth = df['plus_dm'].rolling(window=self.params['period_adx']).mean()
         minus_dm_smooth = df['minus_dm'].rolling(window=self.params['period_adx']).mean()
@@ -181,16 +203,54 @@ class MCXMomentumStrategy:
         if len(self.data) < 50:
             return
 
-        current = self.data.iloc[-1]
-        prev = self.data.iloc[-2]
+        # Use iloc[-2] (completed candle) for signals
+        # Use iloc[-1] (current price) for execution
+        current_price = self.data.iloc[-1]['close']
+        signal_candle = self.data.iloc[-2]
+        prev_signal_candle = self.data.iloc[-3]
 
-        # Log current state
-        # logger.info(f"Price: {current['close']:.2f}, RSI: {current['rsi']:.2f}, ADX: {current['adx']:.2f}")
-
-        # Check Position
+        # Check Position using RiskManager
         has_position = False
-        if self.pm:
-            has_position = self.pm.has_position()
+        current_pos = {}
+        if self.rm:
+            # Check Stop Loss
+            sl_hit, sl_reason = self.rm.check_stop_loss(self.symbol, current_price)
+            if sl_hit:
+                logger.warning(sl_reason)
+                # Execute Market Exit
+                if self.client:
+                     # Determine quantity and action from risk manager state
+                     pos_data = self.rm.positions.get(self.symbol, {})
+                     qty = abs(pos_data.get('qty', 0))
+                     action = "SELL" if pos_data.get('qty', 0) > 0 else "BUY"
+                     self.client.placesmartorder(strategy="MCX_Momentum", symbol=self.symbol, action=action,
+                                            exchange="MCX", price_type="MARKET", product="NRML",
+                                            quantity=qty, position_size=0)
+                self.rm.register_exit(self.symbol, current_price)
+                return
+
+            # Check EOD Square-off
+            if self.rm.should_square_off_eod():
+                logger.warning("EOD Square-off triggered.")
+                pos_data = self.rm.positions.get(self.symbol)
+                if pos_data:
+                     qty = abs(pos_data.get('qty', 0))
+                     action = "SELL" if pos_data.get('qty', 0) > 0 else "BUY"
+                     if self.client:
+                        self.client.placesmartorder(strategy="MCX_Momentum", symbol=self.symbol, action=action,
+                                                exchange="MCX", price_type="MARKET", product="NRML",
+                                                quantity=qty, position_size=0)
+                     self.rm.register_exit(self.symbol, current_price)
+                return
+
+            # Update Trailing Stop
+            new_ts = self.rm.update_trailing_stop(self.symbol, current_price)
+            if new_ts:
+                logger.info(f"Trailing Stop updated to {new_ts:.2f}")
+
+            # Get current position status
+            current_pos = self.rm.positions.get(self.symbol)
+            has_position = current_pos is not None
 
         # Multi-Factor Checks
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
@@ -204,63 +264,101 @@ class MCXMomentumStrategy:
             base_qty = max(1, int(base_qty * 0.7)) # Reduce size, minimum 1
 
         if not seasonality_ok and not has_position:
-            logger.info("Seasonality Weak: Skipping new entries.")
+            # logger.info("Seasonality Weak: Skipping new entries.")
             return
 
         if not global_alignment_ok and not has_position:
-            logger.info("Global Alignment Weak: Skipping new entries.")
+            # logger.info("Global Alignment Weak: Skipping new entries.")
             return
+
+        # Can we trade?
+        if self.rm and not has_position:
+            can_trade, reason = self.rm.can_trade()
+            if not can_trade:
+                logger.warning(f"RiskManager blocked trade: {reason}")
+                return
 
         # Entry Logic
         if not has_position:
-            # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
-            if (current['adx'] > self.params['adx_threshold'] and
-                current['rsi'] > 55 and
-                current['close'] > prev['close']):
+            # BUY Signal: ADX > Threshold, RSI > 55, Price Rising
+            if (signal_candle['adx'] > self.params['adx_threshold'] and
+                signal_candle['rsi'] > 55 and
+                signal_candle['close'] > prev_signal_candle['close']):
 
-                logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                if self.pm:
-                    self.pm.update_position(base_qty, current['close'], 'BUY')
+                logger.info(f"BUY SIGNAL: Price={current_price}, RSI={signal_candle['rsi']:.2f}, ADX={signal_candle['adx']:.2f}")
 
-            # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
-            elif (current['adx'] > self.params['adx_threshold'] and
-                  current['rsi'] < 45 and
-                  current['close'] < prev['close']):
+                # Execute
+                if self.client:
+                    resp = self.client.placesmartorder(strategy="MCX_Momentum", symbol=self.symbol, action="BUY",
+                                                exchange="MCX", price_type="MARKET", product="NRML",
+                                                quantity=base_qty, position_size=base_qty)
+                    # Register Entry in RiskManager (assuming fill at current_price for simplicity, ideally use avg_price from resp)
+                    if self.rm:
+                        self.rm.register_entry(self.symbol, base_qty, current_price, "LONG")
 
-                logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                if self.pm:
-                    self.pm.update_position(base_qty, current['close'], 'SELL')
+            # SELL Signal: ADX > Threshold, RSI < 45, Price Falling
+            elif (signal_candle['adx'] > self.params['adx_threshold'] and
+                  signal_candle['rsi'] < 45 and
+                  signal_candle['close'] < prev_signal_candle['close']):
+
+                logger.info(f"SELL SIGNAL: Price={current_price}, RSI={signal_candle['rsi']:.2f}, ADX={signal_candle['adx']:.2f}")
+
+                # Execute
+                if self.client:
+                    resp = self.client.placesmartorder(strategy="MCX_Momentum", symbol=self.symbol, action="SELL",
+                                                exchange="MCX", price_type="MARKET", product="NRML",
+                                                quantity=base_qty, position_size=base_qty)
+                    if self.rm:
+                        self.rm.register_entry(self.symbol, base_qty, current_price, "SHORT")
 
         # Exit Logic
         elif has_position:
             # Retrieve position details
-            pos_qty = self.pm.position
-            entry_price = self.pm.entry_price
+            pos_qty = current_pos.get('qty', 0)
 
-            # Stop Loss / Take Profit Logic could be added here
-            # Simple Exit: Trend Fades (ADX < 20) or RSI Reversal
+            # Exit if Trend Fades (ADX < 20) or RSI Reversal
+            # Using signal_candle (completed) for robust exit signals
 
             if pos_qty > 0: # Long
-                if current['rsi'] < 45 or current['adx'] < 20:
-                     logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                if signal_candle['rsi'] < 45 or signal_candle['adx'] < 20:
+                     logger.info(f"EXIT LONG: Trend Faded. RSI={signal_candle['rsi']:.2f}, ADX={signal_candle['adx']:.2f}")
+                     if self.client:
+                        self.client.placesmartorder(strategy="MCX_Momentum", symbol=self.symbol, action="SELL",
+                                                exchange="MCX", price_type="MARKET", product="NRML",
+                                                quantity=abs(pos_qty), position_size=0)
+                     if self.rm:
+                        self.rm.register_exit(self.symbol, current_price)
+
             elif pos_qty < 0: # Short
-                if current['rsi'] > 55 or current['adx'] < 20:
-                     logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                if signal_candle['rsi'] > 55 or signal_candle['adx'] < 20:
+                     logger.info(f"EXIT SHORT: Trend Faded. RSI={signal_candle['rsi']:.2f}, ADX={signal_candle['adx']:.2f}")
+                     if self.client:
+                        self.client.placesmartorder(strategy="MCX_Momentum", symbol=self.symbol, action="BUY",
+                                                exchange="MCX", price_type="MARKET", product="NRML",
+                                                quantity=abs(pos_qty), position_size=0)
+                     if self.rm:
+                        self.rm.register_exit(self.symbol, current_price)
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
         while True:
-            if not is_market_open():
+            if not is_market_open(exchange="MCX"):
                 logger.info("Market is closed. Sleeping...")
                 time.sleep(300)
                 continue
 
-            self.fetch_data()
-            self.calculate_indicators()
-            self.check_signals()
-            time.sleep(900) # 15 minutes
+            # Poll every minute
+            # Logic: Check if minute is divisible by 15 for new candles, OR just fetch data and let indicators handle it
+            # Fetching data every minute is fine, candles will update.
+
+            try:
+                self.fetch_data()
+                self.calculate_indicators()
+                self.check_signals()
+            except Exception as e:
+                logger.error(f"Error in strategy loop: {e}", exc_info=True)
+
+            time.sleep(60) # Sleep 1 minute
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='MCX Commodity Momentum Strategy')
@@ -269,9 +367,9 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key')
 
-    # New Multi-Factor Arguments
+    # New Multi-Factor Arguments - Fixed percentage escaping
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
