@@ -10,7 +10,6 @@ from datetime import datetime
 
 # Sensitive patterns to filter out
 # Format: (Regex Pattern, Replacement String)
-# Regex matches common secret characters: alphanumeric, dash, dot, plus, slash, equals
 SENSITIVE_PATTERNS = [
     (r'(api[_-]?key[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
     (r'(password[\s]*[=:]\s*)[\w\-\.\+\/=]+', r'\1[REDACTED]'),
@@ -26,44 +25,40 @@ class SensitiveDataFilter(logging.Filter):
     """Filter to redact sensitive information from log messages."""
 
     def filter(self, record):
-        # We modify the record in place. This is generally accepted in logging filters
-        # attached to handlers or loggers where we want the modification to persist.
+        try:
+            # 1. Filter the main message (record.msg)
+            original_msg = str(record.msg)
+            filtered_msg = original_msg
+            for pattern, replacement in SENSITIVE_PATTERNS:
+                filtered_msg = re.sub(pattern, replacement, filtered_msg, flags=re.IGNORECASE)
+            record.msg = filtered_msg
 
-        # 1. Filter the main message (record.msg)
-        # Note: record.msg can be any object, usually a string.
-        original_msg = str(record.msg)
-        filtered_msg = original_msg
-        for pattern, replacement in SENSITIVE_PATTERNS:
-            filtered_msg = re.sub(pattern, replacement, filtered_msg, flags=re.IGNORECASE)
-
-        record.msg = filtered_msg
-
-        # 2. Filter args if present
-        if hasattr(record, 'args') and record.args:
-            filtered_args = []
-            for arg in record.args:
-                if isinstance(arg, str):
-                    filtered_arg = arg
-                    for pattern, replacement in SENSITIVE_PATTERNS:
-                        filtered_arg = re.sub(pattern, replacement, filtered_arg, flags=re.IGNORECASE)
-                    filtered_args.append(filtered_arg)
-                else:
-                    filtered_args.append(arg)
-            record.args = tuple(filtered_args)
+            # 2. Filter args if present
+            if hasattr(record, 'args') and record.args:
+                filtered_args = []
+                for arg in record.args:
+                    if isinstance(arg, str):
+                        filtered_arg = arg
+                        for pattern, replacement in SENSITIVE_PATTERNS:
+                            filtered_arg = re.sub(pattern, replacement, filtered_arg, flags=re.IGNORECASE)
+                        filtered_args.append(filtered_arg)
+                    else:
+                        filtered_args.append(arg)
+                record.args = tuple(filtered_args)
+        except Exception:
+            # If filtering fails, don't crash logging
+            pass
 
         return True
 
 class JsonFormatter(logging.Formatter):
     """Format logs as JSON lines."""
     def format(self, record):
-        # We assume the record has already been filtered by SensitiveDataFilter
-        # if the filter is attached to the handler.
-
         log_data = {
             "timestamp": datetime.fromtimestamp(record.created).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(), # Merges msg and args
+            "message": record.getMessage(), # Merges msg and args (already filtered)
             "module": record.module,
             "function": record.funcName,
             "line": record.lineno
@@ -113,8 +108,8 @@ def setup_logging():
 
     # 2. File Handler
     # Default to logs/openalgo.log in repo root
-    # We find repo root relative to this file: openalgo_observability/logging_setup.py -> ../
     try:
+        # Find repo root. This file is in openalgo_observability/logging_setup.py -> ../
         repo_root = Path(__file__).resolve().parent.parent
         log_dir = repo_root / "logs"
         log_dir.mkdir(exist_ok=True)

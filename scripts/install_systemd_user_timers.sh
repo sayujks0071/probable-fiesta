@@ -1,46 +1,51 @@
 #!/bin/bash
-# Install Systemd User Timer for OpenAlgo Healthcheck
+set -e
 
-mkdir -p ~/.config/systemd/user
-SCRIPT_DIR=$(cd $(dirname $0) && pwd)
-SCRIPT_PATH="$SCRIPT_DIR/healthcheck.py"
+REPO_ROOT=$(pwd)
 PYTHON_EXEC=$(which python3)
+SERVICE_DIR="$HOME/.config/systemd/user"
+SERVICE_FILE="$SERVICE_DIR/openalgo-healthcheck.service"
+TIMER_FILE="$SERVICE_DIR/openalgo-healthcheck.timer"
 
-SERVICE_FILE=~/.config/systemd/user/openalgo-health.service
-TIMER_FILE=~/.config/systemd/user/openalgo-health.timer
+echo "Installing Systemd Timer for OpenAlgo Healthcheck..."
 
-echo "Installing Systemd User Service..."
+mkdir -p "$SERVICE_DIR"
 
-cat <<EOF > $SERVICE_FILE
+# Create Service File
+cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=OpenAlgo Health Check
+After=network.target
 
 [Service]
-ExecStart=$PYTHON_EXEC $SCRIPT_PATH
-WorkingDirectory=$SCRIPT_DIR
-StandardOutput=journal
-StandardError=journal
+Type=oneshot
+WorkingDirectory=$REPO_ROOT
+ExecStart=$PYTHON_EXEC $REPO_ROOT/scripts/healthcheck.py
+Environment="PYTHONPATH=$REPO_ROOT"
+# Inherit current environment variables if needed, or source .env
+# EnvironmentFile=$REPO_ROOT/.env
 
 [Install]
 WantedBy=default.target
 EOF
 
-cat <<EOF > $TIMER_FILE
+# Create Timer File (Run every 5 minutes)
+cat > "$TIMER_FILE" <<EOF
 [Unit]
 Description=Run OpenAlgo Health Check every 5 minutes
 
 [Timer]
-OnBootSec=5min
+OnBootSec=1min
 OnUnitActiveSec=5min
-Unit=openalgo-health.service
+Persistent=true
 
 [Install]
 WantedBy=timers.target
 EOF
 
+# Reload and Enable
 systemctl --user daemon-reload
-systemctl --user enable openalgo-health.timer
-systemctl --user start openalgo-health.timer
+systemctl --user enable --now openalgo-healthcheck.timer
 
-echo "✅ Systemd user timer installed and started."
-systemctl --user list-timers --all | grep openalgo
+echo "✅ Systemd Timer installed and started."
+systemctl --user status openalgo-healthcheck.timer --no-pager

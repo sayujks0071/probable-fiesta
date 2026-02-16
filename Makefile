@@ -1,6 +1,6 @@
 # OpenAlgo Makefile
 
-.PHONY: all obs-up obs-down obs-logs run status help
+.PHONY: all obs-up obs-down obs-logs run server status help install-obs uninstall-obs
 
 all: help
 
@@ -10,9 +10,11 @@ help:
 	@echo "make obs-up       : Start Observability Stack (Loki, Promtail, Grafana)"
 	@echo "make obs-down     : Stop Observability Stack"
 	@echo "make obs-logs     : Tail Promtail logs and OpenAlgo app logs"
-	@echo "make run          : Run OpenAlgo daily startup"
+	@echo "make run          : Run OpenAlgo Daily Startup Routine"
+	@echo "make server       : Run OpenAlgo Server (Flask App)"
 	@echo "make status       : Check health of OpenAlgo and Observability"
-	@echo "make install-obs  : Install healthcheck schedulers"
+	@echo "make install-obs  : Install healthcheck schedulers (Systemd)"
+	@echo "make uninstall-obs: Uninstall healthcheck schedulers"
 
 obs-up:
 	docker compose -f observability/docker-compose.yml up -d
@@ -28,6 +30,9 @@ obs-logs:
 run:
 	python3 daily_startup.py
 
+server:
+	FLASK_APP=openalgo.app python3 -m flask run --host=0.0.0.0 --port=5001
+
 status:
 	@echo "--- Docker Services ---"
 	docker compose -f observability/docker-compose.yml ps
@@ -35,4 +40,8 @@ status:
 	python3 scripts/healthcheck.py
 
 install-obs:
+	chmod +x scripts/*.sh
 	./scripts/install_systemd_user_timers.sh
+
+uninstall-obs:
+	./scripts/uninstall_schedulers.sh
