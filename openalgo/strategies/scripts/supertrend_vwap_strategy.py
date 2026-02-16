@@ -15,50 +15,18 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # Add repo root to path to allow imports
-script_dir = os.path.dirname(os.path.abspath(__file__))
-strategies_dir = os.path.dirname(script_dir)
-utils_dir = os.path.join(strategies_dir, 'utils')
-
-# Add utils directory to path for imports
-sys.path.insert(0, utils_dir)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 try:
-    from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-    from symbol_resolver import SymbolResolver
+    from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+    from openalgo.strategies.utils.symbol_resolver import SymbolResolver
 except ImportError:
-    try:
-        sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-        from utils.symbol_resolver import SymbolResolver
-    except ImportError:
-        try:
-            from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
-        except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            SymbolResolver = None
-            normalize_symbol = lambda s: s
-            is_market_open = lambda: True
-            def calculate_intraday_vwap(df):
-                df = df.copy()
-                if 'datetime' not in df.columns:
-                    if isinstance(df.index, pd.DatetimeIndex):
-                        df['datetime'] = df.index
-                    elif 'timestamp' in df.columns:
-                        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-                    else:
-                        df['datetime'] = pd.to_datetime(df.index)
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df['date'] = df['datetime'].dt.date
-                typical_price = (df['high'] + df['low'] + df['close']) / 3
-                df['pv'] = typical_price * df['volume']
-                df['cum_pv'] = df.groupby('date')['pv'].cumsum()
-                df['cum_vol'] = df.groupby('date')['volume'].cumsum()
-                df['vwap'] = df['cum_pv'] / df['cum_vol']
-                df['vwap_dev'] = (df['close'] - df['vwap']) / df['vwap']
-                return df
+    # Fallback for manual execution without package installation
+    sys.path.append(os.path.join(project_root, 'openalgo'))
+    from strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+    from strategies.utils.symbol_resolver import SymbolResolver
 
 class SuperTrendVWAPStrategy:
     def __init__(self, symbol, quantity, api_key=None, host=None, ignore_time=False, sector_benchmark='NIFTY BANK', logfile=None, client=None):
