@@ -4,8 +4,14 @@ import sys
 import argparse
 import re
 import json
-import pandas as pd
 from datetime import datetime
+
+# Try importing pandas safely
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+    print("Warning: pandas not found. Instrument loading might fail if CSV parsing is required.")
 
 # Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -26,8 +32,23 @@ def load_instruments():
     if not os.path.exists(INSTRUMENTS_FILE):
         return None
     try:
-        df = pd.read_csv(INSTRUMENTS_FILE)
-        return set(df['symbol'].unique())
+        if pd is None:
+            # Fallback for simple CSV reading if pandas is missing
+            instruments = set()
+            with open(INSTRUMENTS_FILE, 'r') as f:
+                header = f.readline().strip().split(',')
+                try:
+                    symbol_idx = header.index('symbol')
+                    for line in f:
+                        parts = line.strip().split(',')
+                        if len(parts) > symbol_idx:
+                            instruments.add(parts[symbol_idx])
+                except ValueError:
+                    print("Warning: 'symbol' column not found in instruments.csv header")
+            return instruments
+        else:
+            df = pd.read_csv(INSTRUMENTS_FILE)
+            return set(df['symbol'].unique())
     except Exception as e:
         print(f"Warning: Failed to load instruments: {e}")
         return None
