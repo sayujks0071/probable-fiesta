@@ -4,9 +4,14 @@ import sys
 import argparse
 import re
 import json
-import pandas as pd
 from datetime import datetime
-from collections import defaultdict
+
+# Try importing pandas safely
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+    print("Warning: pandas not found. Instrument loading might fail if CSV parsing is required.")
 
 # Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -27,8 +32,23 @@ def load_instruments():
     if not os.path.exists(INSTRUMENTS_FILE):
         return None
     try:
-        df = pd.read_csv(INSTRUMENTS_FILE)
-        return set(df['symbol'].unique())
+        if pd is None:
+            # Fallback for simple CSV reading if pandas is missing
+            instruments = set()
+            with open(INSTRUMENTS_FILE, 'r') as f:
+                header = f.readline().strip().split(',')
+                try:
+                    symbol_idx = header.index('symbol')
+                    for line in f:
+                        parts = line.strip().split(',')
+                        if len(parts) > symbol_idx:
+                            instruments.add(parts[symbol_idx])
+                except ValueError:
+                    print("Warning: 'symbol' column not found in instruments.csv header")
+            return instruments
+        else:
+            df = pd.read_csv(INSTRUMENTS_FILE)
+            return set(df['symbol'].unique())
     except Exception as e:
         print(f"Warning: Failed to load instruments: {e}")
         return None
@@ -48,8 +68,12 @@ def scan_file(filepath, instruments, strict=False):
     normalized_content = ""
     changes_made = False
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception as e:
+        print(f"Error reading {filepath}: {e}")
+        return "", False, [{"file": filepath, "error": str(e), "status": "ERROR"}]
 
     def replacement_handler(match):
         nonlocal changes_made
@@ -136,6 +160,8 @@ def main():
             if file.endswith('.py') or file.endswith('.json'):
                 files_to_scan.append(os.path.join(root, file))
 
+    # Also scan configs if exists (handled by walking strategies dir generally, but let's be explicit if needed)
+    # The requirement mentions scanning configs, but strategies dir covers strategy configs.
 
     for filepath in files_to_scan:
         new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
@@ -170,21 +196,28 @@ def main():
              f.write("| File | Symbol | Status | Details |\n")
              f.write("|---|---|---|---|\n")
              for issue in audit_report["issues"]:
-                 f.write(f"| {os.path.basename(issue['file'])} | {issue['symbol']} | {issue['status']} | {issue.get('error', issue.get('normalized', ''))} |\n")
+                 normalized = issue.get('normalized', '')
+                 symbol = issue.get('symbol', '')
+                 error = issue.get('error', '')
+                 details = error if error else (f"Normalized to {normalized}" if normalized else "")
+                 f.write(f"| {os.path.basename(issue['file'])} | {symbol} | {issue['status']} | {details} |\n")
 
     # Check for strict failure
-    invalid_symbols = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING')]
+    invalid_symbols = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING', 'ERROR')]
+    normalized_symbols = [i for i in audit_report["issues"] if i['status'] == 'NORMALIZED']
 
-    if args.strict and args.check:
-         # In strict check mode, fail if normalization is needed
-         normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
-         if normalized_count > 0:
-             print(f"❌ Found {normalized_count} symbols needing normalization.")
-             sys.exit(1)
+    print(f"Audit complete. Found {len(invalid_symbols)} invalid/missing symbols and {len(normalized_symbols)} normalized symbols.")
 
-    if invalid_symbols:
-        print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols.")
-        if args.strict:
+    if args.strict:
+        if invalid_symbols:
+            print(f"❌ Strict Mode Failure: Found {len(invalid_symbols)} invalid/missing symbols.")
+            sys.exit(1)
+
+        # If running in check mode and normalization is needed, fail?
+        # Requirement: "exit non-zero on first invalid symbol OR collect and exit non-zero"
+        # Usually checking tools fail if changes are required.
+        if args.check and normalized_symbols:
+            print(f"❌ Strict Mode Check Failure: Found {len(normalized_symbols)} symbols needing normalization.")
             sys.exit(1)
 
     if args.write:

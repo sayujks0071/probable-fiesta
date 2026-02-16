@@ -3,38 +3,50 @@ name: PR Symbol Validation
 on:
   pull_request:
     paths:
+      - "trading/**"
+      - "strategies/**"
       - "openalgo/strategies/**"
-      - "openalgo/configs/**"
-      - "openalgo/data/instruments/**"
+      - "configs/**"
+      - "data/instruments/**"
+      - "openalgo/data/instruments.csv"
       - "tools/**"
-
-permissions:
-  contents: read
 
 jobs:
   validate-symbols:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
-          pip install pandas httpx
+          pip install --upgrade pip
+          if [ -f openalgo/requirements.txt ]; then pip install -r openalgo/requirements.txt; fi
+          # Ensure essential deps are installed
+          pip install pandas requests
 
-      - name: Sync Instruments
-        run: python3 tools/sync_instruments.py
+      - name: Sync Instruments (Try Latest)
+        # Attempt to sync, but allow failure if network/API issues?
+        # User prompt: "sync/load instruments (or use committed latest.json if present)"
+        # But tools/sync_instruments.py fetches instruments.csv.
+        # tools/validate_symbols.py checks instruments.csv freshness.
+        # If PR validation runs on CI, instruments.csv might be stale or missing (from checkout).
+        # We MUST sync to ensure freshness.
+        run: |
+          python tools/sync_instruments.py
 
-      - name: Run Strict Validation
-        run: python3 tools/validate_symbols.py --strict --check
+      - name: Strict Validation
+        run: |
+          python tools/validate_symbols.py --strict --check
 
-      - name: Upload Report
-        if: failure()
+      - name: Upload Audit Reports
+        if: always() # Upload reports even if validation fails
         uses: actions/upload-artifact@v4
         with:
-          name: symbol-validation-report
-          path: reports/
+          name: symbol-audit-reports-pr
+          path: reports/symbol_audit.*

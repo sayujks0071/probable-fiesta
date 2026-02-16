@@ -144,7 +144,7 @@ def main():
     fresh, msg = check_instruments_freshness()
     if not fresh:
         print(f"❌ Instrument Check Failed: {msg}")
-        # In strict mode, fail with code 3
+        # In strict mode, fail with code 3 if stale/missing
         if args.strict:
             sys.exit(3)
         else:
@@ -206,18 +206,38 @@ def main():
 
 
     # Print Summary
-    invalid_count = len([i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING', 'ERROR', 'MALFORMED')])
+    issues = audit_report["issues"]
+    invalid_count = len([i for i in issues if i['status'] in ('INVALID', 'MISSING', 'ERROR')])
+    malformed_count = len([i for i in issues if i['status'] == 'MALFORMED'])
+
+    print(f"Validation found: {invalid_count} INVALID/MISSING, {malformed_count} MALFORMED.")
 
     if invalid_count > 0:
-        print(f"❌ Validation Failed: {invalid_count} issues found.")
-        for issue in audit_report["issues"]:
-            print(f" - [{issue['status']}] {issue.get('source')}: {issue.get('symbol', issue.get('id', 'Unknown'))} -> {issue.get('error')}")
+        print(f"❌ Validation Failed: {invalid_count} invalid/missing symbols found.")
+        for issue in issues:
+            if issue['status'] in ('INVALID', 'MISSING', 'ERROR'):
+                 print(f" - [{issue['status']}] {issue.get('source')}: {issue.get('symbol', issue.get('id', 'Unknown'))} -> {issue.get('error')}")
 
         if args.strict:
             sys.exit(2)
-    else:
+
+    if malformed_count > 0:
+        print(f"⚠️ Found {malformed_count} malformed symbols.")
+        if args.strict and args.check:
+            # In strict check mode, malformed is also an error because it needs normalization
+            print("❌ Strict Mode Check Failure: Malformed symbols exist (run normalization).")
+            sys.exit(2)
+
+    if invalid_count == 0 and malformed_count == 0:
         print("✅ All symbols valid.")
         sys.exit(0)
+
+    # If we are here, strict=False and there are malformed symbols, or strict=True and check=False (unlikely combo for validator)
+    if args.strict:
+         # Requirement: "fail if ANY trading symbol is malformed"
+         sys.exit(2)
+
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
