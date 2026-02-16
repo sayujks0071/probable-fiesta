@@ -1,20 +1,29 @@
 #!/bin/bash
-# Install Crontab entry (fallback)
+set -e
 
-SCRIPT_DIR=$(cd $(dirname $0) && pwd)
-SCRIPT_PATH="$SCRIPT_DIR/healthcheck.py"
+REPO_ROOT=$(pwd)
 PYTHON_EXEC=$(which python3)
+SCRIPT_PATH="$REPO_ROOT/scripts/healthcheck.py"
+LOG_FILE="$REPO_ROOT/logs/healthcheck_cron.log"
 
-echo "Installing Cron job..."
+echo "Installing Cron Job for OpenAlgo Healthcheck..."
 
-# Remove existing entry to avoid duplicates
-crontab -l 2>/dev/null | grep -v "healthcheck.py" > /tmp/cron_backup
+if [ ! -f "$SCRIPT_PATH" ]; then
+    echo "Error: $SCRIPT_PATH not found. Run from repo root."
+    exit 1
+fi
 
-# Add new entry
-echo "*/5 * * * * $PYTHON_EXEC $SCRIPT_PATH >> /tmp/openalgo_cron.log 2>&1" >> /tmp/cron_backup
+CRON_JOB="*/5 * * * * cd $REPO_ROOT && PYTHONPATH=$REPO_ROOT $PYTHON_EXEC $SCRIPT_PATH >> $LOG_FILE 2>&1"
 
-crontab /tmp/cron_backup
-rm /tmp/cron_backup
+# Check if already installed
+if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH"; then
+    echo "Cron job already exists. Updating..."
+    # Remove existing and append new
+    (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH"; echo "$CRON_JOB") | crontab -
+else
+    # Append new
+    (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+fi
 
 echo "✅ Cron job installed."
-crontab -l | grep healthcheck.py
+crontab -l | grep "$SCRIPT_PATH"
