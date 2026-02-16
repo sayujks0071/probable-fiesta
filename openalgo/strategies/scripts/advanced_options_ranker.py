@@ -6,10 +6,6 @@ import logging
 import argparse
 from datetime import datetime
 from pathlib import Path
-import requests
-from bs4 import BeautifulSoup
-import re
-import math
 import subprocess
 
 # Add project root to path
@@ -18,8 +14,9 @@ project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-from openalgo.strategies.utils.trading_utils import APIClient, is_market_open
-from openalgo.strategies.utils.option_analytics import calculate_pcr, calculate_max_pain, calculate_greeks
+from openalgo.strategies.utils.trading_utils import APIClient
+from openalgo.strategies.utils.option_analytics import calculate_pcr, calculate_max_pain
+from openalgo.strategies.utils.market_data import MarketDataManager
 
 # Configure logging
 logging.basicConfig(
@@ -37,6 +34,7 @@ class AdvancedOptionsRanker:
         self.api_key = api_key or os.getenv("OPENALGO_API_KEY", "dummy_key")
         self.host = host
         self.client = APIClient(self.api_key, host=self.host)
+        self.mdm = MarketDataManager(self.client)
 
         # Configuration
         self.indices = ["NIFTY", "BANKNIFTY", "SENSEX"]
@@ -46,14 +44,8 @@ class AdvancedOptionsRanker:
         self.script_map = {
             "Iron Condor": "delta_neutral_iron_condor_nifty.py",
             "Gap Fade": "gap_fade_strategy.py",
-            # Others not yet implemented as scripts
+            "Sentiment Reversal": "sentiment_reversal_strategy.py"
         }
-
-        # Thresholds
-        self.vix_high_threshold = 20
-        self.vix_extreme_threshold = 30
-        self.vix_low_threshold = 12
-        self.liquidity_oi_threshold = 100000  # Minimum OI
 
         # Weights
         self.weights = {
@@ -66,81 +58,24 @@ class AdvancedOptionsRanker:
             "sentiment": 0.05
         }
 
-    def _fetch_gift_nifty_proxy(self, nifty_spot):
-        try:
-            # Deterministic: Return 0 gap if no data.
-            # In production, fetch specific symbol.
-            # For now, we assume if we are running before market, we might check last close
-            # But without history, we can't do much.
-            # Returning 0.0 ensures deterministic behavior for tests.
-            return nifty_spot, 0.0
-        except Exception as e:
-            logger.warning(f"Error fetching GIFT Nifty proxy: {e}")
-            return nifty_spot, 0.0
-
-    def _fetch_news_sentiment(self):
-        try:
-            url = "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"
-            try:
-                response = requests.get(url, timeout=5)
-            except:
-                return 0.5, "Neutral"
-
-            if response.status_code != 200:
-                return 0.5, "Neutral"
-
-            soup = BeautifulSoup(response.content, 'xml')
-            items = soup.find_all('item')
-
-            positive_words = ['surge', 'jump', 'gain', 'rally', 'bull', 'high', 'profit', 'growth', 'buy', 'positive']
-            negative_words = ['fall', 'drop', 'crash', 'bear', 'low', 'loss', 'decline', 'sell', 'negative', 'fear', 'inflation']
-
-            score = 0
-            count = 0
-            for item in items[:10]:
-                title = item.title.text.lower()
-                p_count = sum(1 for w in positive_words if w in title)
-                n_count = sum(1 for w in negative_words if w in title)
-                if p_count > n_count: score += 1
-                elif n_count > p_count: score -= 1
-                count += 1
-
-            if count == 0: return 0.5, "Neutral"
-
-            normalized_score = 0.5 + (score / (2 * count))
-            normalized_score = max(0.0, min(1.0, normalized_score))
-
-            label = "Neutral"
-            if normalized_score > 0.6: label = "Positive"
-            elif normalized_score < 0.4: label = "Negative"
-
-            return normalized_score, label
-
-        except Exception as e:
-            logger.warning(f"Sentiment analysis failed: {e}")
-            return 0.5, "Neutral"
-
     def fetch_market_data(self):
         logger.info("Fetching market data...")
         data = {}
-        vix_quote = self.client.get_quote("INDIA VIX", "NSE")
-        data['vix'] = float(vix_quote['ltp']) if vix_quote else 15.0
 
-        nifty_quote = self.client.get_quote("NIFTY 50", "NSE")
-        data['nifty_spot'] = float(nifty_quote['ltp']) if nifty_quote else 0.0
+        data['vix'] = self.mdm.get_vix()
 
-        gift_price, gap_pct = self._fetch_gift_nifty_proxy(data['nifty_spot'])
-        data['gift_nifty'] = gift_price
-        data['gap_pct'] = gap_pct
+        gift_data = self.mdm.get_gift_nifty()
+        data['gift_nifty'] = gift_data['price']
+        data['gap_pct'] = gift_data['gap_pct']
 
-        score, label = self._fetch_news_sentiment()
-        data['sentiment_score'] = score
-        data['sentiment_label'] = label
+        sentiment_data = self.mdm.get_sentiment()
+        data['sentiment_score'] = sentiment_data['score']
+        data['sentiment_label'] = sentiment_data['label']
 
         data['chains'] = {}
         for index in self.indices:
             exchange = "NFO" if index != "SENSEX" else "BFO"
-            chain = self.client.get_option_chain(index, exchange)
+            chain = self.mdm.get_option_chain(index, exchange)
             if chain:
                 data['chains'][index] = chain
 
@@ -167,7 +102,6 @@ class AdvancedOptionsRanker:
         Score a specific strategy for an index using multi-factor analysis.
         """
         vix = market_data.get('vix', 15)
-        spot = market_data.get('nifty_spot', 0) if index == "NIFTY" else 0
 
         pcr = calculate_pcr(chain_data)
         sentiment = market_data.get('sentiment_score', 0.5)
@@ -209,6 +143,7 @@ class AdvancedOptionsRanker:
              if dist_from_1 < 0.2: pcr_score = 90
              else: pcr_score = max(0, 100 - dist_from_1 * 100)
 
+        # Smart money OI Build up logic (simplified)
         scores['pcr_oi'] = pcr_score
         details['pcr'] = pcr
 
@@ -249,6 +184,7 @@ class AdvancedOptionsRanker:
         details['score'] = round(final_score, 1)
         details['gap_pct'] = gap
         details['sentiment_val'] = sentiment
+        details['vix'] = vix
 
         return details
 
@@ -325,7 +261,7 @@ class AdvancedOptionsRanker:
             script = self.script_map.get(strategy_name)
 
             if not script:
-                logger.warning(f"No script mapped for strategy '{strategy_name}'. Skipping deployment.")
+                # logger.warning(f"No script mapped for strategy '{strategy_name}'. Skipping deployment.")
                 continue
 
             script_path = project_root / "openalgo" / "strategies" / "scripts" / script
@@ -338,13 +274,17 @@ class AdvancedOptionsRanker:
             # Pass extra args
             if strategy_name == "Iron Condor":
                 cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
+                cmd.extend(["--vix", str(strat.get('vix', 15))])
+
+            elif strategy_name == "Gap Fade":
+                cmd.extend(["--gap_pct", str(strat.get('gap_pct', 0.0))])
+
+            elif strategy_name == "Sentiment Reversal":
+                cmd.extend(["--sentiment_score", str(strat.get('sentiment_score', 0.5))])
 
             logger.info(f"Executing: {' '.join(cmd)}")
 
             try:
-                # Run in background or wait? Usually deployment triggers and returns.
-                # Here we use Popen to run detached or run and wait.
-                # We'll run and log output
                 subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 print(f"✅ Deployed: {strategy_name} on {strat['index']}")
             except Exception as e:

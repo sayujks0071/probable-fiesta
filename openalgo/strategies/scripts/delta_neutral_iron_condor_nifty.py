@@ -13,6 +13,7 @@ if str(project_root) not in sys.path:
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 from openalgo.strategies.utils.option_analytics import calculate_greeks, calculate_max_pain
+from openalgo.strategies.utils.risk_manager import RiskManager
 
 # Configure logging
 logging.basicConfig(
@@ -26,15 +27,21 @@ logging.basicConfig(
 logger = logging.getLogger("DeltaNeutralIronCondor")
 
 class DeltaNeutralIronCondor:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None, vix=None):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.max_vix = max_vix
         self.sentiment_score = sentiment_score
-        self.pm = PositionManager(f"{symbol}_IC")
+        self.vix = vix
 
-    def get_vix(self):
+        self.pm = PositionManager(f"{symbol}_IC")
+        self.rm = RiskManager("DeltaNeutralIronCondor", "NSE", 500000) # 5 Lakh capital
+
+    def get_current_vix(self):
+        if self.vix is not None:
+            return self.vix
+
         q = self.client.get_quote("INDIA VIX", "NSE")
         return float(q['ltp']) if q else 15.0
 
@@ -135,7 +142,13 @@ class DeltaNeutralIronCondor:
     def execute(self):
         logger.info(f"Starting execution for {self.symbol}")
 
-        vix = self.get_vix()
+        # Risk Check
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.warning(f"Risk Manager blocked trade: {reason}")
+            return
+
+        vix = self.get_current_vix()
         logger.info(f"Current VIX: {vix}")
 
         # VIX Filters
@@ -180,6 +193,9 @@ class DeltaNeutralIronCondor:
         # In real scenario:
         # self.client.placesmartorder(...)
 
+        # Log to Risk Manager (Mock entry)
+        self.rm.register_entry(self.symbol, self.qty, spot, "SHORT_STRANGLE_WINGS_LONG") # Complex type simplified
+
         logger.info("Strategy execution completed (Simulation).")
 
 def main():
@@ -188,10 +204,11 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
     parser.add_argument("--sentiment_score", type=float, default=None, help="External Sentiment Score (0.0-1.0)")
+    parser.add_argument("--vix", type=float, default=None, help="VIX Level")
     args = parser.parse_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score)
+    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score, vix=args.vix)
     strategy.execute()
 
 if __name__ == "__main__":
