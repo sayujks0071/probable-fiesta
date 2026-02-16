@@ -15,13 +15,26 @@ if str(project_root) not in sys.path:
 
 from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
 
+# Import RiskManager
+try:
+    from openalgo.strategies.utils.risk_manager import RiskManager
+except ImportError:
+    try:
+        sys.path.insert(0, str(project_root / "openalgo" / "strategies" / "utils"))
+        from risk_manager import RiskManager
+    except ImportError:
+        RiskManager = None
+
 # Configure logging
+log_dir = project_root / "openalgo" / "log" / "strategies"
+log_dir.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(project_root / "openalgo" / "strategies" / "logs" / "gap_fade.log")
+        logging.FileHandler(log_dir / "gap_fade.log")
     ]
 )
 logger = logging.getLogger("GapFadeStrategy")
@@ -34,8 +47,21 @@ class GapFadeStrategy:
         self.gap_threshold = gap_threshold # Percentage
         self.pm = PositionManager(f"{symbol}_GapFade")
 
+        if RiskManager:
+            self.rm = RiskManager(strategy_name=f"GapFade_{symbol}", exchange="NSE", capital=200000)
+        else:
+            self.rm = None
+            logger.warning("RiskManager not available")
+
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
+
+        # Check RiskManager circuit breaker first
+        if self.rm:
+            can_trade, reason = self.rm.can_trade()
+            if not can_trade:
+                logger.warning(f"RiskManager blocked trade: {reason}")
+                return
 
         # 1. Get Previous Close
         # Using history API for last 2 days
@@ -46,19 +72,14 @@ class GapFadeStrategy:
         # Get daily candles
         df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
 
-        if df.empty or len(df) < 1:
-            logger.error("Could not fetch history for previous close.")
-            return
+        prev_close = 0.0
+        if not df.empty:
+             # Look for yesterday's close
+             # Assuming last row is potentially today if market open, so check dates or take -2
+             # Simplification: use get_quote 'close' or 'ohlc'
+             pass
 
-        # Assuming the last completed row is previous day, or if market just opened, we might have today's open
-        # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
-
-        prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
-
+        # Robust way: Get quote
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
         if not quote:
             logger.error("Could not fetch quote.")
@@ -69,6 +90,21 @@ class GapFadeStrategy:
         # Some APIs provide 'close' in quote which is prev_close
         if 'close' in quote and quote['close'] > 0:
             prev_close = float(quote['close'])
+        elif not df.empty:
+             # Fallback to history
+             prev_close = df.iloc[-1]['close']
+             # Check if this is today's candle? If so take -2.
+             # If timestamp matches today, use -2.
+             last_ts = pd.to_datetime(df.iloc[-1]['datetime'] if 'datetime' in df.columns else df.index[-1])
+             if last_ts.date() == today.date():
+                 if len(df) > 1:
+                    prev_close = df.iloc[-2]['close']
+             else:
+                 prev_close = df.iloc[-1]['close']
+
+        if prev_close == 0:
+             logger.error("Could not determine Prev Close")
+             return
 
         logger.info(f"Prev Close: {prev_close}, Current: {current_price}")
 
@@ -114,8 +150,24 @@ class GapFadeStrategy:
 
         # 5. Place Order (Simulation)
         # self.client.placesmartorder(...)
+
+        # Risk Check before order
+        if self.rm:
+            can_trade, reason = self.rm.can_trade()
+            if not can_trade:
+                logger.warning(f"Risk blocked trade: {reason}")
+                return
+
         logger.info(f"Executing {option_type} Buy for {qty} qty.")
+
+        # Mock Execution
+        # resp = self.client.placesmartorder(...)
+
         self.pm.update_position(qty, 100, "BUY") # Mock update
+
+        if self.rm:
+            # Register Entry (Mock price 100)
+            self.rm.register_entry(strike_symbol, qty, 100.0, "LONG")
 
 def main():
     parser = argparse.ArgumentParser()
