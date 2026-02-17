@@ -12,7 +12,7 @@ This module provides essential risk management features that MUST be used by all
 CRITICAL: All strategies MUST use this module to prevent catastrophic losses.
 
 Author: OpenAlgo Risk Management
-Version: 1.0.0
+Version: 1.0.1
 """
 
 import os
@@ -407,8 +407,12 @@ class EODSquareOff:
                 result = self.exit_callback(symbol, action, qty)
 
                 if result and result.get('status') == 'success':
-                    # Assume exit at current price (would need actual fill price)
-                    self.rm.register_exit(symbol, pos['entry_price'])  # Placeholder
+                    # Try to get actual fill price from result
+                    exit_price = result.get('average_price') or result.get('price') or pos['entry_price']
+                    if exit_price == pos['entry_price']:
+                        logger.warning(f"EOD: Using entry price for exit of {symbol} as fill price not available")
+
+                    self.rm.register_exit(symbol, exit_price)
                     logger.info(f"EOD: Successfully closed {symbol}")
                 else:
                     logger.error(f"EOD: Failed to close {symbol}: {result}")
