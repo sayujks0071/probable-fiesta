@@ -9,9 +9,9 @@
             "timeframe": 15
         }
     },
-    "SuperTrend_NIFTY": {
+    "SuperTrend_BANKNIFTY": {
         "strategy": "supertrend_vwap_strategy",
-        "underlying": "NIFTY",
+        "underlying": "BANKNIFTY",
         "type": "EQUITY",
         "exchange": "NSE",
         "params": {
@@ -22,19 +22,45 @@
     "AI_Hybrid_RELIANCE": {
         "strategy": "ai_hybrid_reversion_breakout",
         "symbol": "RELIANCE",
+        "type": "EQUITY",
         "exchange": "NSE",
         "params": {
             "rsi_lower": 30,
             "sector": "NIFTY 50"
         }
     },
-    "MCX_SILVER": {
+    "MCX_SILVER_MOMENTUM": {
         "strategy": "mcx_commodity_momentum_strategy",
         "underlying": "SILVER",
         "type": "FUT",
         "exchange": "MCX",
         "params": {
-            "quantity": 1
+            "quantity": 1,
+            "period_adx": 14,
+            "adx_threshold": 25
+        }
+    },
+    "MCX_GOLD_MOMENTUM": {
+        "strategy": "mcx_commodity_momentum_strategy",
+        "underlying": "GOLD",
+        "type": "FUT",
+        "exchange": "MCX",
+        "params": {
+            "quantity": 1,
+            "period_adx": 14,
+            "adx_threshold": 25
+        }
+    },
+    "NIFTY_WEEKLY_ATM_CALL": {
+        "strategy": "ai_hybrid_reversion_breakout",
+        "underlying": "NIFTY",
+        "type": "OPT",
+        "option_type": "CE",
+        "expiry_preference": "WEEKLY",
+        "strike_criteria": "ATM",
+        "exchange": "NFO",
+        "params": {
+             "quantity": 50
         }
     }
 }
