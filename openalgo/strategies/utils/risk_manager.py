@@ -47,6 +47,7 @@ class RiskManager:
         'trade_cooldown_seconds': 300,       # 5 min between trades
         'trailing_stop_enabled': True,
         'trailing_stop_pct': 1.5,            # 1.5% trailing stop
+        'max_consecutive_losses': 3,         # Max consecutive losses allowed
     }
 
     def __init__(self, strategy_name: str, exchange: str = "NSE",
@@ -68,6 +69,7 @@ class RiskManager:
         # State tracking
         self.daily_pnl = 0.0
         self.daily_trades = 0
+        self.consecutive_losses = 0
         self.last_trade_time = 0
         self.positions: Dict[str, Dict] = {}  # symbol -> {qty, entry_price, stop_loss, trailing_stop}
         self.is_circuit_breaker_active = False
@@ -94,9 +96,10 @@ class RiskManager:
                     if last_date == today:
                         self.daily_pnl = data.get('daily_pnl', 0.0)
                         self.daily_trades = data.get('daily_trades', 0)
+                        self.consecutive_losses = data.get('consecutive_losses', 0)
                         self.positions = data.get('positions', {})
                         self.is_circuit_breaker_active = data.get('circuit_breaker', False)
-                        logger.info(f"Loaded today's state: PnL={self.daily_pnl}, Trades={self.daily_trades}")
+                        logger.info(f"Loaded today's state: PnL={self.daily_pnl}, Trades={self.daily_trades}, ConsecLoss={self.consecutive_losses}")
                     else:
                         # New day - reset daily counters but keep positions
                         self.positions = data.get('positions', {})
@@ -111,6 +114,7 @@ class RiskManager:
                 'date': datetime.now().strftime('%Y-%m-%d'),
                 'daily_pnl': self.daily_pnl,
                 'daily_trades': self.daily_trades,
+                'consecutive_losses': self.consecutive_losses,
                 'positions': self.positions,
                 'circuit_breaker': self.is_circuit_breaker_active,
                 'last_updated': datetime.now().isoformat()
@@ -137,6 +141,10 @@ class RiskManager:
             self.is_circuit_breaker_active = True
             self._save_state()
             return False, f"CIRCUIT BREAKER TRIGGERED - Daily loss {self.daily_pnl:.2f} exceeds limit {max_daily_loss:.2f}"
+
+        # Check consecutive losses
+        if self.consecutive_losses >= self.config['max_consecutive_losses']:
+            return False, f"MAX CONSECUTIVE LOSSES ({self.consecutive_losses}) REACHED - Trading Halted"
 
         # Check EOD square-off time
         if self._is_near_market_close():
@@ -321,6 +329,14 @@ class RiskManager:
 
         self.daily_pnl += pnl
 
+        # Update Consecutive Losses
+        if pnl < 0:
+            self.consecutive_losses += 1
+            logger.warning(f"Trade Loss: {pnl:.2f}. Consecutive Losses: {self.consecutive_losses}")
+        elif pnl > 0:
+            self.consecutive_losses = 0 # Reset on win
+            logger.info(f"Trade Win: {pnl:.2f}. Reset Consecutive Losses.")
+
         # Remove or reduce position
         if exit_qty >= abs(pos['qty']):
             del self.positions[symbol]
@@ -341,6 +357,7 @@ class RiskManager:
         return {
             'daily_pnl': self.daily_pnl,
             'daily_trades': self.daily_trades,
+            'consecutive_losses': self.consecutive_losses,
             'open_positions': len(self.positions),
             'circuit_breaker_active': self.is_circuit_breaker_active,
             'max_daily_loss_limit': self.capital * (self.config['max_daily_loss_pct'] / 100),
@@ -351,6 +368,7 @@ class RiskManager:
         """Reset daily counters (call at start of new trading day)."""
         self.daily_pnl = 0.0
         self.daily_trades = 0
+        self.consecutive_losses = 0
         self.is_circuit_breaker_active = False
         self._save_state()
         logger.info("Daily state reset")

@@ -1,97 +1,102 @@
-# OpenAlgo Daily Prep & Backtesting Guide
+# OpenAlgo Daily-Ready Trading Workflow
 
-This guide details the daily workflow for ensuring OpenAlgo is ready for trading, verifying symbols, and ranking strategies.
+This document outlines the standard daily preparation and trading workflow for the OpenAlgo strategy system.
 
-## 1. Daily Preparation
+## 🚀 Daily Startup Routine
 
-The `daily_startup.py` script is the main entry point for the trading day. It ensures the OpenAlgo repository is present and then executes the preparation workflow.
+The system provides a unified entrypoint to prepare the environment, validate symbols, and optionally run backtests.
 
 ### Usage
+
+Run the following command from the repository root:
+
 ```bash
-./daily_startup.py
+python3 daily_startup.py [flags]
 ```
 
-### What it does:
-1.  **Repository Check**: Checks for `openalgo/` directory. If missing, clones it from the repository.
-2.  **Daily Prep**: Launches `openalgo/scripts/daily_prep.py` which:
-    *   **Environment Check**: Verifies `OPENALGO_APIKEY` and repo structure.
-    *   **Purge Stale State**: Deletes previous day's:
-        *   Strategy state files (`openalgo/strategies/state/*.json`)
-        *   Cached instruments (`openalgo/data/instruments.csv`)
-        *   Session files (if any)
-    *   **Authentication Check**: Verifies connectivity to Broker (Kite/Dhan).
-    *   **Fetch Instruments**: Downloads the latest instrument list from the broker (or generates a mock list if API is unavailable).
-    *   **Symbol Validation**: Resolves all strategies in `active_strategies.json` to valid, tradable symbols for *today*.
+### Flags
 
-### Output
-The script outputs a validation table. If any strategy has an invalid symbol (e.g., expired option, missing future), the script **exits with an error**, preventing trading.
+| Flag | Description |
+|---|---|
+| (None) | Runs standard **Daily Prep** only (Env Check, Purge State, Login Check, Instruments Fetch, Validation). |
+| `--backtest` | Runs **Daily Prep** followed by the **Backtest Leaderboard** pipeline. |
+| `--tune` | Runs **Fine-Tuning Loop** (requires `--backtest`). Optimizes top strategies. |
 
-```
---- SYMBOL VALIDATION REPORT ---
-STRATEGY             | TYPE     | INPUT           | RESOLVED                  | STATUS
-------------------------------------------------------------------------------------------
-ORB_NIFTY            | EQUITY   | NIFTY           | NIFTY                     | ✅ Valid
-ATM_OPT_NIFTY        | OPT      | NIFTY           | Expiry: 2026-01-31        | ✅ Valid
-MCX_SILVER           | FUT      | SILVER          | SILVERMIC23NOVFUT         | ✅ Valid
+### Examples
+
+**Standard Daily Prep (Run before market open):**
+```bash
+python3 daily_startup.py
 ```
 
-## 2. Strategy Configuration
+**Prep + Generate Leaderboard:**
+```bash
+python3 daily_startup.py --backtest
+```
 
-Strategies are defined in `openalgo/strategies/active_strategies.json`.
+**Full Pipeline (Prep + Backtest + Tune):**
+```bash
+python3 daily_startup.py --backtest --tune
+```
 
-### Example Config
+---
+
+## 🛠️ What Happens During Startup?
+
+1.  **Environment Check**: Verifies `OPENALGO_APIKEY` and repository structure.
+2.  **Repo Hardening**: Ensures OpenAlgo core is cloned/updated in `vendor/openalgo/`.
+3.  **State Purge**: Deletes stale session files (`openalgo/sessions/`) and cached instruments.
+4.  **Login Verification**: Connects to the API using your key. Fails immediately if auth is invalid.
+5.  **Instrument Refresh**: Fetches fresh `instruments.csv` (NSE Equity/Derivatives + MCX).
+6.  **Symbol Validation**:
+    *   Iterates through all strategies in `openalgo/strategies/active_strategies.json`.
+    *   Resolves abstract configs (e.g. `{"underlying": "NIFTY", "type": "OPT"}`) to tradable symbols.
+    *   **HALTS TRADING** if any symbol cannot be resolved (e.g. invalid underlying or missing option chain).
+
+---
+
+## 📝 Symbol Formatting & Resolution Rules
+
+We enforce strict rules to ensure trades are executed on valid, liquid contracts.
+
+### 1. NSE Options
+Strategies should use abstract configuration instead of hardcoded symbols:
 ```json
-{
-    "ORB_NIFTY": {
-        "strategy": "orb_strategy",
-        "underlying": "NIFTY",
-        "type": "EQUITY",
-        "exchange": "NSE",
-        "params": { "quantity": 50 }
-    },
-    "MCX_SILVER": {
-        "strategy": "mcx_commodity_momentum_strategy",
-        "underlying": "SILVER",
-        "type": "FUT",
-        "exchange": "MCX",
-        "params": { "quantity": 1 }
-    }
+"NIFTY_STRATEGY": {
+    "underlying": "NIFTY",
+    "type": "OPT",
+    "option_type": "CE",
+    "expiry_preference": "WEEKLY",  // or "MONTHLY"
+    "strike_criteria": "ATM"        // or "ITM", "OTM"
 }
 ```
+*   **Weekly**: Automatically selects the nearest Thursday expiry.
+*   **Monthly**: Automatically selects the last Thursday of the current month cycle.
 
-## 3. Symbol Resolver Logic
+### 2. MCX Futures
+We explicitly prefer **MINI** contracts to manage risk.
+*   **Logic**: The system sorts valid futures by **Lot Size** (ascending).
+*   **Result**: It will pick **MICRO** (e.g. `SILVERMIC...`) or **MINI** (`SILVERM...`) over Standard contracts if available.
+*   **Fallback**: If no Mini/Micro is found, it falls back to the Standard contract and logs a warning.
 
-The `SymbolResolver` (`openalgo/strategies/utils/symbol_resolver.py`) handles dynamic symbol selection.
+---
 
-*   **Equity**: Verifies existence in master list.
-*   **Futures (NSE/MCX)**:
-    *   Selects the nearest expiry.
-    *   **MCX Specific**: Prefers **MINI** contracts (containing 'M' or 'MINI') if available. Fallback to standard if not.
-*   **Options**:
-    *   Filters by Underlying, Type (CE/PE).
-    *   Selects expiry based on preference (WEEKLY/MONTHLY).
-    *   Validates that contracts exist for the target date.
+## ❓ Troubleshooting
 
-## 4. Daily Backtest & Ranking
+### "Login Required" Error
+*   **Cause**: The system could not verify your API Key or the session was invalid.
+*   **Fix**:
+    1.  Ensure `OPENALGO_APIKEY` is set in your environment.
+    2.  If running locally, ensure the OpenAlgo server is running (`make run` or similar).
+    3.  Visit the OpenAlgo dashboard to refresh your session/key if needed.
 
-To run a simulation backtest of all active strategies:
+### "Validation Failed" / "Invalid Symbol"
+*   **Cause**: A strategy in `active_strategies.json` references an underlying that doesn't exist in the fetched instruments.
+*   **Fix**:
+    1.  Check `active_strategies.json`.
+    2.  Ensure `instruments.csv` was fetched correctly (check logs).
+    3.  If trading Options, ensure the market is open or data is available for the requested expiry.
 
-```bash
-./openalgo/scripts/run_daily_backtest.py
-```
-
-This script:
-1.  Loads `active_strategies.json`.
-2.  Resolves symbols using the fresh instrument list.
-3.  **Real Backtest**: Runs the actual strategy logic (e.g. `ORBStrategy.calculate_signals`) against generated/historical data.
-4.  **Fine-Tuning**: Automatically runs a grid search optimization for supported strategies (e.g., finding optimal `minutes` for ORB).
-5.  Generates a Leaderboard (console table + `leaderboard.json`).
-
-## 5. Troubleshooting
-
-*   **API Connection Failed**: Ensure the local OpenAlgo server (port 5001/5002) is running.
-*   **Invalid Symbol**:
-    *   Check `instruments.csv` in `openalgo/data`.
-    *   Verify the contract exists (e.g., is today a holiday? did expiry happen yesterday?).
-    *   Update `active_strategies.json` if the underlying name changed.
-*   **Login Issues**: Run `openalgo/scripts/authentication_health_check.py` manually for details.
+### "Repo not found"
+*   **Cause**: You are running the script from outside the root.
+*   **Fix**: `cd` to the repository root before running `daily_startup.py`.
