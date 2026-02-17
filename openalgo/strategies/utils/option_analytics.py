@@ -1,15 +1,21 @@
 import math
 import logging
+import numpy as np
 
 logger = logging.getLogger("OptionAnalytics")
 
-def norm_cdf(x):
-    """Cumulative distribution function for the standard normal distribution"""
-    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+try:
+    from scipy.stats import norm
+    norm_cdf = norm.cdf
+    norm_pdf = norm.pdf
+except ImportError:
+    def norm_cdf(x):
+        """Cumulative distribution function for the standard normal distribution"""
+        return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
-def norm_pdf(x):
-    """Probability density function for the standard normal distribution"""
-    return (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x**2)
+    def norm_pdf(x):
+        """Probability density function for the standard normal distribution"""
+        return (1.0 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x**2)
 
 def calculate_greeks(S, K, T, r, sigma, option_type='ce'):
     """
@@ -23,7 +29,18 @@ def calculate_greeks(S, K, T, r, sigma, option_type='ce'):
     """
     try:
         # Handle edge cases
-        if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        if T <= 0.0001:  # Virtually 0 time to expiry
+            # Intrinsic value delta
+            delta = 0
+            if option_type.lower() in ['ce', 'call']:
+                delta = 1.0 if S > K else 0.0
+            else:
+                delta = -1.0 if S < K else 0.0
+            return {
+                "delta": delta, "gamma": 0, "theta": 0, "vega": 0, "rho": 0
+            }
+
+        if sigma <= 0 or S <= 0 or K <= 0:
             return {
                 "delta": 0, "gamma": 0, "theta": 0, "vega": 0, "rho": 0
             }
@@ -31,7 +48,7 @@ def calculate_greeks(S, K, T, r, sigma, option_type='ce'):
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
         d2 = d1 - sigma * math.sqrt(T)
 
-        if option_type.lower() == 'ce' or option_type.lower() == 'call':
+        if option_type.lower() in ['ce', 'call']:
             delta = norm_cdf(d1)
             theta = (- (S * norm_pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm_cdf(d2)) / 365.0
             rho = K * T * math.exp(-r * T) * norm_cdf(d2)
@@ -58,6 +75,10 @@ def calculate_iv(price, S, K, T, r, option_type='ce', tol=1e-5, max_iter=100):
     """
     Calculate Implied Volatility using Newton-Raphson method.
     """
+    # Safety check
+    if price <= 0 or S <= 0 or K <= 0 or T <= 0:
+        return 0.0
+
     sigma = 0.5 # Initial guess
     for i in range(max_iter):
         greeks = calculate_greeks(S, K, T, r, sigma, option_type)
@@ -66,7 +87,7 @@ def calculate_iv(price, S, K, T, r, option_type='ce', tol=1e-5, max_iter=100):
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
         d2 = d1 - sigma * math.sqrt(T)
 
-        if option_type.lower() == 'ce' or option_type.lower() == 'call':
+        if option_type.lower() in ['ce', 'call']:
             theo_price = S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
         else:
             theo_price = K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
@@ -82,7 +103,41 @@ def calculate_iv(price, S, K, T, r, option_type='ce', tol=1e-5, max_iter=100):
 
         sigma = sigma - diff / vega
 
+        # Clamp sigma to avoid negatives or explosion
+        if sigma <= 0: sigma = 0.01
+        if sigma > 5: sigma = 5.0
+
     return 0.0 # Failed to converge
+
+def calculate_iv_rank(current_iv, low_iv, high_iv):
+    """
+    Calculate IV Rank.
+    IV Rank = (Current IV - Low IV) / (High IV - Low IV) * 100
+    """
+    try:
+        if high_iv == low_iv:
+            return 50.0 # Neutral if range is zero
+
+        rank = ((current_iv - low_iv) / (high_iv - low_iv)) * 100
+        return max(0.0, min(100.0, rank))
+    except Exception as e:
+        logger.error(f"Error calculating IV Rank: {e}")
+        return 50.0
+
+def calculate_iv_percentile(current_iv, historical_iv_series):
+    """
+    Calculate IV Percentile.
+    % of days in history where IV < current_iv
+    """
+    try:
+        if not historical_iv_series or len(historical_iv_series) == 0:
+            return 50.0
+
+        count_below = sum(1 for iv in historical_iv_series if iv < current_iv)
+        return (count_below / len(historical_iv_series)) * 100
+    except Exception as e:
+        logger.error(f"Error calculating IV Percentile: {e}")
+        return 50.0
 
 def calculate_max_pain(chain_data):
     """
@@ -90,8 +145,10 @@ def calculate_max_pain(chain_data):
     chain_data: List of dicts with 'strike', 'ce_oi', 'pe_oi'
     """
     try:
-        strikes = [item['strike'] for item in chain_data]
-        strikes.sort()
+        if not chain_data:
+            return None
+
+        strikes = sorted(list(set([item['strike'] for item in chain_data])))
 
         total_loss = []
         for strike in strikes:
@@ -100,6 +157,12 @@ def calculate_max_pain(chain_data):
                 k = item['strike']
                 ce_oi = item.get('ce_oi', 0)
                 pe_oi = item.get('pe_oi', 0)
+
+                # If structure is nested (Dhan API style check)
+                if 'ce' in item and 'oi' in item['ce']:
+                     ce_oi = item['ce']['oi']
+                if 'pe' in item and 'oi' in item['pe']:
+                     pe_oi = item['pe']['oi']
 
                 # If market expires at 'strike'
                 # Call writers lose if strike > k
@@ -110,6 +173,9 @@ def calculate_max_pain(chain_data):
                 if strike < k:
                     loss += (k - strike) * pe_oi
             total_loss.append(loss)
+
+        if not total_loss:
+            return None
 
         min_loss_idx = total_loss.index(min(total_loss))
         return strikes[min_loss_idx]
@@ -126,13 +192,17 @@ def calculate_pcr(chain_data):
         total_pe_oi = 0
 
         for item in chain_data:
+            ce_oi = item.get('ce_oi', 0)
+            pe_oi = item.get('pe_oi', 0)
+
             # Handle flattened or nested structure
-            if 'ce_oi' in item:
-                total_ce_oi += item.get('ce_oi', 0)
-                total_pe_oi += item.get('pe_oi', 0)
-            else:
-                total_ce_oi += item.get('ce', {}).get('oi', 0)
-                total_pe_oi += item.get('pe', {}).get('oi', 0)
+            if 'ce' in item:
+                 ce_oi = item['ce'].get('oi', 0)
+            if 'pe' in item:
+                 pe_oi = item['pe'].get('oi', 0)
+
+            total_ce_oi += ce_oi
+            total_pe_oi += pe_oi
 
         if total_ce_oi == 0:
             return 0
