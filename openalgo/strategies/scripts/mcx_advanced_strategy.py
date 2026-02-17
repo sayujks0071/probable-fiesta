@@ -46,7 +46,8 @@ STRATEGY_TEMPLATES = {
     'Momentum': 'mcx_commodity_momentum_strategy.py',
     'Arbitrage': 'mcx_global_arbitrage_strategy.py',
     'Spread': 'mcx_inter_commodity_spread_strategy.py',
-    'MeanReversion': 'mcx_commodity_momentum_strategy.py', # Fallback
+    'MeanReversion': 'mcx_commodity_momentum_strategy.py', # Fallback to Momentum with tweak
+    'CalendarSpread': 'mcx_calendar_spread_strategy.py',
 }
 
 # Setup Logging
@@ -81,6 +82,8 @@ class AdvancedMCXStrategy:
         ]
 
         self.opportunities = []
+        self.spread_opportunities = []
+        self.rollover_alerts = []
 
     def _load_fundamental_data(self):
         """Load fundamental data from JSON file or return default."""
@@ -261,6 +264,85 @@ class AdvancedMCXStrategy:
         }
         return seasonality.get(commodity_name, {}).get(month, 50)
 
+    def analyze_spreads(self):
+        """Analyze Inter-Commodity Spreads (Gold/Silver Ratio)."""
+        logger.info("Analyzing Inter-Commodity Spreads...")
+
+        # 1. Gold/Silver Ratio
+        gold = next((c for c in self.commodities if c['name'] == 'GOLD'), None)
+        silver = next((c for c in self.commodities if c['name'] == 'SILVER'), None)
+
+        if gold and silver and gold.get('valid') and silver.get('valid'):
+            ratio = gold['ltp'] / silver['ltp'] if silver['ltp'] > 0 else 0
+            # Assume mean ratio is around 80 (historical approx)
+            mean_ratio = 80.0
+            deviation = (ratio - mean_ratio)
+
+            logger.info(f"Gold/Silver Ratio: {ratio:.2f}")
+
+            signal = None
+            if ratio > 90:
+                signal = "SELL SPREAD (Sell Gold, Buy Silver)" # Ratio too high
+            elif ratio < 70:
+                signal = "BUY SPREAD (Buy Gold, Sell Silver)" # Ratio too low
+
+            if signal:
+                self.spread_opportunities.append({
+                    'name': 'Gold/Silver Ratio',
+                    'symbol1': gold['symbol'],
+                    'symbol2': silver['symbol'],
+                    'current_value': ratio,
+                    'signal': signal,
+                    'strategy_type': 'Spread'
+                })
+
+    def rollover_check(self):
+        """Check for contracts nearing expiry."""
+        logger.info("Checking for Rollover Opportunities...")
+        import re
+        # MCX Format: SYMBOL + DAY (2) + MONTH (3) + YEAR (2) + FUT
+        # e.g., GOLDM05FEB26FUT
+        mcx_pattern = re.compile(r'([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT')
+
+        for comm in self.commodities:
+            if not comm.get('valid'): continue
+
+            symbol = comm['symbol']
+            match = mcx_pattern.search(symbol)
+            if match:
+                day_str = match.group(2)
+                mon_str = match.group(3)
+                year_str = match.group(4)
+
+                # Full date string
+                full_year = f"20{year_str}"
+                expiry_str = f"{day_str}{mon_str}{full_year}"
+
+                try:
+                    expiry_date = datetime.strptime(expiry_str, "%d%b%Y")
+                    days_to_expiry = (expiry_date - datetime.now()).days
+
+                    logger.info(f"{symbol} expires in {days_to_expiry} days ({expiry_date.strftime('%Y-%m-%d')})")
+
+                    if days_to_expiry <= 5:
+                        alert = f"⚠️ {symbol} expires in {days_to_expiry} days! Consider Rollover."
+                        self.rollover_alerts.append(alert)
+
+                        # Add Calendar Spread Opportunity if not already present
+                        exists = any(s['symbol1'] == symbol for s in self.spread_opportunities if s['strategy_type'] == 'CalendarSpread')
+                        if not exists:
+                            self.spread_opportunities.append({
+                                'name': f"Rollover Spread {comm['name']}",
+                                'symbol1': symbol,
+                                'symbol2': f"{symbol[:-5]}NEXTFUT", # Hypothetical Next Month Symbol
+                                'current_value': 0,
+                                'signal': "ROLLOVER REQUIRED",
+                                'strategy_type': 'CalendarSpread'
+                            })
+
+                except ValueError as e:
+                    logger.error(f"Error parsing date for {symbol}: {e}")
+
     def analyze_commodities(self):
         """
         Multi-Factor Scoring & Strategy Selection.
@@ -368,6 +450,10 @@ class AdvancedMCXStrategy:
         # Sort opportunities
         self.opportunities.sort(key=lambda x: x['score'], reverse=True)
 
+        # Analyze Spreads
+        self.analyze_spreads()
+        self.rollover_check()
+
     def generate_report(self):
         """
         Generate and print the daily analysis report.
@@ -410,16 +496,28 @@ class AdvancedMCXStrategy:
             top_picks.append(opp)
             if len(top_picks) >= 6: break # Top 6
 
+        if self.spread_opportunities:
+            print("\n⚖️ SPREAD OPPORTUNITIES:")
+            for spread in self.spread_opportunities:
+                print(f"- {spread['name']}: {spread['current_value']:.2f} -> {spread['signal']}")
+                print(f"  Legacy: {spread['symbol1']} / {spread['symbol2']}")
+
+        if self.rollover_alerts:
+            print("\n🔄 ROLLOVER ALERTS:")
+            for alert in self.rollover_alerts:
+                print(f"- {alert}")
+
         print("\n🔧 STRATEGY ENHANCEMENTS APPLIED:")
         print("- MCX Momentum: Added USD/INR adjustment factor")
         print("- MCX Momentum: Enhanced with global price correlation filter")
         print("- MCX Momentum: Added seasonality-based position sizing")
         print("- MCX Global Arbitrage: Added yfinance backup for global prices")
+        print("- Spread Strategy: Added Gold/Silver Ratio analysis")
 
         print("\n💡 NEW STRATEGIES CREATED:")
         print("- Global-MCX Arbitrage: Trade MCX when it diverges from global prices -> mcx_global_arbitrage_strategy.py")
-        print("  - Logic: Compares MCX Price vs Global Price (yfinance)")
-        print("  - Entry: Divergence > 3%")
+        print("- Inter-Commodity Spread: Gold/Silver Ratio -> mcx_inter_commodity_spread_strategy.py")
+        print("- Calendar Spread: Rollover/Basis Trading -> mcx_calendar_spread_strategy.py")
 
         print("\n⚠️ RISK WARNINGS:")
         if self.market_context['usd_volatility'] > 0.8:
@@ -438,9 +536,20 @@ class AdvancedMCXStrategy:
                   f"--usd_inr_trend {self.market_context['usd_trend']} " \
                   f"--usd_inr_volatility {self.market_context['usd_volatility']} " \
                   f"--seasonality_score {pick['details']['seasonality_score']} " \
-                  f"--global_alignment_score {pick['details']['global_score']}"
+                  f"--global_alignment_score {pick['details']['global_score']} " \
+                  f"--fundamental_score {pick['details']['fundamental_score']}"
             deploy_cmds.append(cmd)
             print(f"- {pick['name']}: {cmd}")
+
+        for spread in self.spread_opportunities:
+            script_name = STRATEGY_TEMPLATES.get(spread['strategy_type'], 'mcx_inter_commodity_spread_strategy.py')
+            if spread['strategy_type'] == 'CalendarSpread':
+                cmd = f"python3 strategies/scripts/{script_name} --symbol_near {spread['symbol1']} --symbol_far {spread['symbol2']}"
+            else:
+                cmd = f"python3 strategies/scripts/{script_name} --symbol1 {spread['symbol1']} --symbol2 {spread['symbol2']}"
+
+            deploy_cmds.append(cmd)
+            print(f"- Spread {spread['name']}: {cmd}")
 
         return deploy_cmds
 
