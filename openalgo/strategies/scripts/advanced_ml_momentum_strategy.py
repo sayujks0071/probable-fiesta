@@ -67,7 +67,15 @@ class MLMomentumStrategy:
         df['rsi'] = 100 - (100 / (1 + rs_val))
 
         # SMA for Trend
-        df['sma50'] = df['close'].rolling(50).mean()
+        sma_period = getattr(self, 'sma_period', 50)
+        df['sma_trend'] = df['close'].rolling(sma_period).mean()
+
+        # ATR for Risk Management
+        tr1 = df['high'] - df['low']
+        tr2 = (df['high'] - df['close'].shift(1)).abs()
+        tr3 = (df['low'] - df['close'].shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean().iloc[-1]
 
         last = df.iloc[-1]
         current_price = last['close']
@@ -86,15 +94,15 @@ class MLMomentumStrategy:
             last['rsi'] > 55 and
             rs_excess > 0 and
             sector_outperformance > 0 and
-            current_price > last['sma50'] and
+            current_price > last['sma_trend'] and
             sentiment >= 0):
 
             # Volume check
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             if last['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
-                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi']}
+                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi'], 'atr': atr}
 
-        return 'HOLD', 0.0, {}
+        return 'HOLD', 0.0, {'atr': atr}
 
     def calculate_relative_strength(self, df, index_df):
         if index_df.empty: return 1.0
@@ -273,7 +281,8 @@ def generate_signal(df, client=None, symbol=None, params=None):
         'threshold': 0.01,
         'stop_pct': 1.0,
         'sector': 'NIFTY 50',
-        'vol_multiplier': 0.5
+        'vol_multiplier': 0.5,
+        'sma_period': 50
     }
     if params:
         strat_params.update(params)
@@ -287,6 +296,9 @@ def generate_signal(df, client=None, symbol=None, params=None):
         sector=strat_params.get('sector', 'NIFTY 50'),
         vol_multiplier=float(strat_params.get('vol_multiplier', 0.5))
     )
+
+    if 'sma_period' in strat_params:
+        strat.sma_period = int(strat_params['sma_period'])
 
     # Silence logger
     strat.logger.handlers = []
