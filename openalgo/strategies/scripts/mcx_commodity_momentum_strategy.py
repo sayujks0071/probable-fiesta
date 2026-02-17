@@ -108,14 +108,21 @@ class MCXMomentumStrategy:
         if current.get('atr', 0) < min_atr:
              return 'HOLD', 0.0, {'reason': 'Low Volatility'}
 
+        # Trend Filter
+        sma = current.get('sma', 0)
+        is_uptrend = current['close'] > sma
+        is_downtrend = current['close'] < sma
+
         if (current['adx'] > self.params['adx_threshold'] and
-            current['rsi'] > 50 and
-            current['close'] > prev['close']):
+            current['rsi'] > 55 and
+            current['close'] > prev['close'] and
+            is_uptrend):
             action = 'BUY'
 
         elif (current['adx'] > self.params['adx_threshold'] and
-              current['rsi'] < 50 and
-              current['close'] < prev['close']):
+              current['rsi'] < 45 and
+              current['close'] < prev['close'] and
+              is_downtrend):
             action = 'SELL'
 
         return action, 1.0, {'atr': current.get('atr', 0)}
@@ -170,6 +177,10 @@ class MCXMomentumStrategy:
         dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
         df['adx'] = dx.rolling(window=self.params['period_adx']).mean()
 
+        # SMA Filter
+        sma_period = self.params.get('sma_period', 50)
+        df['sma'] = df['close'].rolling(window=sma_period).mean()
+
         self.data = df
 
     def check_signals(self):
@@ -211,21 +222,29 @@ class MCXMomentumStrategy:
             logger.info("Global Alignment Weak: Skipping new entries.")
             return
 
+        # SMA Trend Filter
+        is_uptrend = current['close'] > current.get('sma', 0)
+        is_downtrend = current['close'] < current.get('sma', float('inf'))
+
         # Entry Logic
         if not has_position:
             # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
+            # Added SMA Filter: Must be above SMA50
             if (current['adx'] > self.params['adx_threshold'] and
                 current['rsi'] > 55 and
-                current['close'] > prev['close']):
+                current['close'] > prev['close'] and
+                is_uptrend):
 
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
             # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
+            # Added SMA Filter: Must be below SMA50
             elif (current['adx'] > self.params['adx_threshold'] and
                   current['rsi'] < 45 and
-                  current['close'] < prev['close']):
+                  current['close'] < prev['close'] and
+                  is_downtrend):
 
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:

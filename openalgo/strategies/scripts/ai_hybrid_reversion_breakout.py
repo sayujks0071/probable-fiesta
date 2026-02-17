@@ -87,6 +87,10 @@ class AIHybridStrategy:
         df['upper'] = df['sma20'] + (2 * df['std'])
         df['lower'] = df['sma20'] - (2 * df['std'])
 
+        # ADX Filter
+        df = self.calculate_adx(df)
+        last_adx = df['adx'].iloc[-1] if 'adx' in df.columns else 0
+
         # Regime Filter (SMA200)
         df['sma200'] = df['close'].rolling(200).mean()
 
@@ -97,7 +101,12 @@ class AIHybridStrategy:
         # Stop Loss distance is roughly 2 * ATR
         # Risk = Qty * 2 * ATR  => Qty = Risk / (2 * ATR)
 
-        atr = df['high'].diff().abs().rolling(14).mean().iloc[-1] # Simple ATR approx
+        # Better ATR calculation
+        tr1 = df['high'] - df['low']
+        tr2 = (df['high'] - df['close'].shift(1)).abs()
+        tr3 = (df['low'] - df['close'].shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean().iloc[-1]
 
         risk_amount = 1000.0 # 1% of 100k
 
@@ -116,23 +125,47 @@ class AIHybridStrategy:
             is_bullish_regime = False
 
         # Reversion Logic: RSI < 30 and Price < Lower BB (Oversold)
+        # Improvement: Only Mean Revert if market is Ranging (ADX < 25)
         if last['rsi'] < self.rsi_lower and last['close'] < last['lower']:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-            # Enhanced Volume Confirmation (Stricter than average)
-            if last['volume'] > avg_vol * 1.2:
+
+            # Regime Filter: ADX < 25 implies range bound, safer for reversion
+            if last['volume'] > avg_vol * 1.2 and last_adx < 25:
                 # Reversion can trade against trend, so maybe ignore regime or be strict?
-                # Let's say Reversion is allowed in any regime if oversold enough.
-                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+                return 'BUY', 1.0, {'type': 'REVERSION', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
 
         # Breakout Logic: RSI > 60 and Price > Upper BB
         elif last['rsi'] > self.rsi_upper and last['close'] > last['upper']:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             # Breakout needs significant volume (2x avg)
-            # Breakout ONLY in Bullish Regime
-            if last['volume'] > avg_vol * 2.0 and is_bullish_regime:
-                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty}
+            # Breakout ONLY in Bullish Regime AND Strong Trend Potential (ADX Rising or > 20)
+            if last['volume'] > avg_vol * 2.0 and is_bullish_regime and last_adx > 20:
+                 return 'BUY', 1.0, {'type': 'BREAKOUT', 'rsi': last['rsi'], 'close': last['close'], 'quantity': qty, 'atr': atr}
 
-        return 'HOLD', 0.0, {}
+        return 'HOLD', 0.0, {'atr': atr}
+
+    def calculate_adx(self, df, period=14):
+        """Calculate ADX"""
+        try:
+            df = df.copy()
+            plus_dm = df['high'].diff()
+            minus_dm = df['low'].diff()
+            plus_dm[plus_dm < 0] = 0
+            minus_dm[minus_dm > 0] = 0
+
+            tr1 = df['high'] - df['low']
+            tr2 = (df['high'] - df['close'].shift(1)).abs()
+            tr3 = (df['low'] - df['close'].shift(1)).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+            atr = tr.rolling(period).mean()
+            plus_di = 100 * (plus_dm.ewm(alpha=1/period).mean() / atr)
+            minus_di = 100 * (minus_dm.abs().ewm(alpha=1/period).mean() / atr)
+            dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+            df['adx'] = dx.rolling(period).mean()
+            return df
+        except:
+            return df
 
     def get_market_context(self):
         # Fetch VIX

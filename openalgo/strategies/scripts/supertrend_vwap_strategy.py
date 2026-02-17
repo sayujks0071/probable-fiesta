@@ -144,7 +144,10 @@ class SuperTrendVWAPStrategy:
 
         vol_mean = df['volume'].rolling(20).mean().iloc[-1]
         vol_std = df['volume'].rolling(20).std().iloc[-1]
-        dynamic_threshold = vol_mean + (1.5 * vol_std)
+
+        # Adjustable Volume Multiplier (Default 1.5)
+        vol_mult = getattr(self, 'vol_multiplier', 1.5)
+        dynamic_threshold = vol_mean + (vol_mult * vol_std)
         is_volume_spike = last['volume'] > dynamic_threshold
 
         is_above_poc = last['close'] > poc_price
@@ -155,7 +158,16 @@ class SuperTrendVWAPStrategy:
         is_strong_trend = adx > self.adx_threshold
 
         # Sector check (Mocked for backtest usually, or passed via client)
-        sector_bullish = True
+        # Allow disabling sector check for backtest
+        sector_bullish = getattr(self, 'sector_bullish', True)
+
+        # Allow disabling POC check
+        use_poc_filter = getattr(self, 'use_poc_filter', True)
+        poc_condition = is_above_poc if use_poc_filter else True
+
+        # Allow disabling Uptrend check
+        use_trend_filter = getattr(self, 'use_trend_filter', True)
+        trend_condition = is_uptrend if use_trend_filter else True
 
         score = 0
         details = {
@@ -166,7 +178,7 @@ class SuperTrendVWAPStrategy:
             'adx': adx
         }
 
-        if is_above_vwap and is_volume_spike and is_above_poc and is_not_overextended and sector_bullish and is_strong_trend and is_uptrend:
+        if is_above_vwap and is_volume_spike and poc_condition and is_not_overextended and sector_bullish and is_strong_trend and trend_condition:
             return 'BUY', 1.0, details
 
         # Sell Logic (Inverse for completeness?)
@@ -465,6 +477,12 @@ def generate_signal(df, client=None, symbol=None, params=None):
         if 'threshold' in params: strat.threshold = params['threshold']
         if 'stop_pct' in params: strat.stop_pct = params['stop_pct']
         if 'adx_threshold' in params: strat.adx_threshold = params['adx_threshold']
+
+        # New Params
+        if 'vol_multiplier' in params: strat.vol_multiplier = float(params['vol_multiplier'])
+        if 'sector_bullish' in params: strat.sector_bullish = bool(params['sector_bullish'])
+        if 'use_poc_filter' in params: strat.use_poc_filter = bool(params['use_poc_filter'])
+        if 'use_trend_filter' in params: strat.use_trend_filter = bool(params['use_trend_filter'])
 
     # Set Breakeven Trigger
     setattr(strat, 'BREAKEVEN_TRIGGER_R', 1.5)
