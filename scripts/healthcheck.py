@@ -18,8 +18,11 @@ from datetime import datetime, timedelta
 # Configuration
 LOKI_URL = "http://localhost:3100"
 GRAFANA_URL = "http://localhost:3000"
-LOG_FILE = os.path.join(os.path.dirname(__file__), "../logs/healthcheck.log")
-OPENALGO_LOG_FILE = os.path.join(os.path.dirname(__file__), "../logs/openalgo.log")
+
+# Resolve paths relative to this script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(SCRIPT_DIR)
+LOG_FILE = os.path.join(REPO_ROOT, "logs", "healthcheck.log")
 
 # Alert Thresholds
 ERROR_THRESHOLD = 5 # Max errors in 5m
@@ -43,7 +46,8 @@ logger.addHandler(console)
 
 def check_service(name, url, timeout=2):
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             code = resp.getcode()
             if code < 400: # 200-399 is OK
                 return True, f"OK ({code})"
@@ -55,13 +59,31 @@ def check_service(name, url, timeout=2):
 
 def check_process(pattern):
     try:
-        # Use pgrep
-        cmd = ["pgrep", "-f", pattern]
-        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        pids = output.decode().strip().split('\n')
-        return True, f"Running ({len(pids)} processes: {', '.join(pids)})"
+        # Use pgrep -a -f to get full command line
+        # We need to filter out this script itself
+        cmd = ["pgrep", "-a", "-f", pattern]
+        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode()
+
+        processes = []
+        for line in output.strip().split('\n'):
+            if not line: continue
+            pid, *cmd_parts = line.split(' ', 1)
+            cmd_str = cmd_parts[0] if cmd_parts else ""
+
+            # Exclude self (healthcheck.py)
+            if "healthcheck.py" in cmd_str:
+                continue
+
+            # Exclude simple editors or unrelated things if needed
+            processes.append(pid)
+
+        if processes:
+            return True, f"Running ({len(processes)} processes: {', '.join(processes)})"
+        return False, "Not Running"
     except subprocess.CalledProcessError:
         return False, "Not Running"
+    except Exception as e:
+        return False, f"Error checking process: {e}"
 
 def query_loki(query, start_time_ns):
     try:
@@ -69,7 +91,7 @@ def query_loki(query, start_time_ns):
         url = f"{LOKI_URL}/loki/api/v1/query_range"
         params = urllib.parse.urlencode({
             'query': query,
-            'start': start_time_ns,
+            'start': str(start_time_ns),
             'limit': 1000
         })
         full_url = f"{url}?{params}"
@@ -115,6 +137,8 @@ def send_alert(title, message):
     # 2. Desktop Notification (Linux/Mac)
     try:
         if sys.platform == "linux":
+            # Check if notify-send exists
+            subprocess.run(["which", "notify-send"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["notify-send", title, message], check=False)
         elif sys.platform == "darwin":
              subprocess.run(["osascript", "-e", f'display notification "{message}" with title "{title}"'], check=False)
@@ -128,7 +152,9 @@ def main():
     loki_ok, loki_msg = check_service("Loki", f"{LOKI_URL}/ready")
     grafana_ok, graf_msg = check_service("Grafana", f"{GRAFANA_URL}/login")
 
-    # Check OpenAlgo Process (look for python scripts)
+    # Check OpenAlgo Process (look for python scripts running openalgo or app.py)
+    # Just looking for "openalgo" usually finds the directory path in command line
+    # A better pattern might be needed, but "openalgo" is broad enough.
     oa_ok, oa_msg = check_process("openalgo")
 
     logger.info(f"Loki: {loki_msg}")
@@ -140,13 +166,14 @@ def main():
 
     # 2. Log Analysis (Alerting)
     if loki_ok:
-        now = time.time_ns()
-        start = now - (ALERT_LOOKBACK_MINUTES * 60 * 1_000_000_000)
+        # Current time in ns
+        now_ns = time.time_ns()
+        # Start time: ALERT_LOOKBACK_MINUTES ago
+        start_ns = now_ns - (ALERT_LOOKBACK_MINUTES * 60 * 1_000_000_000)
 
         # A. Error Spike
-        # Query: count_over_time({job="openalgo"} |= "ERROR" [5m])
-        # But here we just fetch lines and count
-        error_count, error_lines = query_loki('{job="openalgo"} |= "ERROR"', start)
+        # Query: {job="openalgo"} |= "ERROR"
+        error_count, error_lines = query_loki('{job="openalgo"} |= "ERROR"', start_ns)
         logger.info(f"Errors in last {ALERT_LOOKBACK_MINUTES}m: {error_count}")
 
         if error_count > ERROR_THRESHOLD:
@@ -156,17 +183,13 @@ def main():
         # B. Critical Keywords (Immediate)
         # "Auth failed", "Token invalid", "Order rejected", "Broker error"
         critical_patterns = ["Auth failed", "Token invalid", "Order rejected", "Broker error", "Invalid symbol"]
-        # Construct query: {job="openalgo"} |~ "Auth failed|Token invalid|..."
+        # Construct query: {job="openalgo"} |~ "(?i)Auth failed|Token invalid|..."
         regex = "|".join(critical_patterns)
-        crit_count, crit_lines = query_loki(f'{{job="openalgo"}} |~ "(?i){regex}"', start)
+        crit_count, crit_lines = query_loki(f'{{job="openalgo"}} |~ "(?i){regex}"', start_ns)
 
         if crit_count > 0:
             sample = "\n".join(crit_lines[:3])
             send_alert("Critical Event", f"Found {crit_count} critical events.\nSample:\n{sample}")
-
-    else:
-        # Fallback to reading file if Loki is down?
-        pass
 
     logger.info("--- Health Check Complete ---")
 
