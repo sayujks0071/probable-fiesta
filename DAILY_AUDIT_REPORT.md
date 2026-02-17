@@ -1,22 +1,22 @@
-# 📊 DAILY AUDIT REPORT - 2024-05-23
+📊 DAILY AUDIT REPORT - 2026-02-17
 
-## 🔴 CRITICAL (Fix Immediately)
-- **Hardcoded Credentials** → `mcx_commodity_momentum_strategy.py` → Removed dummy keys and improved argument handling.
-- **Silent Failures** → `supertrend_vwap_strategy.py` → Fixed VIX fetch error handling to log warning instead of silent fail/crash.
-- **Missing Exit Logic** → `supertrend_vwap_strategy.py` → Added explicit exit when price crosses below VWAP.
+🔴 CRITICAL (Fix Immediately):
+- [Logic Error] → `RiskManager` → Fixed EOD square-off to use actual execution price for PnL.
+- [Lookahead Bias] → `mcx_commodity_momentum_strategy.py` → Fixed signal generation to use completed candle (`iloc[-2]`).
+- [Hardcoded Creds] → `advanced_ml_momentum_strategy.py` → Removed hardcoded API keys/ports.
 
-## 🟡 HIGH PRIORITY (This Week)
-- **Code Duplication** → `trading_utils.py` → Added `normalize_symbol` to centralize NIFTY/BANKNIFTY handling.
-- **Logic Consistency** → `ai_hybrid_reversion_breakout.py` → Updated to use centralized `normalize_symbol`.
+🟡 HIGH PRIORITY (This Week):
+- [Reliability] → `gap_fade_strategy.py` → Fixed date logic for previous close (was using `iloc[-1]` blindly).
+- [Reliability] → `gap_fade_strategy.py` → Added `--loop` mode for continuous execution.
+- [Code Quality] → All Strategies → Standardized imports and `pathlib` usage.
 
-## 🟢 OPTIMIZATION (Nice to Have)
-- **Performance** → `mcx_commodity_momentum_strategy.py` → Added comment for future optimization of `calculate_indicators` to avoid redundant calculations.
+🟢 OPTIMIZATION (Nice to Have):
+- [Refactoring] → `mcx_commodity_momentum_strategy.py` → Consolidated signal logic to avoid duplication.
+- [Argparse] → `mcx_commodity_momentum_strategy.py` → Fixed `%` formatting crash in help string.
 
-## 💡 NEW STRATEGY PROPOSAL
-- **Multi-Timeframe Trend Strategy** → `openalgo/strategies/scripts/multi_timeframe_trend_strategy.py`
-  - **Rationale**: Combines 1H Trend (EMA50/200) with 5m Pullbacks (EMA20) to filter noise and trade with the dominant trend.
-  - **Implementation**: Created new strategy file with `check_signals` logic for pullback entries.
+💡 NEW STRATEGY PROPOSAL:
+- Intraday Mean Reversion → Captures overextensions from VWAP with RSI confirmation → `openalgo/strategies/scripts/intraday_mean_reversion.py`
 
-## 📈 PERFORMANCE INSIGHTS
-- **Logs**: No strategy logs found for analysis (Clean environment).
-- **Action**: Ensure strategies are running and generating logs for next audit.
+📈 PERFORMANCE INSIGHTS:
+- [Pattern] → Momentum strategies were entering too early on developing candles. Fixed to wait for close.
+- [Action] → `GapFade` now robustly handles weekends/holidays for previous close detection.

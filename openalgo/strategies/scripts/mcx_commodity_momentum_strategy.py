@@ -12,27 +12,31 @@ import argparse
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from pathlib import Path
 
 # Add repo root to path
-script_dir = os.path.dirname(os.path.abspath(__file__))
-strategies_dir = os.path.dirname(script_dir)
-utils_dir = os.path.join(strategies_dir, 'utils')
-sys.path.insert(0, utils_dir)
+script_dir = Path(__file__).resolve().parent
+strategies_dir = script_dir.parent
+utils_dir = strategies_dir / 'utils'
+project_root = strategies_dir.parent.parent
+
+if str(utils_dir) not in sys.path:
+    sys.path.append(str(utils_dir))
 
 try:
-    from trading_utils import APIClient, PositionManager, is_market_open
+    from trading_utils import APIClient, PositionManager, is_mcx_market_open
 except ImportError:
     try:
-        sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import APIClient, PositionManager, is_market_open
+        sys.path.insert(0, str(strategies_dir))
+        from utils.trading_utils import APIClient, PositionManager, is_mcx_market_open
     except ImportError:
         try:
-            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_mcx_market_open
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
-            is_market_open = lambda: True
+            is_mcx_market_open = lambda: True
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -82,51 +86,11 @@ class MCXMomentumStrategy:
         except Exception as e:
             logger.error(f"Error fetching data: {e}", exc_info=True)
 
-    def generate_signal(self, df):
-        """
-        Generate signal for backtesting.
-        """
-        if df.empty: return 'HOLD', 0.0, {}
-
-        self.data = df
-        self.calculate_indicators()
-
-        # Check signals (Reusing existing logic but adapting return)
-        current = self.data.iloc[-1]
-        prev = self.data.iloc[-2]
-
-        # Factors
-        seasonality_ok = self.params.get('seasonality_score', 50) > 40
-
-        action = 'HOLD'
-
-        if not seasonality_ok:
-            return 'HOLD', 0.0, {'reason': 'Seasonality Weak'}
-
-        # Volatility Filter
-        min_atr = self.params.get('min_atr', 0)
-        if current.get('atr', 0) < min_atr:
-             return 'HOLD', 0.0, {'reason': 'Low Volatility'}
-
-        if (current['adx'] > self.params['adx_threshold'] and
-            current['rsi'] > 50 and
-            current['close'] > prev['close']):
-            action = 'BUY'
-
-        elif (current['adx'] > self.params['adx_threshold'] and
-              current['rsi'] < 50 and
-              current['close'] < prev['close']):
-            action = 'SELL'
-
-        return action, 1.0, {'atr': current.get('atr', 0)}
-
     def calculate_indicators(self):
         """Calculate technical indicators."""
         if self.data.empty:
             return
 
-        # Optimization: If columns already exist and length matches, skip?
-        # But for now, we assume data is fresh.
         df = self.data.copy()
 
         # RSI
@@ -172,8 +136,54 @@ class MCXMomentumStrategy:
 
         self.data = df
 
+    def get_signal_from_row(self, current, prev):
+        """Core signal logic isolated for both backtest and live."""
+
+        # Volatility Filter
+        min_atr = self.params.get('min_atr', 0)
+        if current.get('atr', 0) < min_atr:
+             return 'HOLD', {'reason': 'Low Volatility'}
+
+        # Multi-Factor Checks
+        seasonality_ok = self.params.get('seasonality_score', 50) > 40
+        if not seasonality_ok:
+            return 'HOLD', {'reason': 'Seasonality Weak'}
+
+        # BUY Signal: ADX > Threshold, RSI > 50 (Bullish), Price > Prev Close (of previous candle)
+        if (current['adx'] > self.params['adx_threshold'] and
+            current['rsi'] > 50 and
+            current['close'] > prev['close']):
+            return 'BUY', {'atr': current.get('atr', 0)}
+
+        # SELL Signal: ADX > Threshold, RSI < 50 (Bearish), Price < Prev Close
+        elif (current['adx'] > self.params['adx_threshold'] and
+              current['rsi'] < 50 and
+              current['close'] < prev['close']):
+            return 'SELL', {'atr': current.get('atr', 0)}
+
+        return 'HOLD', {}
+
+    def generate_signal(self, df):
+        """
+        Generate signal for backtesting.
+        """
+        if df.empty: return 'HOLD', 0.0, {}
+
+        self.data = df
+        self.calculate_indicators()
+
+        # Check signals on completed candles
+        if len(self.data) < 2:
+            return 'HOLD', 0.0, {}
+
+        current = self.data.iloc[-1]
+        prev = self.data.iloc[-2]
+
+        action, meta = self.get_signal_from_row(current, prev)
+        return action, 1.0, meta
+
     def check_signals(self):
-        """Check entry and exit conditions."""
+        """Check entry and exit conditions for live trading."""
         if self.data.empty or 'adx' not in self.data.columns:
             return
 
@@ -181,8 +191,13 @@ class MCXMomentumStrategy:
         if len(self.data) < 50:
             return
 
-        current = self.data.iloc[-1]
-        prev = self.data.iloc[-2]
+        # Use COMPLETED candle for signal generation to avoid lookahead/repainting
+        current = self.data.iloc[-2]
+        prev = self.data.iloc[-3]
+
+        # Note: In live trading, we execute at current price (iloc[-1]), but signal is based on closed candles.
+        # However, for exit logic, we might want to check current developing candle for stop loss.
+        live_price = self.data.iloc[-1]['close']
 
         # Log current state
         # logger.info(f"Price: {current['close']:.2f}, RSI: {current['rsi']:.2f}, ADX: {current['adx']:.2f}")
@@ -211,48 +226,41 @@ class MCXMomentumStrategy:
             logger.info("Global Alignment Weak: Skipping new entries.")
             return
 
-        # Entry Logic
-        if not has_position:
-            # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
-            if (current['adx'] > self.params['adx_threshold'] and
-                current['rsi'] > 55 and
-                current['close'] > prev['close']):
+        # Entry Logic (using consolidated function)
+        action, meta = self.get_signal_from_row(current, prev)
 
+        if not has_position:
+            if action == 'BUY':
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
-                    self.pm.update_position(base_qty, current['close'], 'BUY')
+                    self.pm.update_position(base_qty, live_price, 'BUY')
 
-            # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
-            elif (current['adx'] > self.params['adx_threshold'] and
-                  current['rsi'] < 45 and
-                  current['close'] < prev['close']):
-
+            elif action == 'SELL':
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
-                    self.pm.update_position(base_qty, current['close'], 'SELL')
+                    self.pm.update_position(base_qty, live_price, 'SELL')
 
         # Exit Logic
         elif has_position:
             # Retrieve position details
             pos_qty = self.pm.position
-            entry_price = self.pm.entry_price
 
-            # Stop Loss / Take Profit Logic could be added here
-            # Simple Exit: Trend Fades (ADX < 20) or RSI Reversal
+            # Use current developing candle for faster exit on trend fade
+            current_developing = self.data.iloc[-1]
 
             if pos_qty > 0: # Long
-                if current['rsi'] < 45 or current['adx'] < 20:
-                     logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                if current_developing['rsi'] < 45 or current_developing['adx'] < 20:
+                     logger.info(f"EXIT LONG: Trend Faded. RSI={current_developing['rsi']:.2f}, ADX={current_developing['adx']:.2f}")
+                     self.pm.update_position(abs(pos_qty), live_price, 'SELL')
             elif pos_qty < 0: # Short
-                if current['rsi'] > 55 or current['adx'] < 20:
-                     logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                if current_developing['rsi'] > 55 or current_developing['adx'] < 20:
+                     logger.info(f"EXIT SHORT: Trend Faded. RSI={current_developing['rsi']:.2f}, ADX={current_developing['adx']:.2f}")
+                     self.pm.update_position(abs(pos_qty), live_price, 'BUY')
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
         while True:
-            if not is_market_open():
+            if not is_mcx_market_open():
                 logger.info("Market is closed. Sleeping...")
                 time.sleep(300)
                 continue
@@ -271,7 +279,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
