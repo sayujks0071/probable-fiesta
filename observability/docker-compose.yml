@@ -1,29 +1,37 @@
-version: "3"
+version: "3.8"
 
 services:
   loki:
     image: grafana/loki:3.0.0
+    container_name: openalgo-loki
     ports:
       - "3100:3100"
     command: -config.file=/etc/loki/local-config.yaml
     networks:
       - openalgo-net
+    restart: unless-stopped
 
   promtail:
     image: grafana/promtail:3.0.0
+    container_name: openalgo-promtail
     volumes:
       - ./promtail.yaml:/etc/promtail/config.yaml
       - ../logs:/var/log/openalgo:ro
     command: -config.file=/etc/promtail/config.yaml
     networks:
       - openalgo-net
+    depends_on:
+      - loki
+    restart: unless-stopped
 
   grafana:
     image: grafana/grafana:11.0.0
+    container_name: openalgo-grafana
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
     ports:
@@ -32,6 +40,7 @@ services:
       - openalgo-net
     depends_on:
       - loki
+    restart: unless-stopped
 
 networks:
   openalgo-net:
