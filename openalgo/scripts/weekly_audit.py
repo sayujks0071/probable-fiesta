@@ -33,10 +33,12 @@ class WeeklyAudit:
         self.report_lines = []
         self.risk_issues = []
         self.infra_improvements = []
+        self.action_items = []
 
         # Risk Limits
-        self.MAX_PORTFOLIO_HEAT = 0.15  # 15%
-        self.MAX_DRAWDOWN = 0.10  # 10%
+        self.MAX_PORTFOLIO_HEAT_PCT = 0.15  # 15% Risk Exposure
+        self.MAX_DRAWDOWN_PCT = 0.10  # 10%
+        self.MAX_RISK_PER_TRADE_PCT = 0.02 # 2%
         self.MAX_CORRELATION = 0.80
 
         # Mock Capital Base (Assume 10 Lakhs if unknown)
@@ -63,87 +65,6 @@ class WeeklyAudit:
              return f"{symbol}.NS"
         return None
 
-    def analyze_portfolio_risk(self):
-        logger.info("Analyzing Portfolio Risk...")
-        total_exposure = 0.0
-        active_positions = 0
-        strategies_count = 0
-        max_dd = 0.0
-
-        position_details = []
-        tracked_symbols = set()
-
-        # Load Active Strategies
-        if self.config_file.exists():
-            with open(self.config_file, 'r') as f:
-                active_strats = json.load(f)
-                strategies_count = len(active_strats)
-        else:
-            logger.warning("active_strategies.json not found!")
-            active_strats = {}
-
-        # Scan State Files
-        if self.state_dir.exists():
-            for state_file in self.state_dir.glob("*_state.json"):
-                try:
-                    with open(state_file, 'r') as f:
-                        data = json.load(f)
-                        pos = data.get('position', 0)
-                        entry = data.get('entry_price', 0.0)
-                        symbol = state_file.stem.replace('_state', '')
-
-                        if pos != 0:
-                            exposure = abs(pos * entry)
-                            total_exposure += exposure
-                            active_positions += 1
-                            tracked_symbols.add(symbol)
-
-                            # Fetch current price for PnL/DD
-                            current_price = self.get_market_price(symbol)
-                            pnl = 0.0
-                            if current_price:
-                                if pos > 0:
-                                    pnl = (current_price - entry) * pos
-                                else:
-                                    pnl = (entry - current_price) * abs(pos)
-
-                                # Estimate Drawdown for this position
-                                if pnl < 0:
-                                    dd_pct = abs(pnl) / (abs(pos) * entry)
-                                    if dd_pct > max_dd:
-                                        max_dd = dd_pct
-
-                            position_details.append(f"- {symbol}: {pos} @ {entry} (Exp: {exposure:,.2f})")
-                except Exception as e:
-                    logger.error(f"Error reading {state_file}: {e}")
-
-        # Calculations
-        heat = total_exposure / self.CAPITAL
-        risk_status = "✅ SAFE"
-
-        if heat > self.MAX_PORTFOLIO_HEAT:
-            risk_status = "🔴 CRITICAL - Heat Limit Exceeded"
-            self.risk_issues.append(f"Portfolio Heat {heat*100:.1f}% > Limit {self.MAX_PORTFOLIO_HEAT*100}%")
-        elif heat > 0.10:
-            risk_status = "⚠️ WARNING - High Heat"
-
-        if max_dd > self.MAX_DRAWDOWN:
-             self.risk_issues.append(f"Max Drawdown {max_dd*100:.1f}% > Limit {self.MAX_DRAWDOWN*100}%")
-             risk_status = "🔴 CRITICAL - Drawdown Limit Exceeded"
-
-        content = (
-            f"- Total Exposure: {heat*100:.1f}% of capital ({total_exposure:,.2f} / {self.CAPITAL:,.0f})\n"
-            f"- Portfolio Heat: {heat*100:.1f}% (Limit: {self.MAX_PORTFOLIO_HEAT*100}%)\n"
-            f"- Max Drawdown: {max_dd*100:.2f}% (Limit: {self.MAX_DRAWDOWN*100}%)\n"
-            f"- Active Positions: {active_positions} across {strategies_count} strategies\n"
-            f"- Risk Status: {risk_status}\n"
-        )
-        if position_details:
-            content += "\nDetails:\n" + "\n".join(position_details)
-
-        self.add_section("📊 PORTFOLIO RISK STATUS:", content)
-        return tracked_symbols
-
     def get_market_price(self, symbol):
         ticker = self._get_ticker(symbol)
         if not ticker:
@@ -157,6 +78,114 @@ class WeeklyAudit:
         except:
             pass
         return None
+
+    def analyze_portfolio_risk(self):
+        logger.info("Analyzing Portfolio Risk...")
+        total_exposure = 0.0
+        total_risk = 0.0
+        active_positions_count = 0
+        strategies_count = 0
+        max_dd = 0.0
+
+        tracked_symbols = set()
+        position_details = []
+
+        # Load Active Strategies
+        active_strats = {}
+        if self.config_file.exists():
+            with open(self.config_file, 'r') as f:
+                active_strats = json.load(f)
+                strategies_count = len(active_strats)
+        else:
+            logger.warning("active_strategies.json not found!")
+
+        # Scan State Files
+        if self.state_dir.exists():
+            for state_file in self.state_dir.glob("*_risk_state.json"):
+                try:
+                    with open(state_file, 'r') as f:
+                        data = json.load(f)
+                        positions = data.get('positions', {})
+
+                        for symbol, pos_data in positions.items():
+                            qty = pos_data.get('qty', 0)
+                            entry = pos_data.get('entry_price', 0.0)
+                            stop_loss = pos_data.get('stop_loss', 0.0)
+
+                            if qty != 0:
+                                exposure = abs(qty) * entry
+                                total_exposure += exposure
+                                active_positions_count += 1
+                                tracked_symbols.add(symbol)
+
+                                # Calculate Risk
+                                risk = 0.0
+                                if stop_loss > 0:
+                                    risk = abs(entry - stop_loss) * abs(qty)
+                                else:
+                                    # Fallback: assume 100% risk if no SL (extreme but safe) or just exposure
+                                    risk = exposure
+
+                                total_risk += risk
+
+                                # Check per-trade risk
+                                risk_pct = (risk / self.CAPITAL) * 100
+                                if risk_pct > (self.MAX_RISK_PER_TRADE_PCT * 100):
+                                    self.risk_issues.append({
+                                        'issue': f"High Risk Trade: {symbol} ({risk_pct:.2f}% > 2%)",
+                                        'severity': "Critical",
+                                        'fix': "Reduce position size"
+                                    })
+
+                                # Calculate DD if market price available
+                                current_price = self.get_market_price(symbol)
+                                if current_price:
+                                    pnl = (current_price - entry) * qty
+                                    if pnl < 0:
+                                        dd_pct = abs(pnl) / self.CAPITAL
+                                        if dd_pct > max_dd:
+                                            max_dd = dd_pct
+
+                                position_details.append(f"- {symbol}: {qty} @ {entry} (Risk: {risk_pct:.2f}%)")
+
+                except Exception as e:
+                    logger.error(f"Error reading {state_file}: {e}")
+
+        # Calculations
+        heat_pct = (total_risk / self.CAPITAL) * 100
+        exposure_pct = (total_exposure / self.CAPITAL) * 100
+
+        risk_status = "✅ SAFE"
+        if heat_pct > (self.MAX_PORTFOLIO_HEAT_PCT * 100):
+            risk_status = "🔴 CRITICAL - Heat Limit Exceeded"
+            self.risk_issues.append({
+                'issue': f"Portfolio Heat {heat_pct:.1f}% > Limit {self.MAX_PORTFOLIO_HEAT_PCT*100}%",
+                'severity': "Critical",
+                'fix': "Reduce overall exposure"
+            })
+        elif heat_pct > 10.0:
+            risk_status = "⚠️ WARNING - High Heat"
+
+        if max_dd > self.MAX_DRAWDOWN_PCT:
+             self.risk_issues.append({
+                 'issue': f"Max Drawdown {max_dd*100:.1f}% > Limit {self.MAX_DRAWDOWN_PCT*100}%",
+                 'severity': "Critical",
+                 'fix': "Halt trading"
+             })
+             risk_status = "🔴 CRITICAL - Drawdown Limit Exceeded"
+
+        content = (
+            f"- Total Exposure: {exposure_pct:.1f}% of capital\n"
+            f"- Portfolio Heat: {heat_pct:.1f}% (Limit: {self.MAX_PORTFOLIO_HEAT_PCT*100}%)\n"
+            f"- Max Drawdown: {max_dd*100:.2f}% (Limit: {self.MAX_DRAWDOWN_PCT*100}%)\n"
+            f"- Active Positions: {active_positions_count} across {strategies_count} strategies\n"
+            f"- Risk Status: {risk_status}\n"
+        )
+        if position_details:
+            content += "\nDetails:\n" + "\n".join(position_details)
+
+        self.add_section("📊 PORTFOLIO RISK STATUS:", content)
+        return tracked_symbols
 
     def analyze_correlations(self, tracked_symbols):
         logger.info("Analyzing Correlations...")
@@ -173,12 +202,15 @@ class WeeklyAudit:
             return
 
         try:
+            # Download data for correlation analysis
             data = yf.download(list(tickers.values()), period="1mo", progress=False)['Close']
+
             if data.empty:
                 return
 
-            # If multiple tickers, columns are the tickers.
-            # If single ticker (shouldn't happen due to check), it's a Series.
+            # If single ticker, data is Series, need DataFrame
+            if isinstance(data, pd.Series):
+                 return
 
             corr_matrix = data.corr()
 
@@ -189,14 +221,18 @@ class WeeklyAudit:
                     if abs(val) > self.MAX_CORRELATION:
                         t1 = corr_matrix.columns[i]
                         t2 = corr_matrix.columns[j]
-                        # Map back to internal symbols if possible
+                        # Map back to internal symbols
                         s1 = [k for k,v in tickers.items() if v == t1]
                         s2 = [k for k,v in tickers.items() if v == t2]
                         s1_name = s1[0] if s1 else t1
                         s2_name = s2[0] if s2 else t2
 
                         high_corr_pairs.append(f"{s1_name} <-> {s2_name}: {val:.2f}")
-                        self.risk_issues.append(f"High Correlation: {s1_name} & {s2_name} ({val:.2f})")
+                        self.risk_issues.append({
+                            'issue': f"High Correlation: {s1_name} & {s2_name} ({val:.2f})",
+                            'severity': "Warning",
+                            'fix': "Monitor or reduce concentration"
+                        })
 
             if high_corr_pairs:
                 content = "⚠️ High Correlations Detected:\n" + "\n".join([f"- {p}" for p in high_corr_pairs])
@@ -221,7 +257,6 @@ class WeeklyAudit:
                 sector = "Commodity"
             elif "USD" in sym:
                 sector = "Forex"
-            # Simple heuristic for now
 
             sectors[sector] = sectors.get(sector, 0) + 1
 
@@ -232,28 +267,6 @@ class WeeklyAudit:
             content += f"- {sec}: {pct:.1f}% ({count})\n"
 
         self.add_section("🍰 SECTOR DISTRIBUTION:", content)
-
-    def check_data_quality(self, tracked_symbols):
-        logger.info("Checking Data Quality...")
-        issues = []
-        for sym in tracked_symbols:
-            t = self._get_ticker(sym)
-            if t:
-                try:
-                    data = yf.Ticker(t).history(period="5d")
-                    if data.empty:
-                        issues.append(f"{sym}: No data in last 5 days")
-                    # Check for gaps could be more complex, but this is a start
-                except Exception:
-                    issues.append(f"{sym}: Fetch failed")
-
-        if issues:
-            content = "⚠️ Data Issues:\n" + "\n".join([f"- {i}" for i in issues])
-            self.risk_issues.append(f"Data Feed Quality Issues: {len(issues)} symbols affected")
-        else:
-            content = "✅ Data Feed Stable (Checked last 5 days)"
-
-        self.add_section("📡 DATA FEED QUALITY:", content)
 
     def fetch_broker_positions(self, port):
         """Fetch positions from broker API"""
@@ -271,6 +284,63 @@ class WeeklyAudit:
             return None
         return []
 
+    def reconcile_positions(self, tracked_symbols):
+        logger.info("Reconciling Positions...")
+
+        # Fetch Real Positions
+        kite_positions = self.fetch_broker_positions(5001)
+        dhan_positions = self.fetch_broker_positions(5002)
+
+        broker_symbols = set()
+        broker_count = 0
+
+        if kite_positions:
+            for p in kite_positions:
+                broker_symbols.add(p.get('symbol', 'UNKNOWN'))
+            broker_count += len(kite_positions)
+
+        if dhan_positions:
+            for p in dhan_positions:
+                broker_symbols.add(p.get('symbol', 'UNKNOWN'))
+            broker_count += len(dhan_positions)
+
+        discrepancies = []
+        actions = []
+
+        # Symbol-level comparison
+        missing_in_broker = tracked_symbols - broker_symbols
+        orphaned_in_broker = broker_symbols - tracked_symbols
+
+        if kite_positions is None and dhan_positions is None:
+             discrepancies.append("Brokers Unreachable")
+             actions.append("Check Broker Connectivity")
+        else:
+            if missing_in_broker:
+                discrepancies.append(f"Missing in Broker: {', '.join(missing_in_broker)}")
+                actions.append("Manual Review Needed")
+                self.risk_issues.append({
+                    'issue': f"Position Missing in Broker: {', '.join(missing_in_broker)}",
+                    'severity': "Critical",
+                    'fix': "Reconcile manually"
+                })
+
+            if orphaned_in_broker:
+                discrepancies.append(f"Orphaned in Broker: {', '.join(orphaned_in_broker)}")
+                actions.append("Close orphaned positions if invalid")
+                self.risk_issues.append({
+                    'issue': f"Orphaned Position in Broker: {', '.join(orphaned_in_broker)}",
+                    'severity': "Warning",
+                    'fix': "Verify and close"
+                })
+
+        content = (
+            f"- Broker Positions: {broker_count}\n"
+            f"- Tracked Positions: {len(tracked_symbols)}\n"
+            f"- Discrepancies: {'; '.join(discrepancies) if discrepancies else 'None'}\n"
+            f"- Actions: {'; '.join(actions) if actions else 'Auto-corrected / Manual review needed'}"
+        )
+        self.add_section("🔍 POSITION RECONCILIATION:", content)
+
     def check_api_health(self, port, name):
         """Check API Health"""
         url = f"http://localhost:{port}/health"
@@ -285,68 +355,7 @@ class WeeklyAudit:
         except Exception:
             return "🔴 Error"
 
-    def reconcile_positions(self, tracked_symbols):
-        logger.info("Reconciling Positions...")
-
-        # Fetch Real Positions
-        kite_positions = self.fetch_broker_positions(5001)
-        dhan_positions = self.fetch_broker_positions(5002)
-
-        broker_symbols = set()
-        details = []
-
-        if kite_positions is None and dhan_positions is None:
-             details.append("Could not connect to brokers to fetch positions.")
-        else:
-            if kite_positions:
-                for p in kite_positions:
-                    broker_symbols.add(p.get('symbol', 'UNKNOWN'))
-                details.append(f"Kite: {len(kite_positions)} positions")
-            if dhan_positions:
-                for p in dhan_positions:
-                    broker_symbols.add(p.get('symbol', 'UNKNOWN'))
-                details.append(f"Dhan: {len(dhan_positions)} positions")
-
-        # Mock Discrepancy (Test hook)
-        if (self.root_dir / "mock_discrepancy.json").exists():
-             broker_symbols.add("GHOST_POS")
-             details.append("Mock Discrepancy Injected")
-
-        discrepancies = []
-
-        # Symbol-level comparison
-        missing_in_broker = tracked_symbols - broker_symbols
-        orphaned_in_broker = broker_symbols - tracked_symbols
-
-        if kite_positions is None and dhan_positions is None:
-             discrepancies.append("Cannot reconcile: Brokers Unreachable")
-        else:
-            if missing_in_broker:
-                discrepancies.append(f"Missing in Broker: {', '.join(missing_in_broker)}")
-            if orphaned_in_broker:
-                discrepancies.append(f"Orphaned in Broker: {', '.join(orphaned_in_broker)}")
-
-        action = "None"
-        if discrepancies:
-            if "Brokers Unreachable" in discrepancies[0]:
-                 action = "⚠️ Verify Broker Connectivity"
-                 self.risk_issues.append("Broker APIs Unreachable - Blind Spot")
-            else:
-                action = "⚠️ Manual Review Needed"
-                self.risk_issues.append(f"Position Reconciliation Failed: {'; '.join(discrepancies)}")
-        else:
-            action = "✅ Synced"
-
-        content = (
-            f"- Broker Positions: {len(broker_symbols) if (kite_positions is not None or dhan_positions is not None) else 'Unknown'}\n"
-            f"- Tracked Positions: {len(tracked_symbols)}\n"
-            f"- Discrepancies: {discrepancies if discrepancies else 'None'}\n"
-            f"- Details: {', '.join(details) if details else 'None'}\n"
-            f"- Actions: {action}"
-        )
-        self.add_section("🔍 POSITION RECONCILIATION:", content)
-
-    def check_system_health(self):
+    def check_system_health(self, tracked_symbols):
         logger.info("Checking System Health...")
 
         # Resource Usage
@@ -367,21 +376,60 @@ class WeeklyAudit:
         kite_status = self.check_api_health(5001, "Kite")
         dhan_status = self.check_api_health(5002, "Dhan")
 
-        if "Down" in kite_status:
-            self.infra_improvements.append("Restart Kite Bridge Service (Port 5001)")
-        if "Down" in dhan_status:
-            self.infra_improvements.append("Restart Dhan Bridge Service (Port 5002)")
+        if "Down" in kite_status or "Error" in kite_status:
+            self.infra_improvements.append({
+                'enhancement': "Restart Kite Bridge Service (Port 5001)",
+                'implementation': "Systemd restart kite_bridge"
+            })
+            self.risk_issues.append({
+                'issue': "Kite API Down",
+                'severity': "High",
+                'fix': "Restart Service"
+            })
+
+        if "Down" in dhan_status or "Error" in dhan_status:
+            self.infra_improvements.append({
+                'enhancement': "Restart Dhan Bridge Service (Port 5002)",
+                'implementation': "Systemd restart dhan_bridge"
+            })
 
         if cpu > 80:
-            self.infra_improvements.append("High CPU Usage Detected -> Optimize Strategy Loops")
+            self.infra_improvements.append({
+                'enhancement': "Optimize Strategy Loops",
+                'implementation': "Profile CPU usage"
+            })
         if mem > 80:
-            self.infra_improvements.append("High Memory Usage -> Check for Leaks")
+            self.infra_improvements.append({
+                'enhancement': "Check for Memory Leaks",
+                'implementation': "Profile memory usage"
+            })
+
+        # Data Feed Quality
+        data_issues = []
+        for sym in tracked_symbols:
+            t = self._get_ticker(sym)
+            if t:
+                try:
+                    data = yf.Ticker(t).history(period="5d")
+                    if data.empty:
+                        data_issues.append(sym)
+                except Exception:
+                    data_issues.append(sym)
+
+        data_status = "✅ Stable"
+        if data_issues:
+            data_status = f"⚠️ Gaps detected ({len(data_issues)} symbols)"
+            self.risk_issues.append({
+                'issue': f"Data Feed Gaps: {', '.join(data_issues)}",
+                'severity': "Medium",
+                'fix': "Check data provider"
+            })
 
         content = (
             f"- Kite API: {kite_status}\n"
             f"- Dhan API: {dhan_status}\n"
-            f"- Data Feed: ✅ Stable (Mocked)\n"
-            f"- Process Health: {strategy_procs} strategy processes detected\n"
+            f"- Data Feed: {data_status}\n"
+            f"- Process Health: {strategy_procs} strategy processes running\n"
             f"- Resource Usage: CPU {cpu}%, Memory {mem}%"
         )
         self.add_section("🔌 SYSTEM HEALTH:", content)
@@ -391,7 +439,7 @@ class WeeklyAudit:
         try:
             vix = yf.Ticker("^INDIAVIX").history(period="5d")
             if vix.empty:
-                vix = yf.Ticker("^VIX").history(period="5d")
+                vix = yf.Ticker("^VIX").history(period="5d") # Fallback to US VIX if India unavailable
 
             if not vix.empty:
                 current_vix = vix['Close'].iloc[-1]
@@ -408,7 +456,7 @@ class WeeklyAudit:
             elif current_vix > 20:
                 regime = "High Volatility"
                 mix = "Directional Momentum, Long Volatility"
-                disabled.append("Short Straddles (Risk)")
+                disabled.append("Short Straddles")
             else:
                 regime = "Normal Volatility"
                 mix = "Hybrid (Trend + Mean Rev)"
@@ -417,7 +465,7 @@ class WeeklyAudit:
                 f"- Current Regime: {regime}\n"
                 f"- VIX Level: {current_vix:.2f}\n"
                 f"- Recommended Strategy Mix: {mix}\n"
-                f"- Disabled Strategies: {disabled if disabled else 'None'}"
+                f"- Disabled Strategies: {', '.join(disabled) if disabled else 'None'}"
             )
             self.add_section("📈 MARKET REGIME:", content)
 
@@ -439,10 +487,14 @@ class WeeklyAudit:
                 if log_file.stat().st_mtime > week_ago:
                     active_logs += 1
 
-        status = "✅ Active Logs Found" if active_logs > 0 else "⚠️ No Recent Strategy Logs"
+        status = "✅ Complete" if active_logs > 0 else "⚠️ Missing Logs"
         if active_logs == 0:
             missing_records = True
-            self.risk_issues.append("No active strategy logs found for the past week.")
+            self.risk_issues.append({
+                'issue': "No active strategy logs found for the past week",
+                'severity': "High",
+                'fix': "Check logging configuration"
+            })
 
         content = (
             f"- Trade Logging: {status} ({active_logs} active files)\n"
@@ -455,9 +507,8 @@ class WeeklyAudit:
         tracked_symbols = self.analyze_portfolio_risk()
         self.analyze_correlations(tracked_symbols)
         self.analyze_sector_distribution(tracked_symbols)
-        self.check_data_quality(tracked_symbols)
         self.reconcile_positions(tracked_symbols)
-        self.check_system_health()
+        self.check_system_health(tracked_symbols)
         self.detect_market_regime()
         self.check_compliance()
 
@@ -465,7 +516,7 @@ class WeeklyAudit:
         issues_content = ""
         if self.risk_issues:
             for i, issue in enumerate(self.risk_issues, 1):
-                issues_content += f"{i}. {issue} → Critical → Investigate\n"
+                issues_content += f"{i}. {issue['issue']} → {issue['severity']} → {issue['fix']}\n"
         else:
             issues_content = "None"
         self.add_section("⚠️ RISK ISSUES FOUND:", issues_content)
@@ -474,13 +525,20 @@ class WeeklyAudit:
         infra_content = ""
         if self.infra_improvements:
             for i, imp in enumerate(self.infra_improvements, 1):
-                infra_content += f"{i}. {imp}\n"
+                infra_content += f"{i}. {imp['enhancement']} → {imp['implementation']}\n"
         else:
             infra_content = "None"
         self.add_section("🔧 INFRASTRUCTURE IMPROVEMENTS:", infra_content)
 
         # Action Items
-        self.add_section("📋 ACTION ITEMS FOR NEXT WEEK:", "- [High] Review Audit Report → Owner/Status")
+        if not self.action_items:
+             self.action_items.append("[High] Review Audit Report → Risk Manager/Pending")
+
+        action_content = ""
+        for item in self.action_items:
+             action_content += f"- {item}\n"
+
+        self.add_section("📋 ACTION ITEMS FOR NEXT WEEK:", action_content)
 
         # Write Report
         header = f"🛡️ WEEKLY RISK & HEALTH AUDIT - Week of {audit_date}\n"
