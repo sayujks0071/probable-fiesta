@@ -13,15 +13,23 @@ project_root = current_file.parent.parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.append(str(project_root))
 
-from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+try:
+    from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+    from openalgo.strategies.utils.risk_manager import create_risk_manager
+except ImportError:
+    try:
+        from trading_utils import APIClient, PositionManager, is_market_open
+        from risk_manager import create_risk_manager
+    except ImportError:
+        logging.error("Could not import trading utils.")
+        sys.exit(1)
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(project_root / "openalgo" / "strategies" / "logs" / "gap_fade.log")
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger("GapFadeStrategy")
@@ -34,44 +42,65 @@ class GapFadeStrategy:
         self.gap_threshold = gap_threshold # Percentage
         self.pm = PositionManager(f"{symbol}_GapFade")
 
-    def execute(self):
-        logger.info(f"Starting Gap Fade Check for {self.symbol}")
+        # Initialize Risk Manager
+        self.rm = create_risk_manager(f"{symbol}_GapFade", "NSE", capital=200000)
 
-        # 1. Get Previous Close
-        # Using history API for last 2 days
-        today = datetime.now()
-        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d") # Go back enough to get prev day
-        end_date = today.strftime("%Y-%m-%d")
+    def get_previous_close(self):
+        """Robustly fetch previous closing price."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d") # Go back 7 days to cover long weekends
 
         # Get daily candles
-        df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
+        df = self.client.history(f"{self.symbol}", interval="day", start_date=start_date, end_date=today)
 
-        if df.empty or len(df) < 1:
-            logger.error("Could not fetch history for previous close.")
+        if df.empty:
+            logger.error("History df is empty.")
+            return None
+
+        # Filter for dates strictly before today
+        # Ensure 'datetime' or 'date' column exists and is comparable
+        if 'datetime' in df.columns:
+            df['date_only'] = df['datetime'].dt.date
+        else:
+            # Fallback if history doesn't return datetime objects
+            # Assuming index might be datetime
+            df['date_only'] = pd.to_datetime(df.index).date
+
+        today_date = datetime.now().date()
+        prev_days = df[df['date_only'] < today_date]
+
+        if prev_days.empty:
+            logger.error("No previous day data found.")
+            return None
+
+        prev_close = prev_days.iloc[-1]['close']
+        logger.info(f"Previous Close Date: {prev_days.iloc[-1]['date_only']}, Price: {prev_close}")
+        return prev_close
+
+    def execute(self):
+        # 1. Check Risk Limits
+        can_trade, reason = self.rm.can_trade()
+        if not can_trade:
+            logger.warning(f"Risk Check Failed: {reason}")
             return
 
-        # Assuming the last completed row is previous day, or if market just opened, we might have today's open
-        # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
+        logger.info(f"Starting Gap Fade Check for {self.symbol}")
 
-        prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
+        # 2. Get Previous Close
+        prev_close = self.get_previous_close()
+        if not prev_close:
+            return
 
-        quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
-        if not quote:
+        # 3. Get Current Price (LTP)
+        quote = self.client.get_quote(f"{self.symbol}", "NSE")
+        if not quote or 'ltp' not in quote:
             logger.error("Could not fetch quote.")
             return
 
         current_price = float(quote['ltp'])
-
-        # Some APIs provide 'close' in quote which is prev_close
-        if 'close' in quote and quote['close'] > 0:
-            prev_close = float(quote['close'])
-
         logger.info(f"Prev Close: {prev_close}, Current: {current_price}")
 
+        # 4. Calculate Gap
         gap_pct = ((current_price - prev_close) / prev_close) * 100
         logger.info(f"Gap: {gap_pct:.2f}%")
 
@@ -79,14 +108,14 @@ class GapFadeStrategy:
             logger.info(f"Gap {gap_pct:.2f}% < Threshold {self.gap_threshold}%. No trade.")
             return
 
-        # 2. Determine Action
+        # 5. Determine Action
         action = None
         option_type = None
 
         if gap_pct > self.gap_threshold:
             # Gap UP -> Fade (Sell/Short or Buy Put)
             logger.info("Gap UP detected. Looking to FADE (Short).")
-            action = "SELL" # Futures Sell or PE Buy
+            action = "SELL" # Futures Sell
             # For options: Buy PE
             option_type = "PE"
 
@@ -96,38 +125,57 @@ class GapFadeStrategy:
             action = "BUY"
             option_type = "CE"
 
-        # 3. Select Option Strike (ATM)
-        atm = round(current_price / 50) * 50
-        strike_symbol = f"{self.symbol}{today.strftime('%y%b').upper()}{atm}{option_type}" # Symbol format varies
-        # Simplified: Just log the intent
-
-        logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade)")
-
-        # 4. Check VIX for Sizing (inherited from general rules)
+        # 6. Check VIX for Sizing
         vix_quote = self.client.get_quote("INDIA VIX", "NSE")
-        vix = float(vix_quote['ltp']) if vix_quote else 15
+        vix = 15.0
+        if vix_quote and 'ltp' in vix_quote:
+             vix = float(vix_quote['ltp'])
 
         qty = self.qty
         if vix > 30:
-            qty = int(qty * 0.5)
+            qty = max(1, int(qty * 0.5))
             logger.info(f"High VIX {vix}. Reduced Qty to {qty}")
 
-        # 5. Place Order (Simulation)
-        # self.client.placesmartorder(...)
-        logger.info(f"Executing {option_type} Buy for {qty} qty.")
-        self.pm.update_position(qty, 100, "BUY") # Mock update
+        # 7. Execute Trade (Using PositionManager to track state)
+        if self.pm.has_position():
+            logger.info("Already have a position. Skipping entry.")
+            # Here we could implement exit logic if gap closes
+            return
+
+        logger.info(f"Executing {action} for {qty} qty.")
+
+        # Real execution would go here using client.placesmartorder
+        # For now, we update PositionManager to track it
+        self.pm.update_position(qty, current_price, action)
+
+        # Register with Risk Manager
+        self.rm.register_entry(self.symbol, qty, current_price, action)
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", default="NIFTY", help="Index Symbol")
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--threshold", type=float, default=0.5, help="Gap Threshold %%")
-    parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
+    parser.add_argument("--port", type=int, default=5001, help="Broker API Port")
+    parser.add_argument("--loop", action="store_true", help="Run in a loop")
     args = parser.parse_args()
 
-    client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
+    api_key = os.getenv("OPENALGO_API_KEY") or "demo_key"
+    client = APIClient(api_key=api_key, host=f"http://127.0.0.1:{args.port}")
     strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold)
-    strategy.execute()
+
+    if args.loop:
+        logger.info("Running in loop mode...")
+        while True:
+            if is_market_open():
+                strategy.execute()
+            else:
+                logger.info("Market closed.")
+
+            time.sleep(300) # Check every 5 mins
+    else:
+        strategy.execute()
 
 if __name__ == "__main__":
     main()
