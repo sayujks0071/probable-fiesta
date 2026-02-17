@@ -2,7 +2,7 @@
 """
 MCX Commodity Momentum Strategy
 Momentum strategy using ADX and RSI with proper API integration.
-Enhanced with Multi-Factor inputs (USD/INR, Seasonality).
+Enhanced with Multi-Factor inputs (USD/INR, Seasonality, Fundamentals).
 """
 import os
 import sys
@@ -51,7 +51,7 @@ class MCXMomentumStrategy:
 
         # Log active filters
         logger.info(f"Initialized Strategy for {symbol}")
-        logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
+        logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, Fund={params.get('fundamental_score', 'N/A')}")
 
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
@@ -97,23 +97,29 @@ class MCXMomentumStrategy:
 
         # Factors
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
+        fundamental_score = self.params.get('fundamental_score', 50)
 
         action = 'HOLD'
 
         if not seasonality_ok:
             return 'HOLD', 0.0, {'reason': 'Seasonality Weak'}
 
+        # Dynamic ADX
+        adx_thresh = self.params['adx_threshold']
+        if fundamental_score > 60: adx_thresh -= 5
+        elif fundamental_score < 40: adx_thresh += 5
+
         # Volatility Filter
         min_atr = self.params.get('min_atr', 0)
         if current.get('atr', 0) < min_atr:
              return 'HOLD', 0.0, {'reason': 'Low Volatility'}
 
-        if (current['adx'] > self.params['adx_threshold'] and
+        if (current['adx'] > adx_thresh and
             current['rsi'] > 50 and
             current['close'] > prev['close']):
             action = 'BUY'
 
-        elif (current['adx'] > self.params['adx_threshold'] and
+        elif (current['adx'] > adx_thresh and
               current['rsi'] < 50 and
               current['close'] < prev['close']):
             action = 'SELL'
@@ -196,6 +202,15 @@ class MCXMomentumStrategy:
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
         global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
         usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
+        fundamental_score = self.params.get('fundamental_score', 50)
+        usd_inr_trend = self.params.get('usd_inr_trend', 'Neutral')
+
+        # Dynamic ADX Threshold based on Fundamentals
+        adx_thresh = self.params['adx_threshold']
+        if fundamental_score > 60:
+            adx_thresh -= 5 # Easier entry if fundamentals are strong
+        elif fundamental_score < 40:
+            adx_thresh += 5 # Stricter entry if fundamentals are weak
 
         # Adjust Position Size
         base_qty = 1
@@ -213,21 +228,36 @@ class MCXMomentumStrategy:
 
         # Entry Logic
         if not has_position:
-            # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
-            if (current['adx'] > self.params['adx_threshold'] and
-                current['rsi'] > 55 and
-                current['close'] > prev['close']):
+            # BUY Signal
+            buy_signal = False
 
-                logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+            buy_rsi_thresh = 55
+            if usd_inr_trend == 'Up':
+                buy_rsi_thresh = 50 # Relax RSI requirement for Buy
+
+            if (current['adx'] > adx_thresh and
+                current['rsi'] > buy_rsi_thresh and
+                current['close'] > prev['close']):
+                buy_signal = True
+
+            if buy_signal:
+                logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f} (Thresh {adx_thresh})")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
-            # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
-            elif (current['adx'] > self.params['adx_threshold'] and
-                  current['rsi'] < 45 and
-                  current['close'] < prev['close']):
+            # SELL Signal
+            sell_signal = False
+            sell_rsi_thresh = 45
+            if usd_inr_trend == 'Down':
+                 sell_rsi_thresh = 50 # Relax RSI requirement for Sell
 
-                logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+            if (current['adx'] > adx_thresh and
+                  current['rsi'] < sell_rsi_thresh and
+                  current['close'] < prev['close']):
+                sell_signal = True
+
+            if sell_signal:
+                logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f} (Thresh {adx_thresh})")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
 
@@ -271,9 +301,10 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
+    parser.add_argument('--fundamental_score', type=int, default=50, help='Fundamental Score (0-100)')
 
     args = parser.parse_args()
 
@@ -288,7 +319,8 @@ if __name__ == "__main__":
         'usd_inr_trend': args.usd_inr_trend,
         'usd_inr_volatility': args.usd_inr_volatility,
         'seasonality_score': args.seasonality_score,
-        'global_alignment_score': args.global_alignment_score
+        'global_alignment_score': args.global_alignment_score,
+        'fundamental_score': args.fundamental_score
     }
 
     # Symbol Resolution
