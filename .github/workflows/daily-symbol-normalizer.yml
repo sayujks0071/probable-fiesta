@@ -23,7 +23,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install pandas httpx pytz
 
       - name: A) Sync Instruments
         id: sync
@@ -48,6 +48,11 @@ jobs:
       - name: Gate Check
         id: gate
         run: |
+          # Gate logic: Both precheck and postcheck must be success (or skipped/neutral if logic allows, but here we want strict success sequence)
+          # If precheck failed, normalize skipped, postcheck skipped. Gate fails.
+          # If precheck success, normalize runs. If normalize fails (script error), postcheck skipped. Gate fails.
+          # If normalize success, postcheck runs. If postcheck fails, Gate fails.
+
           if [[ "${{ steps.precheck.outcome }}" == "success" && "${{ steps.postcheck.outcome }}" == "success" ]]; then
             echo "gate_ok=true" >> $GITHUB_OUTPUT
             echo "Gate passed."
