@@ -7,21 +7,21 @@ import json
 import re
 from datetime import datetime, timedelta
 
-# Add repo root to path
+# Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
-CONFIG_FILE = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategies.json')
+ACTIVE_STRATEGIES_FILE = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategies.json')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
 # Regex for MCX Symbols
 MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
 MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
-def check_instruments_freshness():
+def check_instruments_freshness(strict=False):
     if not os.path.exists(INSTRUMENTS_FILE):
         return False, "Instruments file missing"
 
@@ -34,26 +34,43 @@ def check_instruments_freshness():
 
 def validate_config_symbols(resolver):
     issues = []
-    if not os.path.exists(CONFIG_FILE):
-        return issues # No config to validate
+    if not os.path.exists(ACTIVE_STRATEGIES_FILE):
+        # Not an error if file doesn't exist, just nothing to validate
+        return issues
 
     try:
-        with open(CONFIG_FILE, 'r') as f:
+        with open(ACTIVE_STRATEGIES_FILE, 'r') as f:
             content = f.read()
             if not content.strip():
                 return issues
             configs = json.loads(content)
 
+        if not isinstance(configs, dict):
+             return issues
+
         for strat_id, config in configs.items():
             try:
+                # Mock resolve for validation
+                # The resolver logic checks against loaded DF
                 resolved = resolver.resolve(config)
+
                 if resolved is None:
                     issues.append({
                         "source": "active_strategies.json",
                         "id": strat_id,
-                        "error": "Failed to resolve symbol",
+                        "error": f"Failed to resolve symbol for {config.get('symbol', 'unknown')}",
                         "status": "INVALID"
                     })
+                elif isinstance(resolved, str):
+                    # Check if resolved symbol exists in DF explicitly
+                    if resolved not in resolver.df['symbol'].values:
+                         issues.append({
+                            "source": "active_strategies.json",
+                            "id": strat_id,
+                            "symbol": resolved,
+                            "error": "Resolved symbol not found in master",
+                            "status": "INVALID"
+                        })
                 elif isinstance(resolved, dict):
                     if resolved.get('status') != 'valid':
                         issues.append({
@@ -81,12 +98,14 @@ def scan_files_for_hardcoded_symbols(instruments):
     issues = []
     strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
 
+    if not os.path.exists(strategies_dir):
+        return issues
+
     for root, dirs, files in os.walk(strategies_dir):
-        # Exclude tests
-        if 'tests' in dirs:
-            dirs.remove('tests')
-        if 'test' in dirs:
-            dirs.remove('test')
+        # Exclude tests and pycache
+        if 'tests' in dirs: dirs.remove('tests')
+        if 'test' in dirs: dirs.remove('test')
+        if '__pycache__' in dirs: dirs.remove('__pycache__')
 
         for file in files:
             if file.endswith('.py'):
@@ -96,6 +115,8 @@ def scan_files_for_hardcoded_symbols(instruments):
                         content = f.read()
                 except UnicodeDecodeError:
                     continue # Skip binary/bad files
+                except Exception:
+                    continue
 
                 for match in MCX_PATTERN.finditer(content):
                     symbol_str = match.group(0)
@@ -142,15 +163,18 @@ def main():
 
     # 1. Check Freshness
     fresh, msg = check_instruments_freshness()
+    print(f"Instrument Status: {msg}")
+
     if not fresh:
-        print(f"❌ Instrument Check Failed: {msg}")
-        # In strict mode, fail with code 3
         if args.strict:
-            sys.exit(3)
+            print(f"❌ Strict Mode: Instrument check failed. {msg}")
+            sys.exit(3) # Code 3 for missing/stale
         else:
-            print("Warning: proceeding with stale data.")
+            print("Warning: proceeding with stale/missing data.")
 
     # Load resolver
+    resolver = None
+    instruments = set()
     try:
         # Check if openalgo package is importable
         try:
@@ -160,13 +184,19 @@ def main():
             from strategies.utils.symbol_resolver import SymbolResolver
 
         resolver = SymbolResolver(INSTRUMENTS_FILE)
-        instruments = set(resolver.df['symbol'].unique()) if not resolver.df.empty else set()
+        if not resolver.df.empty:
+            instruments = set(resolver.df['symbol'].unique())
+        else:
+            print("Warning: SymbolResolver loaded empty dataframe.")
+
     except Exception as e:
         print(f"Error loading SymbolResolver: {e}")
+        # If strictly required, exit 3
+        if args.strict and not fresh:
+             sys.exit(3)
+        # If fresh but failed to load, it's an error
         if args.strict:
-            sys.exit(3)
-        resolver = None
-        instruments = set()
+             sys.exit(3)
 
     audit_report = {
         "timestamp": datetime.now().isoformat(),
@@ -176,13 +206,18 @@ def main():
     }
 
     # 2. Validate Configs
-    if resolver:
+    if resolver and not resolver.df.empty:
+        print("Validating strategy configs...")
         config_issues = validate_config_symbols(resolver)
         audit_report["issues"].extend(config_issues)
 
     # 3. Validate Hardcoded Symbols
-    hardcoded_issues = scan_files_for_hardcoded_symbols(instruments)
-    audit_report["issues"].extend(hardcoded_issues)
+    if instruments:
+        print("Scanning files for hardcoded symbols...")
+        hardcoded_issues = scan_files_for_hardcoded_symbols(instruments)
+        audit_report["issues"].extend(hardcoded_issues)
+    else:
+        print("Skipping file scan (no instruments loaded).")
 
     # Report Generation
     os.makedirs(REPORTS_DIR, exist_ok=True)
@@ -206,15 +241,22 @@ def main():
 
 
     # Print Summary
-    invalid_count = len([i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING', 'ERROR', 'MALFORMED')])
+    # In strict mode, any issue is a failure.
+    # MALFORMED is also a failure in strict check mode (normalization required).
 
-    if invalid_count > 0:
-        print(f"❌ Validation Failed: {invalid_count} issues found.")
+    invalid_issues = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING', 'ERROR')]
+    malformed_issues = [i for i in audit_report["issues"] if i['status'] == 'MALFORMED']
+
+    total_issues = len(invalid_issues) + len(malformed_issues)
+
+    if total_issues > 0:
+        print(f"❌ Validation Failed: {total_issues} issues found.")
         for issue in audit_report["issues"]:
             print(f" - [{issue['status']}] {issue.get('source')}: {issue.get('symbol', issue.get('id', 'Unknown'))} -> {issue.get('error')}")
 
         if args.strict:
-            sys.exit(2)
+             # If strict, any issue (including malformed) is exit 2
+             sys.exit(2)
     else:
         print("✅ All symbols valid.")
         sys.exit(0)

@@ -4,8 +4,8 @@ on:
   pull_request:
     paths:
       - "openalgo/strategies/**"
-      - "openalgo/configs/**"
-      - "openalgo/data/instruments/**"
+      - "openalgo/config/**"
+      - "openalgo/data/**"
       - "tools/**"
 
 permissions:
@@ -24,7 +24,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas httpx
+          pip install pandas httpx pytz
 
       - name: Sync Instruments
         run: python3 tools/sync_instruments.py
