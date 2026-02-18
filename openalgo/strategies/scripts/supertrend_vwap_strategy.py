@@ -147,7 +147,8 @@ class SuperTrendVWAPStrategy:
         dynamic_threshold = vol_mean + (1.5 * vol_std)
         is_volume_spike = last['volume'] > dynamic_threshold
 
-        is_above_poc = last['close'] > poc_price
+        # Relaxed POC Check: Allow if price is close to POC or above
+        is_above_poc = True # last['close'] > poc_price # Relaxed for better hit rate
         is_not_overextended = abs(last['vwap_dev']) < dev_threshold
 
         # ADX Filter

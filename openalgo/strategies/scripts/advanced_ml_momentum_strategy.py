@@ -69,6 +69,26 @@ class MLMomentumStrategy:
         # SMA for Trend
         df['sma50'] = df['close'].rolling(50).mean()
 
+        # ADX Calculation for Regime Filter
+        try:
+            high_diff = df['high'].diff()
+            low_diff = df['low'].diff()
+            plus_dm = np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0)
+            minus_dm = np.where((low_diff > high_diff) & (low_diff > 0), low_diff, 0)
+            tr = pd.concat([
+                df['high'] - df['low'],
+                (df['high'] - df['close'].shift(1)).abs(),
+                (df['low'] - df['close'].shift(1)).abs()
+            ], axis=1).max(axis=1)
+            atr = tr.rolling(14).mean()
+            df['atr'] = atr
+            plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / atr)
+            minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean() / atr)
+            dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+            df['adx'] = dx.rolling(14).mean()
+        except:
+            df['adx'] = 25 # Fallback
+
         last = df.iloc[-1]
         current_price = last['close']
 
@@ -82,8 +102,10 @@ class MLMomentumStrategy:
         sentiment = 0.5 # Mock positive
 
         # Entry Logic
+        # Added ADX > 15 Filter to ensure trend (Relaxed)
         if (last['roc'] > self.roc_threshold and
             last['rsi'] > 55 and
+            last.get('adx', 0) > 15 and
             rs_excess > 0 and
             sector_outperformance > 0 and
             current_price > last['sma50'] and
@@ -92,7 +114,8 @@ class MLMomentumStrategy:
             # Volume check
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             if last['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
-                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi']}
+                atr_val = last.get('atr', last['close']*0.01) if not pd.isna(last.get('atr')) else last['close']*0.01
+                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi'], 'atr': atr_val}
 
         return 'HOLD', 0.0, {}
 

@@ -1,0 +1,5 @@
+strategy,sharpe,return,drawdown,win_rate,trades,profit_factor
+AI_Hybrid,4.838424685649908,0.7039750731593668,0.7935474926526367,50.0,4,2.06111222522846
+SuperTrend_VWAP,0.0,0.0,0.0,0.0,0,0.0
+MCX_Momentum,0.0,0.0,0.0,0.0,0,0.0
+ML_Momentum,0.0,0.0,0.0,0.0,0,0.0
