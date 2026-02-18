@@ -27,6 +27,7 @@ TUNABLE_PARAMS = {
     'supertrend_vwap': ['threshold', 'stop_pct'],
     'ai_hybrid': ['rsi_lower', 'rsi_upper', 'stop_pct'],
     'orb': ['range_minutes', 'stop_loss_pct'],
+    'mcx_commodity_momentum': ['adx_threshold'],
     'default': ['threshold', 'stop_pct', 'stop_loss_pct', 'target_pct']
 }
 
@@ -171,6 +172,16 @@ class StrategyOptimizer:
                         changes.append(f"rsi_lower: {current_val} -> {new_val} (Tightened due to WR {data['wr']:.1f}%)")
                         modified = True
 
+                # Tighten ADX Threshold (make it higher)
+                if 'adx_threshold' in target_params:
+                     match = re.search(r"(parser\.add_argument\('--adx_threshold'.*default=)(\d+\.?\d*)", content)
+                     if match:
+                        current_val = float(match.group(2))
+                        new_val = min(50, current_val + 5)
+                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
+                        changes.append(f"adx_threshold: {current_val} -> {new_val} (Tightened due to WR {data['wr']:.1f}%)")
+                        modified = True
+
                 # Tighten Threshold (make it higher)
                 if 'threshold' in target_params and not modified: # Don't double adjust if handled by rejection
                      match = re.search(r"(self\.threshold\s*=\s*)(\d+)", content)
@@ -190,6 +201,16 @@ class StrategyOptimizer:
                         new_val = min(40, current_val + 5)
                         new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
                         changes.append(f"rsi_lower: {current_val} -> {new_val} (Relaxed due to WR {data['wr']:.1f}%)")
+                        modified = True
+
+                # Relax ADX Threshold (make it lower)
+                if 'adx_threshold' in target_params:
+                     match = re.search(r"(parser\.add_argument\('--adx_threshold'.*default=)(\d+\.?\d*)", content)
+                     if match:
+                        current_val = float(match.group(2))
+                        new_val = max(10, current_val - 5)
+                        new_content = new_content.replace(match.group(0), f"{match.group(1)}{new_val}")
+                        changes.append(f"adx_threshold: {current_val} -> {new_val} (Relaxed due to WR {data['wr']:.1f}%)")
                         modified = True
 
                 if 'threshold' in target_params:
