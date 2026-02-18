@@ -71,7 +71,7 @@ class WeeklyAudit:
         max_dd = 0.0
 
         position_details = []
-        tracked_symbols = set()
+        tracked_positions = {}
 
         # Load Active Strategies
         if self.config_file.exists():
@@ -96,7 +96,7 @@ class WeeklyAudit:
                             exposure = abs(pos * entry)
                             total_exposure += exposure
                             active_positions += 1
-                            tracked_symbols.add(symbol)
+                            tracked_positions[symbol] = tracked_positions.get(symbol, 0) + pos
 
                             # Fetch current price for PnL/DD
                             current_price = self.get_market_price(symbol)
@@ -142,7 +142,7 @@ class WeeklyAudit:
             content += "\nDetails:\n" + "\n".join(position_details)
 
         self.add_section("📊 PORTFOLIO RISK STATUS:", content)
-        return tracked_symbols
+        return tracked_positions
 
     def get_market_price(self, symbol):
         ticker = self._get_ticker(symbol)
@@ -285,14 +285,14 @@ class WeeklyAudit:
         except Exception:
             return "🔴 Error"
 
-    def reconcile_positions(self, tracked_symbols):
+    def reconcile_positions(self, tracked_positions):
         logger.info("Reconciling Positions...")
 
         # Fetch Real Positions
         kite_positions = self.fetch_broker_positions(5001)
         dhan_positions = self.fetch_broker_positions(5002)
 
-        broker_symbols = set()
+        broker_data = {} # Symbol -> Quantity
         details = []
 
         if kite_positions is None and dhan_positions is None:
@@ -300,19 +300,25 @@ class WeeklyAudit:
         else:
             if kite_positions:
                 for p in kite_positions:
-                    broker_symbols.add(p.get('symbol', 'UNKNOWN'))
+                    sym = p.get('symbol', 'UNKNOWN')
+                    qty = p.get('quantity', 0)
+                    broker_data[sym] = broker_data.get(sym, 0) + qty
                 details.append(f"Kite: {len(kite_positions)} positions")
             if dhan_positions:
                 for p in dhan_positions:
-                    broker_symbols.add(p.get('symbol', 'UNKNOWN'))
+                    sym = p.get('symbol', 'UNKNOWN')
+                    qty = p.get('quantity', 0)
+                    broker_data[sym] = broker_data.get(sym, 0) + qty
                 details.append(f"Dhan: {len(dhan_positions)} positions")
 
         # Mock Discrepancy (Test hook)
         if (self.root_dir / "mock_discrepancy.json").exists():
-             broker_symbols.add("GHOST_POS")
+             broker_data["GHOST_POS"] = 100
              details.append("Mock Discrepancy Injected")
 
         discrepancies = []
+        tracked_symbols = set(tracked_positions.keys())
+        broker_symbols = set(broker_data.keys())
 
         # Symbol-level comparison
         missing_in_broker = tracked_symbols - broker_symbols
@@ -325,6 +331,13 @@ class WeeklyAudit:
                 discrepancies.append(f"Missing in Broker: {', '.join(missing_in_broker)}")
             if orphaned_in_broker:
                 discrepancies.append(f"Orphaned in Broker: {', '.join(orphaned_in_broker)}")
+
+            # Check Quantity Mismatches for matching symbols
+            for sym in tracked_symbols.intersection(broker_symbols):
+                t_qty = tracked_positions[sym]
+                b_qty = broker_data[sym]
+                if t_qty != b_qty:
+                    discrepancies.append(f"{sym}: Quantity Mismatch (Tracked {t_qty} vs Broker {b_qty})")
 
         action = "None"
         if discrepancies:
@@ -452,11 +465,11 @@ class WeeklyAudit:
         self.add_section("✅ COMPLIANCE CHECK:", content)
 
     def run(self):
-        tracked_symbols = self.analyze_portfolio_risk()
-        self.analyze_correlations(tracked_symbols)
-        self.analyze_sector_distribution(tracked_symbols)
-        self.check_data_quality(tracked_symbols)
-        self.reconcile_positions(tracked_symbols)
+        tracked_positions = self.analyze_portfolio_risk()
+        self.analyze_correlations(tracked_positions.keys())
+        self.analyze_sector_distribution(tracked_positions.keys())
+        self.check_data_quality(tracked_positions.keys())
+        self.reconcile_positions(tracked_positions)
         self.check_system_health()
         self.detect_market_regime()
         self.check_compliance()
