@@ -27,48 +27,52 @@ logging.basicConfig(
 logger = logging.getLogger("GapFadeStrategy")
 
 class GapFadeStrategy:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5, override_vix=None, sentiment_score=None):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
+        self.override_vix = override_vix
+        self.sentiment_score = sentiment_score
         self.pm = PositionManager(f"{symbol}_GapFade")
 
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
 
         # 1. Get Previous Close
-        # Using history API for last 2 days
-        today = datetime.now()
-        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d") # Go back enough to get prev day
-        end_date = today.strftime("%Y-%m-%d")
-
-        # Get daily candles
-        df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
-
-        if df.empty or len(df) < 1:
-            logger.error("Could not fetch history for previous close.")
-            return
-
-        # Assuming the last completed row is previous day, or if market just opened, we might have today's open
-        # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
-
-        prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
-
+        # Try getting from quote first (usually reliable for indices)
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
+        if not quote:
+             quote = self.client.get_quote(self.symbol, "NSE")
+
         if not quote:
             logger.error("Could not fetch quote.")
             return
 
         current_price = float(quote['ltp'])
+        prev_close = 0.0
 
-        # Some APIs provide 'close' in quote which is prev_close
         if 'close' in quote and quote['close'] > 0:
             prev_close = float(quote['close'])
+            logger.info(f"Prev Close from Quote: {prev_close}")
+        else:
+            # Fallback to history
+            today = datetime.now()
+            start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
+            end_date = today.strftime("%Y-%m-%d")
+            df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
+            if not df.empty and len(df) >= 1:
+                # If last row is today (check date), use -2
+                last_date = pd.to_datetime(df.iloc[-1]['datetime']).date()
+                if last_date == today.date():
+                    if len(df) >= 2:
+                        prev_close = df.iloc[-2]['close']
+                else:
+                    prev_close = df.iloc[-1]['close']
+
+            if prev_close == 0:
+                logger.error("Could not determine Previous Close.")
+                return
 
         logger.info(f"Prev Close: {prev_close}, Current: {current_price}")
 
@@ -98,23 +102,39 @@ class GapFadeStrategy:
 
         # 3. Select Option Strike (ATM)
         atm = round(current_price / 50) * 50
-        strike_symbol = f"{self.symbol}{today.strftime('%y%b').upper()}{atm}{option_type}" # Symbol format varies
-        # Simplified: Just log the intent
 
-        logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade)")
-
-        # 4. Check VIX for Sizing (inherited from general rules)
-        vix_quote = self.client.get_quote("INDIA VIX", "NSE")
-        vix = float(vix_quote['ltp']) if vix_quote else 15
+        # 4. Check VIX for Sizing
+        vix = 15.0
+        if self.override_vix:
+            vix = self.override_vix
+        else:
+            vix_quote = self.client.get_quote("INDIA VIX", "NSE")
+            vix = float(vix_quote['ltp']) if vix_quote else 15
 
         qty = self.qty
         if vix > 30:
             qty = int(qty * 0.5)
             logger.info(f"High VIX {vix}. Reduced Qty to {qty}")
 
-        # 5. Place Order (Simulation)
-        # self.client.placesmartorder(...)
-        logger.info(f"Executing {option_type} Buy for {qty} qty.")
+        # 5. Check Sentiment
+        if self.sentiment_score is not None:
+            # If Sentiment matches Gap direction, fading it is risky!
+            # Gap UP (Positive) and Sentiment Positive -> Trend Continuation likely. Fade is risky.
+            # Gap UP (Positive) and Sentiment Negative -> Fade is good.
+
+            is_gap_up = gap_pct > 0
+            is_sentiment_positive = self.sentiment_score > 0.6
+            is_sentiment_negative = self.sentiment_score < 0.4
+
+            if is_gap_up and is_sentiment_positive:
+                logger.warning("Gap UP with Positive Sentiment. Trend Continuation likely. Skipping Fade.")
+                return
+            if not is_gap_up and is_sentiment_negative:
+                logger.warning("Gap DOWN with Negative Sentiment. Trend Continuation likely. Skipping Fade.")
+                return
+
+        # 6. Place Order (Simulation)
+        logger.info(f"Executing {option_type} Buy at {atm} for {qty} qty.")
         self.pm.update_position(qty, 100, "BUY") # Mock update
 
 def main():
@@ -123,10 +143,12 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--threshold", type=float, default=0.5, help="Gap Threshold %%")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
+    parser.add_argument("--vix", type=float, default=None, help="Override VIX")
+    parser.add_argument("--sentiment_score", type=float, default=None, help="Sentiment Score")
     args = parser.parse_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold)
+    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold, override_vix=args.vix, sentiment_score=args.sentiment_score)
     strategy.execute()
 
 if __name__ == "__main__":

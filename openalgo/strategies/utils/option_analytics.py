@@ -31,7 +31,7 @@ def calculate_greeks(S, K, T, r, sigma, option_type='ce'):
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
         d2 = d1 - sigma * math.sqrt(T)
 
-        if option_type.lower() == 'ce' or option_type.lower() == 'call':
+        if option_type.lower() in ['ce', 'call']:
             delta = norm_cdf(d1)
             theta = (- (S * norm_pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * norm_cdf(d2)) / 365.0
             rho = K * T * math.exp(-r * T) * norm_cdf(d2)
@@ -61,12 +61,13 @@ def calculate_iv(price, S, K, T, r, option_type='ce', tol=1e-5, max_iter=100):
     sigma = 0.5 # Initial guess
     for i in range(max_iter):
         greeks = calculate_greeks(S, K, T, r, sigma, option_type)
+        vega = greeks['vega'] * 100 # Adjust back from 1% unit
 
         # Calculate theoretical price using BS
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
         d2 = d1 - sigma * math.sqrt(T)
 
-        if option_type.lower() == 'ce' or option_type.lower() == 'call':
+        if option_type.lower() in ['ce', 'call']:
             theo_price = S * norm_cdf(d1) - K * math.exp(-r * T) * norm_cdf(d2)
         else:
             theo_price = K * math.exp(-r * T) * norm_cdf(-d2) - S * norm_cdf(-d1)
@@ -76,7 +77,6 @@ def calculate_iv(price, S, K, T, r, option_type='ce', tol=1e-5, max_iter=100):
         if abs(diff) < tol:
             return round(sigma, 4)
 
-        vega = greeks['vega'] * 100 # Adjust back from 1% unit
         if vega == 0:
             break
 
@@ -87,28 +87,43 @@ def calculate_iv(price, S, K, T, r, option_type='ce', tol=1e-5, max_iter=100):
 def calculate_max_pain(chain_data):
     """
     Calculate Max Pain Strike.
-    chain_data: List of dicts with 'strike', 'ce_oi', 'pe_oi'
+    chain_data: List of dicts with 'strike', 'ce_oi', 'pe_oi' or nested structure.
     """
     try:
-        strikes = [item['strike'] for item in chain_data]
-        strikes.sort()
+        strikes = []
+        for item in chain_data:
+            if 'strike' in item:
+                strikes.append(item['strike'])
+        strikes = sorted(list(set(strikes)))
+
+        if not strikes:
+            return None
 
         total_loss = []
-        for strike in strikes:
+        for expiration_price in strikes:
             loss = 0
             for item in chain_data:
-                k = item['strike']
+                k = item.get('strike')
+                if not k: continue
+
+                # Handle simplified structure
                 ce_oi = item.get('ce_oi', 0)
                 pe_oi = item.get('pe_oi', 0)
 
-                # If market expires at 'strike'
-                # Call writers lose if strike > k
-                if strike > k:
-                    loss += (strike - k) * ce_oi
+                # Handle nested structure if present (e.g. standard NSE format)
+                if 'ce' in item and isinstance(item['ce'], dict):
+                    ce_oi = item['ce'].get('oi', 0)
+                if 'pe' in item and isinstance(item['pe'], dict):
+                    pe_oi = item['pe'].get('oi', 0)
 
-                # Put writers lose if strike < k
-                if strike < k:
-                    loss += (k - strike) * pe_oi
+                # If market expires at 'expiration_price'
+                # Call writers lose if Expiration > Strike (ITM Calls)
+                if expiration_price > k:
+                    loss += (expiration_price - k) * ce_oi
+
+                # Put writers lose if Expiration < Strike (ITM Puts)
+                if expiration_price < k:
+                    loss += (k - expiration_price) * pe_oi
             total_loss.append(loss)
 
         min_loss_idx = total_loss.index(min(total_loss))
@@ -140,3 +155,12 @@ def calculate_pcr(chain_data):
     except Exception as e:
         logger.error(f"Error calculating PCR: {e}")
         return 0
+
+def calculate_iv_rank(current_iv, low_iv=10, high_iv=30):
+    """
+    Calculate IV Rank given current IV and historical range.
+    """
+    if high_iv == low_iv:
+        return 0
+    rank = (current_iv - low_iv) / (high_iv - low_iv) * 100
+    return max(0, min(100, rank))
