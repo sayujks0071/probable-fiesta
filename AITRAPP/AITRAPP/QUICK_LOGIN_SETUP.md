@@ -22,7 +22,7 @@ You need to generate an access token from Kite Connect. Here are two ways:
 
 ### Option A: Using Kite Connect Login (Recommended)
 
-1. Visit: https://kite.trade/connect/login?api_key=nhe2vo0afks02ojs&v=3
+1. Visit: https://kite.trade/connect/login?api_key=YOUR_API_KEY&v=3
 2. Login with your Zerodha credentials
 3. You'll be redirected to: `http://localhost:8080/callback?request_token=XXXXX&action=login&status=success`
 4. Copy the `request_token` from the URL
@@ -34,8 +34,8 @@ python3 -c "
 from kiteconnect import KiteConnect
 import sys
 
-api_key = 'nhe2vo0afks02ojs'
-api_secret = 'cs82nkkdvin37nrydnyou6cwn2b8zojl'
+api_key = 'YOUR_API_KEY'
+api_secret = 'YOUR_API_SECRET'
 
 # Replace YOUR_REQUEST_TOKEN with the token from URL
 request_token = input('Paste request_token from URL: ')
