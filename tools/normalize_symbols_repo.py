@@ -10,18 +10,19 @@ from collections import defaultdict
 
 # Setup paths
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
-# Regex for MCX Symbols
-# Pattern: SYMBOL + 1-2 digits (Day) + 3 letters (Month) + 2 digits (Year) + FUT
-# e.g. GOLDM05FEB26FUT
-# Capture groups: 1=Symbol, 2=Day, 3=Month, 4=Year
-MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
-
-# Valid Months
-MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+# Import consolidated logic
+try:
+    from openalgo.strategies.utils.mcx_utils import MCX_PATTERN, MONTHS, normalize_mcx_match
+except ImportError as e:
+    print(f"Error: Could not import mcx_utils. Make sure openalgo package is in path. Details: {e}")
+    sys.exit(1)
 
 def load_instruments():
     if not os.path.exists(INSTRUMENTS_FILE):
@@ -33,28 +34,21 @@ def load_instruments():
         print(f"Warning: Failed to load instruments: {e}")
         return None
 
-def normalize_mcx_symbol(match):
-    symbol = match.group(1).upper()
-    day = int(match.group(2))
-    month = match.group(3).upper()
-    year = match.group(4)
-
-    # Normalize: Pad day with 0 if needed
-    normalized = f"{symbol}{day:02d}{month}{year}FUT"
-    return normalized
-
 def scan_file(filepath, instruments, strict=False):
     issues = []
-    normalized_content = ""
     changes_made = False
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception as e:
+        print(f"Error reading {filepath}: {e}")
+        return "", False, [{"file": filepath, "error": str(e), "status": "ERROR"}]
 
     def replacement_handler(match):
         nonlocal changes_made
         original = match.group(0)
-        normalized = normalize_mcx_symbol(match)
+        normalized = normalize_mcx_match(match)
 
         # Validation
         month = match.group(3).upper()
@@ -136,6 +130,14 @@ def main():
             if file.endswith('.py') or file.endswith('.json'):
                 files_to_scan.append(os.path.join(root, file))
 
+    # Also scan configs if exists
+    configs_dir = os.path.join(REPO_ROOT, 'configs')
+    if os.path.exists(configs_dir):
+        for root, dirs, files in os.walk(configs_dir):
+             for file in files:
+                if file.endswith('.yaml') or file.endswith('.json'):
+                    files_to_scan.append(os.path.join(root, file))
+
 
     for filepath in files_to_scan:
         new_content, changed, file_issues = scan_file(filepath, instruments, args.strict)
@@ -174,18 +176,20 @@ def main():
 
     # Check for strict failure
     invalid_symbols = [i for i in audit_report["issues"] if i['status'] in ('INVALID', 'MISSING')]
+    normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
 
-    if args.strict and args.check:
-         # In strict check mode, fail if normalization is needed
-         normalized_count = len([i for i in audit_report["issues"] if i['status'] == 'NORMALIZED'])
-         if normalized_count > 0:
+    if args.strict:
+        # Fail if ANY issue (invalid, missing, OR needs normalization in check mode)
+        if invalid_symbols:
+            print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols.")
+            sys.exit(1)
+
+        if args.check and normalized_count > 0:
              print(f"❌ Found {normalized_count} symbols needing normalization.")
              sys.exit(1)
 
     if invalid_symbols:
-        print(f"❌ Found {len(invalid_symbols)} invalid/missing symbols.")
-        if args.strict:
-            sys.exit(1)
+        print(f"Warning: Found {len(invalid_symbols)} invalid/missing symbols.")
 
     if args.write:
          print("✅ Normalization complete.")

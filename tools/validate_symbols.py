@@ -17,9 +17,12 @@ INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 CONFIG_FILE = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategies.json')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
-# Regex for MCX Symbols
-MCX_PATTERN = re.compile(r'\b([A-Z]+)(\d{1,2})([A-Z]{3})(\d{2})FUT\b', re.IGNORECASE)
-MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+# Import consolidated logic
+try:
+    from openalgo.strategies.utils.mcx_utils import MCX_PATTERN, MONTHS, normalize_mcx_match
+except ImportError as e:
+    print(f"Error: Could not import mcx_utils. Make sure openalgo package is in path. Details: {e}")
+    sys.exit(1)
 
 def check_instruments_freshness():
     if not os.path.exists(INSTRUMENTS_FILE):
@@ -46,7 +49,11 @@ def validate_config_symbols(resolver):
 
         for strat_id, config in configs.items():
             try:
+                # We try to resolve to check validity
+                # If it's a hard symbol, it checks existence.
+                # If it's an option config, it checks chain existence.
                 resolved = resolver.resolve(config)
+
                 if resolved is None:
                     issues.append({
                         "source": "active_strategies.json",
@@ -55,6 +62,7 @@ def validate_config_symbols(resolver):
                         "status": "INVALID"
                     })
                 elif isinstance(resolved, dict):
+                    # Option resolution returns dict
                     if resolved.get('status') != 'valid':
                         issues.append({
                             "source": "active_strategies.json",
@@ -62,6 +70,8 @@ def validate_config_symbols(resolver):
                             "error": "Invalid option configuration",
                             "status": "INVALID"
                         })
+                # If resolved is a string (symbol), it means it was found.
+
             except Exception as e:
                 issues.append({
                     "source": "active_strategies.json",
@@ -112,7 +122,7 @@ def scan_files_for_hardcoded_symbols(instruments):
                         continue
 
                     # Normalized form:
-                    normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
+                    normalized = normalize_mcx_match(match)
 
                     if symbol_str != normalized:
                          issues.append({
@@ -123,7 +133,7 @@ def scan_files_for_hardcoded_symbols(instruments):
                             "status": "MALFORMED"
                         })
 
-                    if normalized not in instruments:
+                    if instruments and normalized not in instruments:
                         issues.append({
                             "source": os.path.basename(filepath),
                             "symbol": symbol_str,
