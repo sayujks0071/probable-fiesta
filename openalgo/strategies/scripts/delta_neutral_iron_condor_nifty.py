@@ -26,15 +26,18 @@ logging.basicConfig(
 logger = logging.getLogger("DeltaNeutralIronCondor")
 
 class DeltaNeutralIronCondor:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None, override_vix=None):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.max_vix = max_vix
         self.sentiment_score = sentiment_score
+        self.override_vix = override_vix
         self.pm = PositionManager(f"{symbol}_IC")
 
     def get_vix(self):
+        if self.override_vix is not None:
+            return self.override_vix
         q = self.client.get_quote("INDIA VIX", "NSE")
         return float(q['ltp']) if q else 15.0
 
@@ -83,14 +86,20 @@ class DeltaNeutralIronCondor:
                 strike = item['strike']
 
                 def get_iv(itm, type_key):
-                    iv = itm.get(f'{type_key}_iv', 0)
-                    if iv == 0:
-                        iv = itm.get(type_key, {}).get('iv', 0)
+                    iv = 0
+                    if isinstance(itm, dict):
+                         # Try getting from nested 'ce'/'pe' dict or flat keys
+                         if type_key in itm and isinstance(itm[type_key], dict):
+                             iv = itm[type_key].get('iv', 0)
+                         else:
+                             iv = itm.get(f'{type_key}_iv', 0)
+
                     if iv > 0:
                          return iv / 100.0
                     return vix / 100.0
 
                 iv_ce = get_iv(item, 'ce')
+                # Calculate Call Delta
                 ce_greeks = calculate_greeks(spot, strike, T, r, iv_ce, 'ce')
                 ce_delta = ce_greeks.get('delta', 0.5)
 
@@ -99,6 +108,7 @@ class DeltaNeutralIronCondor:
                     ce_short = strike
 
                 iv_pe = get_iv(item, 'pe')
+                # Calculate Put Delta
                 pe_greeks = calculate_greeks(spot, strike, T, r, iv_pe, 'pe')
                 pe_delta = abs(pe_greeks.get('delta', -0.5))
 
@@ -113,13 +123,15 @@ class DeltaNeutralIronCondor:
             ce_short = None
             pe_short = None
 
-        # Fallback to ATM + Width
+        # Fallback to ATM + Width if delta search failed or returned None
         atm = round(center_price / 50) * 50
 
         if not ce_short:
             ce_short = atm + wing_width
+            logger.info(f"Fallback CE Short: {ce_short}")
         if not pe_short:
             pe_short = atm - wing_width
+            logger.info(f"Fallback PE Short: {pe_short}")
 
         # Longs (Wings)
         ce_long = ce_short + wing_width
@@ -158,6 +170,10 @@ class DeltaNeutralIronCondor:
                 return
 
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
+        if not quote:
+             # Try just symbol
+             quote = self.client.get_quote(self.symbol, "NSE")
+
         spot = float(quote['ltp']) if quote else 0
         if spot == 0:
             logger.error("Could not fetch spot price.")
@@ -180,6 +196,8 @@ class DeltaNeutralIronCondor:
         # In real scenario:
         # self.client.placesmartorder(...)
 
+        self.pm.update_position(self.qty, spot, "SELL") # Mock update
+
         logger.info("Strategy execution completed (Simulation).")
 
 def main():
@@ -188,10 +206,11 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
     parser.add_argument("--sentiment_score", type=float, default=None, help="External Sentiment Score (0.0-1.0)")
+    parser.add_argument("--vix", type=float, default=None, help="Override VIX value")
     args = parser.parse_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score)
+    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score, override_vix=args.vix)
     strategy.execute()
 
 if __name__ == "__main__":
