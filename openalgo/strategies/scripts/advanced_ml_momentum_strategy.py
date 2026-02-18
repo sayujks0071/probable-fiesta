@@ -247,7 +247,7 @@ def run_strategy():
     parser = argparse.ArgumentParser(description='ML Momentum Strategy')
     parser.add_argument('--symbol', type=str, help='Stock Symbol')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
-    parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
+    parser.add_argument('--api_key', type=str, help='API Key')
     parser.add_argument('--threshold', type=float, default=0.01, help='ROC Threshold')
     parser.add_argument('--sector', type=str, default='NIFTY 50', help='Sector Benchmark')
 
@@ -261,7 +261,13 @@ def run_strategy():
         sys.exit(1)
     
     port = args.port or int(os.getenv('OPENALGO_PORT', '5001'))
-    api_key = args.api_key or os.getenv('OPENALGO_APIKEY', 'demo_key')
+    api_key = args.api_key or os.getenv('OPENALGO_APIKEY')
+
+    if not api_key:
+        print("ERROR: API Key is required via --api_key or OPENALGO_APIKEY environment variable.")
+        parser.print_help()
+        sys.exit(1)
+
     threshold = args.threshold or float(os.getenv('THRESHOLD', '0.01'))
 
     strategy = MLMomentumStrategy(symbol, api_key, port, threshold=threshold, sector=args.sector)
