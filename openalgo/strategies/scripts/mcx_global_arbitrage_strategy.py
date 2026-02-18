@@ -21,15 +21,16 @@ if str(utils_path) not in sys.path:
     sys.path.insert(0, str(utils_path))
 
 try:
-    from trading_utils import APIClient
+    from trading_utils import APIClient, is_market_open
     from symbol_resolver import SymbolResolver
 except ImportError:
     try:
-        from openalgo.strategies.utils.trading_utils import APIClient
+        from openalgo.strategies.utils.trading_utils import APIClient, is_market_open
         from openalgo.strategies.utils.symbol_resolver import SymbolResolver
     except ImportError:
         APIClient = None
         SymbolResolver = None
+        is_market_open = lambda: True
 
 # Configuration
 SYMBOL = os.getenv('SYMBOL', None)
@@ -229,6 +230,11 @@ class MCXGlobalArbitrageStrategy:
         logger.info(f"Starting MCX Global Arbitrage Strategy for {self.symbol} vs {self.global_symbol}")
         
         while True:
+            if not is_market_open():
+                logger.info("Market is closed. Sleeping...")
+                time.sleep(300)
+                continue
+
             if self.fetch_data():
                 self.check_signals()
             time.sleep(60)
@@ -239,8 +245,13 @@ if __name__ == "__main__":
     parser.add_argument('--global_symbol', type=str, default='GC=F', help='Global Symbol for comparison (e.g. GC=F)')
     parser.add_argument('--port', type=int, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key')
+    parser.add_argument('--divergence_threshold', type=float, default=3.0, help='Divergence Threshold %')
 
     args = parser.parse_args()
+
+    # Update params from args
+    if args.divergence_threshold:
+        PARAMS['divergence_threshold'] = args.divergence_threshold
 
     # Use command-line args or env vars
     if args.symbol: SYMBOL = args.symbol
