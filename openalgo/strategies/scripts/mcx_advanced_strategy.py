@@ -38,7 +38,7 @@ except ImportError:
 
 # Configuration
 API_HOST = os.getenv('OPENALGO_HOST', 'http://127.0.0.1:5001')
-API_KEY = os.getenv('OPENALGO_APIKEY', 'demo_key')
+API_KEY = os.getenv('OPENALGO_APIKEY')
 SCRIPTS_DIR = Path(__file__).parent
 
 # Strategy Templates Mapping
@@ -447,11 +447,15 @@ class AdvancedMCXStrategy:
 def main():
     parser = argparse.ArgumentParser(description='Advanced MCX Strategy Analyzer')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
-    parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
+    parser.add_argument('--api_key', type=str, help='API Key')
     args = parser.parse_args()
 
     # Overwrite with env vars if present
-    api_key = os.getenv('OPENALGO_APIKEY', args.api_key)
+    api_key = args.api_key or os.getenv('OPENALGO_APIKEY')
+    if not api_key:
+        print("ERROR: --api_key argument or OPENALGO_APIKEY environment variable is required")
+        sys.exit(1)
+
     port = int(os.getenv('OPENALGO_PORT', args.port))
     host = f"http://127.0.0.1:{port}"
 

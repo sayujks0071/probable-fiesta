@@ -21,21 +21,24 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from risk_manager import RiskManager
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.risk_manager import RiskManager
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.risk_manager import RiskManager
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
             APIClient = None
             PositionManager = None
+            RiskManager = None
             is_market_open = lambda: True
 
 # Setup Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("MCX_Momentum")
 
 class MCXMomentumStrategy:
@@ -46,8 +49,17 @@ class MCXMomentumStrategy:
         self.params = params
 
         self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
-        self.pm = PositionManager(symbol) if PositionManager else None
         self.data = pd.DataFrame()
+
+        # Initialize Risk Manager
+        self.rm = None
+        if RiskManager:
+            self.rm = RiskManager(
+                strategy_name=f"MCX_Momentum_{symbol}",
+                exchange="MCX",
+                capital=200000,
+                config={'mcx_eod_square_off_time': '23:25'}
+            )
 
         # Log active filters
         logger.info(f"Initialized Strategy for {symbol}")
@@ -183,14 +195,45 @@ class MCXMomentumStrategy:
 
         current = self.data.iloc[-1]
         prev = self.data.iloc[-2]
+        current_price = current['close']
 
-        # Log current state
-        # logger.info(f"Price: {current['close']:.2f}, RSI: {current['rsi']:.2f}, ADX: {current['adx']:.2f}")
+        # Manage Position via RiskManager
+        if self.rm:
+            # Check Stop Loss / Trailing Stop
+            stop_hit, stop_msg = self.rm.check_stop_loss(self.symbol, current_price)
+            if stop_hit:
+                logger.info(stop_msg)
+                self.rm.register_exit(self.symbol, current_price)
+                return
 
-        # Check Position
-        has_position = False
-        if self.pm:
-            has_position = self.pm.has_position()
+            # Update Trailing Stop
+            self.rm.update_trailing_stop(self.symbol, current_price)
+
+            # Check EOD
+            if self.rm.should_square_off_eod():
+                logger.info("EOD Square-off triggered.")
+                self.rm.register_exit(self.symbol, current_price)
+                return
+
+            # Check if we have an open position
+            pos = self.rm.positions.get(self.symbol)
+            if pos:
+                # Exit Logic
+                if pos['qty'] > 0: # Long
+                    if current['rsi'] < 45 or current['adx'] < 20:
+                        logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                        self.rm.register_exit(self.symbol, current_price)
+                elif pos['qty'] < 0: # Short
+                    if current['rsi'] > 55 or current['adx'] < 20:
+                        logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                        self.rm.register_exit(self.symbol, current_price)
+                return # Already in position, don't check entry
+
+        # Check if we can trade
+        can_trade, reason = self.rm.can_trade() if self.rm else (True, "No RM")
+        if not can_trade:
+            logger.debug(f"Cannot trade: {reason}")
+            return
 
         # Multi-Factor Checks
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
@@ -203,51 +246,32 @@ class MCXMomentumStrategy:
             logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size by 30%.")
             base_qty = max(1, int(base_qty * 0.7)) # Reduce size, minimum 1
 
-        if not seasonality_ok and not has_position:
+        if not seasonality_ok:
             logger.info("Seasonality Weak: Skipping new entries.")
             return
 
-        if not global_alignment_ok and not has_position:
+        if not global_alignment_ok:
             logger.info("Global Alignment Weak: Skipping new entries.")
             return
 
         # Entry Logic
-        if not has_position:
-            # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
-            if (current['adx'] > self.params['adx_threshold'] and
-                current['rsi'] > 55 and
-                current['close'] > prev['close']):
+        # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
+        if (current['adx'] > self.params['adx_threshold'] and
+            current['rsi'] > 55 and
+            current['close'] > prev['close']):
 
-                logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                if self.pm:
-                    self.pm.update_position(base_qty, current['close'], 'BUY')
+            logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+            if self.rm:
+                self.rm.register_entry(self.symbol, base_qty, current['close'], 'LONG')
 
-            # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
-            elif (current['adx'] > self.params['adx_threshold'] and
-                  current['rsi'] < 45 and
-                  current['close'] < prev['close']):
+        # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
+        elif (current['adx'] > self.params['adx_threshold'] and
+              current['rsi'] < 45 and
+              current['close'] < prev['close']):
 
-                logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                if self.pm:
-                    self.pm.update_position(base_qty, current['close'], 'SELL')
-
-        # Exit Logic
-        elif has_position:
-            # Retrieve position details
-            pos_qty = self.pm.position
-            entry_price = self.pm.entry_price
-
-            # Stop Loss / Take Profit Logic could be added here
-            # Simple Exit: Trend Fades (ADX < 20) or RSI Reversal
-
-            if pos_qty > 0: # Long
-                if current['rsi'] < 45 or current['adx'] < 20:
-                     logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
-            elif pos_qty < 0: # Short
-                if current['rsi'] > 55 or current['adx'] < 20:
-                     logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+            logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+            if self.rm:
+                self.rm.register_entry(self.symbol, base_qty, current['close'], 'SHORT')
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
@@ -274,8 +298,15 @@ if __name__ == "__main__":
     parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
+    parser.add_argument('--logfile', type=str, help='Log file path')
 
     args = parser.parse_args()
+
+    # Setup logging
+    if args.logfile:
+        logging.basicConfig(filename=args.logfile, level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', force=True)
+    else:
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', force=True)
 
     # Strategy Parameters
     PARAMS = {

@@ -19,11 +19,11 @@ But first, you need to get the `request_token` from Kite Connect.
 Open this URL in your browser:
 
 ```
-https://kite.trade/connect/login?api_key=nhe2vo0afks02ojs&v=3
+https://kite.trade/connect/login?api_key=YOUR_API_KEY&v=3
 ```
 
 **Or use this direct link:**
-- Replace `nhe2vo0afks02ojs` with your API key if different
+- Replace `YOUR_API_KEY` with your API key if different
 - The URL format is: `https://kite.trade/connect/login?api_key=YOUR_API_KEY&v=3`
 
 ### Step 2: Login with Zerodha Credentials
@@ -73,8 +73,8 @@ If you prefer to do it manually:
 ```python
 from kiteconnect import KiteConnect
 
-api_key = "nhe2vo0afks02ojs"
-api_secret = "cs82nkkdvin37nrydnyou6cwn2b8zojl"
+api_key = "YOUR_API_KEY"
+api_secret = "YOUR_API_SECRET"
 request_token = "YOUR_REQUEST_TOKEN_FROM_URL"
 
 kite = KiteConnect(api_key=api_key)
@@ -112,7 +112,7 @@ Your code has automatic token refresh guards, but:
 - The callback URL doesn't need to work - it's just for getting the token
 
 ### "Invalid API key"
-- Verify your API key is correct: `nhe2vo0afks02ojs`
+- Verify your API key is correct
 - Check that the API key is active in Kite Connect dashboard
 
 ### Token not working in CI
@@ -124,12 +124,12 @@ Your code has automatic token refresh guards, but:
 
 **Login URL:**
 ```
-https://kite.trade/connect/login?api_key=nhe2vo0afks02ojs&v=3
+https://kite.trade/connect/login?api_key=YOUR_API_KEY&v=3
 ```
 
 **Your API Credentials:**
-- API Key: `nhe2vo0afks02ojs`
-- API Secret: `cs82nkkdvin37nrydnyou6cwn2b8zojl`
+- API Key: `YOUR_API_KEY`
+- API Secret: `YOUR_API_SECRET`
 
 **Helper Script:**
 ```bash

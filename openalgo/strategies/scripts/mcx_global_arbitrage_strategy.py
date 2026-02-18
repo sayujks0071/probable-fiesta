@@ -35,7 +35,7 @@ except ImportError:
 SYMBOL = os.getenv('SYMBOL', None)
 GLOBAL_SYMBOL = os.getenv('GLOBAL_SYMBOL', 'GC=F') # Default to Gold Futures
 API_HOST = os.getenv('OPENALGO_HOST', 'http://127.0.0.1:5001')
-API_KEY = os.getenv('OPENALGO_APIKEY', 'demo_key')
+API_KEY = os.getenv('OPENALGO_APIKEY')
 
 # Strategy Parameters
 PARAMS = {
@@ -253,7 +253,11 @@ if __name__ == "__main__":
     elif os.getenv('OPENALGO_PORT'): API_HOST = f"http://127.0.0.1:{os.getenv('OPENALGO_PORT')}"
     
     if args.api_key: API_KEY = args.api_key
-    else: API_KEY = os.getenv('OPENALGO_APIKEY', API_KEY)
+    else: API_KEY = os.getenv('OPENALGO_APIKEY')
+
+    if not API_KEY:
+        print("ERROR: --api_key or OPENALGO_APIKEY env var required.")
+        sys.exit(1)
 
     # Validate symbol or resolve default
     if not SYMBOL:
