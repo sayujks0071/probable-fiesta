@@ -17,18 +17,34 @@ scrape_configs:
       job: openalgo
       env: local
       __path__: /var/log/openalgo/*.log
+
   pipeline_stages:
-  # Attempt to parse JSON lines
-  - json:
-      expressions:
-        level: level
-        logger: logger
-        timestamp: timestamp
-  # Set labels from extracted fields
-  - labels:
-      level:
-      logger:
-  # Set timestamp from extracted field (if available)
-  - timestamp:
-      source: timestamp
-      format: RFC3339
+  # Pipeline for JSON logs (when OPENALGO_LOG_JSON=1)
+  - match:
+      selector: '{job="openalgo"} |= "{"'
+      stages:
+      - json:
+          expressions:
+            timestamp: timestamp
+            level: level
+            logger: logger
+            message: message
+      - timestamp:
+          source: timestamp
+          format: RFC3339
+      - labels:
+          level:
+          logger:
+
+  # Pipeline for Standard logs (default)
+  - match:
+      selector: '{job="openalgo"} !~ "^{"'
+      stages:
+      - regex:
+          expression: '^\[(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})\] (?P<level>\w+) (?P<logger>[\w\.]+): (?P<message>.*)$'
+      - timestamp:
+          source: timestamp
+          format: "2006-01-02 15:04:05,000"
+      - labels:
+          level:
+          logger:

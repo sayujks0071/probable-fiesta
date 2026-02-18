@@ -1,46 +1,76 @@
 #!/bin/bash
-# Install Systemd User Timer for OpenAlgo Healthcheck
+set -e
 
-mkdir -p ~/.config/systemd/user
-SCRIPT_DIR=$(cd $(dirname $0) && pwd)
-SCRIPT_PATH="$SCRIPT_DIR/healthcheck.py"
-PYTHON_EXEC=$(which python3)
+# Get absolute path to scripts
+REPO_ROOT=$(dirname "$(dirname "$(readlink -f "$0")")")
+HEALTH_SCRIPT="$REPO_ROOT/scripts/healthcheck.py"
+ALERT_SCRIPT="$REPO_ROOT/scripts/local_alert_monitor.py"
 
-SERVICE_FILE=~/.config/systemd/user/openalgo-health.service
-TIMER_FILE=~/.config/systemd/user/openalgo-health.timer
+# Ensure scripts are executable
+chmod +x "$HEALTH_SCRIPT"
+chmod +x "$ALERT_SCRIPT"
 
-echo "Installing Systemd User Service..."
+# Systemd User Directory
+SYSTEMD_DIR="$HOME/.config/systemd/user"
+mkdir -p "$SYSTEMD_DIR"
 
-cat <<EOF > $SERVICE_FILE
+echo "Installing Systemd User Timers..."
+
+# --- Health Check Service ---
+cat > "$SYSTEMD_DIR/openalgo-health.service" <<EOF
 [Unit]
 Description=OpenAlgo Health Check
 
 [Service]
-ExecStart=$PYTHON_EXEC $SCRIPT_PATH
-WorkingDirectory=$SCRIPT_DIR
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target
+Type=oneshot
+ExecStart=$HEALTH_SCRIPT
+WorkingDirectory=$REPO_ROOT
 EOF
 
-cat <<EOF > $TIMER_FILE
+# --- Health Check Timer ---
+cat > "$SYSTEMD_DIR/openalgo-health.timer" <<EOF
 [Unit]
 Description=Run OpenAlgo Health Check every 5 minutes
 
 [Timer]
 OnBootSec=5min
 OnUnitActiveSec=5min
-Unit=openalgo-health.service
 
 [Install]
 WantedBy=timers.target
 EOF
 
-systemctl --user daemon-reload
-systemctl --user enable openalgo-health.timer
-systemctl --user start openalgo-health.timer
+# --- Alert Monitor Service ---
+cat > "$SYSTEMD_DIR/openalgo-alert.service" <<EOF
+[Unit]
+Description=OpenAlgo Alert Monitor
 
-echo "✅ Systemd user timer installed and started."
-systemctl --user list-timers --all | grep openalgo
+[Service]
+Type=oneshot
+ExecStart=$ALERT_SCRIPT
+WorkingDirectory=$REPO_ROOT
+EOF
+
+# --- Alert Monitor Timer ---
+cat > "$SYSTEMD_DIR/openalgo-alert.timer" <<EOF
+[Unit]
+Description=Run OpenAlgo Alert Monitor every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# Reload and Enable
+echo "Reloading systemd user daemon..."
+systemctl --user daemon-reload
+
+echo "Enabling and starting timers..."
+systemctl --user enable --now openalgo-health.timer
+systemctl --user enable --now openalgo-alert.timer
+
+echo "✅ Systemd timers installed and started."
+echo "Check status with: systemctl --user list-timers"

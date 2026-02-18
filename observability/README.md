@@ -1,79 +1,81 @@
-# OpenAlgo Local Observability Stack
+# OpenAlgo Observability Stack
 
-This directory contains the configuration for running a local observability stack using Grafana, Loki, and Promtail.
+This directory contains the configuration for a local observability stack using **Loki, Promtail, and Grafana**.
+This allows you to monitor OpenAlgo logs, visualize errors, and get alerts locally without external cloud services.
 
 ## Components
 
-1.  **Loki**: Log aggregation system (Port 3100).
-2.  **Promtail**: Log collector that tails logs from `../logs/*.log` and ships them to Loki.
-3.  **Grafana**: Visualization dashboard (Port 3000).
+1.  **Loki**: Log aggregation system (like Prometheus, but for logs).
+2.  **Promtail**: Agent that ships logs from `./logs/*.log` to Loki.
+3.  **Grafana**: Visualization dashboard.
+4.  **Healthcheck Scripts**: Python scripts in `../scripts/` to monitor system health.
 
-## Setup
+## Quick Start
 
-### Prerequisites
-- Docker and Docker Compose installed.
-- Python 3 for running OpenAlgo.
-
-### Quick Start
-
-Use the `Makefile` in the repo root:
-
+### 1. Start the Stack
+Run the following command from the repo root:
 ```bash
-# Start Observability Stack
 make obs-up
-
-# Check Status
-make status
-
-# View Logs (Tail)
-make obs-logs
-
-# Stop Stack
-make obs-down
 ```
+This starts Loki (port 3100), Grafana (port 3000), and Promtail.
 
-### Accessing Dashboards
+### 2. Access Grafana
+- URL: http://localhost:3000
+- User: `admin`
+- Pass: `admin`
 
-1.  Open [http://localhost:3000](http://localhost:3000).
-2.  Login with `admin` / `admin`.
-3.  Navigate to **Dashboards > Manage**.
-4.  You should see **OpenAlgo Local Dashboard**.
+A default **OpenAlgo Dashboard** is pre-provisioned. Go to **Dashboards > OpenAlgo Local Dashboard**.
 
-### Logging Configuration
-
-OpenAlgo uses a custom logging module `openalgo_observability` that:
-- Writes to `logs/openalgo.log`.
-- Redacts sensitive keys (api_key, password, etc.).
-- Supports JSON logging via `OPENALGO_LOG_JSON=1`.
-
-To run OpenAlgo with logging enabled:
-
+### 3. Run OpenAlgo with Logging
+Run OpenAlgo as usual:
 ```bash
-# Run the daily startup script
 make run
-
-# Or manually
-python3 daily_startup.py
 ```
+Logs are written to `./logs/openalgo.log` and automatically ingested by Loki.
 
-### Alerts
+### 4. View Logs
+You can view logs in Grafana **Explore** view:
+- Select datasource: **Loki**
+- Query: `{job="openalgo"}`
 
-A health check script is provided in `scripts/healthcheck.py`. It runs periodically to:
-1.  Check if OpenAlgo and Observability services are up.
-2.  Query Loki for error spikes or critical failures.
-3.  Send alerts to Console/Desktop/Telegram.
-
-To enable Telegram alerts, set environment variables:
+Or use the CLI shortcut:
 ```bash
-export TELEGRAM_BOT_TOKEN="your_token"
-export TELEGRAM_CHAT_ID="your_chat_id"
+make obs-logs
 ```
 
-To install the scheduled health check:
+## Scheduled Monitoring
+
+To enable automatic health checks and alerts (every 5 minutes):
+
+**Option A: Systemd Timers (Recommended for Linux)**
 ```bash
-# Install as Systemd User Timer (Recommended)
-./scripts/install_systemd_user_timers.sh
-
-# Or Install as Cron job
-./scripts/install_cron.sh
+make install-obs
 ```
+This installs user-level systemd timers (`openalgo-health.timer`, `openalgo-alert.timer`).
+
+**Option B: Cron Jobs (Fallback)**
+```bash
+make install-obs-cron
+```
+This adds entries to your crontab.
+
+**Uninstall Schedulers**
+```bash
+make uninstall-obs
+```
+
+## Alerts
+
+The local alert monitor (`scripts/local_alert_monitor.py`) checks for:
+- High error rate (> 5 errors in 5 min)
+- Critical keywords: "Auth failed", "Order rejected", "Broker error"
+
+**Telegram Notifications (Optional)**
+Set environment variables in your shell or `.env`:
+- `TELEGRAM_BOT_TOKEN`: Your bot token
+- `TELEGRAM_CHAT_ID`: Your chat ID
+
+If set, alerts will be sent to Telegram. Otherwise, they are logged to `logs/alerts.log`.
+
+## Redaction
+Sensitive data (API keys, passwords, tokens) is automatically redacted from logs by `openalgo_observability/logging_setup.py` before being written to disk.

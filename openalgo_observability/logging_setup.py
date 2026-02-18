@@ -29,17 +29,38 @@ class SensitiveDataFilter(logging.Filter):
         # We modify the record in place. This is generally accepted in logging filters
         # attached to handlers or loggers where we want the modification to persist.
 
-        # 1. Filter the main message (record.msg)
-        # Note: record.msg can be any object, usually a string.
-        original_msg = str(record.msg)
-        filtered_msg = original_msg
-        for pattern, replacement in SENSITIVE_PATTERNS:
-            filtered_msg = re.sub(pattern, replacement, filtered_msg, flags=re.IGNORECASE)
+        # 1. Merge msg and args if possible to handle patterns split across them
+        # This handles logger.info("key=%s", "secret")
+        if record.args:
+            try:
+                # getMessage() performs the string formatting (msg % args)
+                # We update record.msg to the formatted string and clear record.args
+                # so it doesn't get formatted again.
+                record.msg = record.getMessage()
+                record.args = ()
+            except Exception:
+                # If formatting fails, we can't merge. We will try to filter components separately.
+                pass
 
-        record.msg = filtered_msg
+        # 2. Filter the main message (record.msg)
+        if isinstance(record.msg, str):
+            filtered_msg = record.msg
+            for pattern, replacement in SENSITIVE_PATTERNS:
+                filtered_msg = re.sub(pattern, replacement, filtered_msg, flags=re.IGNORECASE)
+            record.msg = filtered_msg
+        else:
+            # If it's not a string, convert to string to ensure redaction if it contains secrets
+            # This handles cases like logger.info({'secret': '...'})
+            # We only do this if args is empty (which they should be if step 1 succeeded or wasn't needed)
+            if not record.args:
+                original_msg = str(record.msg)
+                filtered_msg = original_msg
+                for pattern, replacement in SENSITIVE_PATTERNS:
+                    filtered_msg = re.sub(pattern, replacement, filtered_msg, flags=re.IGNORECASE)
+                record.msg = filtered_msg
 
-        # 2. Filter args if present
-        if hasattr(record, 'args') and record.args:
+        # 3. Filter args if they still exist (formatting failed or msg wasn't string)
+        if record.args:
             filtered_args = []
             for arg in record.args:
                 if isinstance(arg, str):
@@ -59,11 +80,16 @@ class JsonFormatter(logging.Formatter):
         # We assume the record has already been filtered by SensitiveDataFilter
         # if the filter is attached to the handler.
 
+        # Ensure message is formatted (merging msg and args)
+        # We prefer getMessage() which performs the merge
+        # If SensitiveDataFilter ran, record.args might be empty and record.msg already formatted
+        message = record.getMessage()
+
         log_data = {
             "timestamp": datetime.fromtimestamp(record.created).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(), # Merges msg and args
+            "message": message,
             "module": record.module,
             "function": record.funcName,
             "line": record.lineno
