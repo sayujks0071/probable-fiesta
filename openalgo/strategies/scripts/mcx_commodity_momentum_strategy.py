@@ -193,39 +193,52 @@ class MCXMomentumStrategy:
             has_position = self.pm.has_position()
 
         # Multi-Factor Checks
-        seasonality_ok = self.params.get('seasonality_score', 50) > 40
-        global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
+        seasonality_score = self.params.get('seasonality_score', 50)
+        global_alignment = self.params.get('global_alignment_score', 50)
+        fundamental_score = self.params.get('fundamental_score', 50)
         usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
 
         # Adjust Position Size
         base_qty = 1
         if usd_vol_high:
-            logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size by 30%.")
-            base_qty = max(1, int(base_qty * 0.7)) # Reduce size, minimum 1
+            logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size.")
+            # Assume base lot size might be higher in real trading, but sticking to 1 min
+            # If we had risk management integrated with capital, we'd reduce capital allocation.
 
-        if not seasonality_ok and not has_position:
-            logger.info("Seasonality Weak: Skipping new entries.")
+        # Filters
+        if seasonality_score < 40 and not has_position:
+            logger.info(f"Seasonality Weak ({seasonality_score}): Skipping new entries.")
             return
 
-        if not global_alignment_ok and not has_position:
-            logger.info("Global Alignment Weak: Skipping new entries.")
+        if global_alignment < 50 and not has_position:
+            logger.info(f"Global Alignment Weak ({global_alignment}): Skipping new entries.")
             return
 
         # Entry Logic
         if not has_position:
-            # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
+            # BUY Signal
             if (current['adx'] > self.params['adx_threshold'] and
                 current['rsi'] > 55 and
                 current['close'] > prev['close']):
+
+                # Check Fundamental support for BUY
+                if fundamental_score < 40:
+                    logger.info(f"Skipping BUY: Fundamental Score Weak ({fundamental_score})")
+                    return
 
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
-            # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
+            # SELL Signal
             elif (current['adx'] > self.params['adx_threshold'] and
                   current['rsi'] < 45 and
                   current['close'] < prev['close']):
+
+                # Check Fundamental support for SELL (High score might mean bullish fundamentals)
+                if fundamental_score > 60:
+                     logger.info(f"Skipping SELL: Fundamental Score Bullish ({fundamental_score})")
+                     return
 
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                 if self.pm:
@@ -274,6 +287,7 @@ if __name__ == "__main__":
     parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
+    parser.add_argument('--fundamental_score', type=int, default=50, help='Fundamental Score (0-100)')
 
     args = parser.parse_args()
 
@@ -288,7 +302,8 @@ if __name__ == "__main__":
         'usd_inr_trend': args.usd_inr_trend,
         'usd_inr_volatility': args.usd_inr_volatility,
         'seasonality_score': args.seasonality_score,
-        'global_alignment_score': args.global_alignment_score
+        'global_alignment_score': args.global_alignment_score,
+        'fundamental_score': args.fundamental_score
     }
 
     # Symbol Resolution

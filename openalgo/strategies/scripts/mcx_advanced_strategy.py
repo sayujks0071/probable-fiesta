@@ -11,6 +11,9 @@ import logging
 import argparse
 import pandas as pd
 import numpy as np
+import requests
+import re
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -45,8 +48,8 @@ SCRIPTS_DIR = Path(__file__).parent
 STRATEGY_TEMPLATES = {
     'Momentum': 'mcx_commodity_momentum_strategy.py',
     'Arbitrage': 'mcx_global_arbitrage_strategy.py',
+    'MeanReversion': 'mcx_seasonal_mean_reversion.py',
     'Spread': 'mcx_inter_commodity_spread_strategy.py',
-    'MeanReversion': 'mcx_commodity_momentum_strategy.py', # Fallback
 }
 
 # Setup Logging
@@ -54,9 +57,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("MCX_Advanced_Strategy")
 
 class AdvancedMCXStrategy:
-    def __init__(self, api_key, api_host):
+    def __init__(self, api_key, api_host, mock=False):
         self.api_key = api_key
         self.api_host = api_host
+        self.mock = mock
         self.client = APIClient(api_key=self.api_key, host=self.api_host)
         self.resolver = SymbolResolver()
         self.fundamental_data = self._load_fundamental_data()
@@ -92,6 +96,102 @@ class AdvancedMCXStrategy:
             except Exception as e:
                 logger.error(f"Error loading fundamental data: {e}")
         return {}
+
+    def _fetch_news_sentiment(self, keywords=None):
+        """
+        Fetch news sentiment from Economic Times RSS.
+        keywords: list of strings to filter by (e.g., ['gold', 'bullion'])
+        """
+        try:
+            url = "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"
+            try:
+                response = requests.get(url, timeout=5)
+            except:
+                return 50, "Neutral"
+
+            if response.status_code != 200:
+                return 50, "Neutral"
+
+            soup = BeautifulSoup(response.content, 'xml')
+            items = soup.find_all('item')
+
+            positive_words = ['surge', 'jump', 'gain', 'rally', 'bull', 'high', 'profit', 'growth', 'buy', 'positive', 'record', 'spike']
+            negative_words = ['fall', 'drop', 'crash', 'bear', 'low', 'loss', 'decline', 'sell', 'negative', 'fear', 'inflation', 'weak']
+
+            score = 0
+            count = 0
+
+            # Keywords filtering
+            relevant_items = []
+            if keywords:
+                for item in items:
+                    title = item.title.text.lower()
+                    desc = item.description.text.lower() if item.description else ""
+                    if any(k.lower() in title or k.lower() in desc for k in keywords):
+                        relevant_items.append(item)
+            else:
+                relevant_items = items[:15] # General market sentiment
+
+            if not relevant_items and keywords:
+                return 50, "Neutral" # No news found for specific commodity
+
+            for item in relevant_items:
+                title = item.title.text.lower()
+                p_count = sum(1 for w in positive_words if w in title)
+                n_count = sum(1 for w in negative_words if w in title)
+
+                if p_count > n_count: score += 1
+                elif n_count > p_count: score -= 1
+                count += 1
+
+            if count == 0: return 50, "Neutral"
+
+            # Normalize to 0-100
+            # Range is likely -count to +count.
+            # 0 -> 50. +count -> 100. -count -> 0.
+            normalized = 50 + (score / count) * 50
+            normalized = max(0, min(100, normalized))
+
+            label = "Neutral"
+            if normalized > 60: label = "Positive"
+            elif normalized < 40: label = "Negative"
+
+            return round(normalized), label
+
+        except Exception as e:
+            logger.warning(f"Sentiment analysis failed: {e}")
+            return 50, "Neutral"
+
+    def _get_fundamental_score(self, commodity_name):
+        """
+        Calculate fundamental score based on inventory/events.
+        """
+        score = 50
+        note = "Neutral"
+        today = datetime.now()
+        weekday = today.weekday() # 0=Mon, 2=Wed
+
+        # 1. Crude Oil Inventory (Wednesday)
+        if commodity_name == 'CRUDEOIL':
+            if weekday == 2: # Wednesday
+                note = "EIA Inventory Day"
+                # Randomize slightly for simulation or use trend
+                score = 40 # Caution on inventory day
+            elif weekday == 4: # Friday (Rig Count sometimes)
+                score = 60
+
+        # 2. Natural Gas (Thursday)
+        elif commodity_name == 'NATURALGAS':
+            if weekday == 3: # Thursday
+                note = "Storage Report Day"
+                score = 45
+
+        # 3. Gold/Silver (Inflation/Fed)
+        elif commodity_name in ['GOLD', 'SILVER']:
+            # Check if global gold is trending (from market context if available)
+            pass
+
+        return score, note
 
     def fetch_global_context(self):
         """
@@ -156,6 +256,28 @@ class AdvancedMCXStrategy:
             comm['global_trend'] = 'Neutral'
             comm['global_change_pct'] = 0.0
 
+    def _simulate_mcx_data(self, comm):
+        """Simulate MCX data for testing/fallback."""
+        # Generate 100 periods of 15m data
+        dates = pd.date_range(end=datetime.now(), periods=100, freq='15min')
+        base_price = 50000 if comm['name'] == 'GOLD' else (70000 if comm['name'] == 'SILVER' else 6000)
+
+        # Random Walk
+        prices = [base_price]
+        for _ in range(99):
+            change = np.random.normal(0, base_price * 0.001)
+            prices.append(prices[-1] + change)
+
+        df = pd.DataFrame({
+            'date': dates,
+            'open': prices,
+            'high': [p * 1.001 for p in prices],
+            'low': [p * 0.999 for p in prices],
+            'close': prices,
+            'volume': np.random.randint(100, 5000, 100)
+        })
+        return df
+
     def fetch_mcx_data(self):
         """
         Fetch MCX data via APIClient for active contracts.
@@ -176,12 +298,19 @@ class AdvancedMCXStrategy:
                 end_date = datetime.now().strftime("%Y-%m-%d")
                 start_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
 
-                df = self.client.history(symbol, exchange="MCX", interval="15m", start_date=start_date, end_date=end_date)
+                try:
+                    df = self.client.history(symbol, exchange="MCX", interval="15m", start_date=start_date, end_date=end_date)
+                except Exception:
+                    df = pd.DataFrame()
 
                 if df.empty or len(df) < 50:
-                    logger.warning(f"Insufficient data for {symbol}")
-                    comm['valid'] = False
-                    continue
+                    if self.mock:
+                        logger.warning(f"Insufficient data for {symbol}. Using simulation.")
+                        df = self._simulate_mcx_data(comm)
+                    else:
+                        logger.warning(f"Insufficient data for {symbol}. Skipping.")
+                        comm['valid'] = False
+                        continue
 
                 comm['data'] = df
                 comm['valid'] = True
@@ -312,10 +441,19 @@ class AdvancedMCXStrategy:
                 # Seasonality
                 seasonality_score = self.get_seasonality_score(comm['name'])
 
-                # Fundamental
-                # Fetch from loaded data or default to 50
-                fundamental_score = self.fundamental_data.get(comm['name'], {}).get('score', 50)
-                fundamental_note = self.fundamental_data.get(comm['name'], {}).get('note', "Neutral")
+                # Fundamental (Simulated + News)
+                f_score_sim, f_note_sim = self._get_fundamental_score(comm['name'])
+
+                # Fetch News Sentiment (Real)
+                keywords = [comm['name'], comm['name'].lower()]
+                if comm['name'] == 'GOLD': keywords.append('bullion')
+                elif comm['name'] == 'CRUDEOIL': keywords.extend(['oil', 'petroleum'])
+
+                news_score, news_label = self._fetch_news_sentiment(keywords)
+
+                # Combine simulated fundamental with news sentiment
+                fundamental_score = (f_score_sim + news_score) / 2
+                fundamental_note = f"{f_note_sim} | News: {news_label}"
 
                 # Composite Score
                 # (Trend * 0.25) + (Momentum * 0.20) + (Global * 0.15) + (Volatility * 0.15) + (Liquidity * 0.10) + (Fundamental * 0.10) + (Seasonality * 0.05)
@@ -331,14 +469,20 @@ class AdvancedMCXStrategy:
 
                 # Determine Strategy
                 strategy_type = 'Momentum'
+
+                # Logic for Strategy Selection
                 if composite_score < 50:
                     strategy_type = 'Avoid'
+
                 elif global_align_score < 40 and volatility_score > 60:
-                    strategy_type = 'Arbitrage' # Divergence detected
-                    # Boost score for Arbitrage view
-                    composite_score = (composite_score + 100) / 2
-                elif momentum_score < 40 and seasonality_score > 80:
-                    strategy_type = 'MeanReversion' # Seasonal Buy
+                    # If Global divergence is high (low alignment score) and Volatility is decent -> Arbitrage
+                    strategy_type = 'Arbitrage'
+                    composite_score = (composite_score + 80) / 2 # Boost score for arb opportunity
+
+                elif (momentum_score < 30 and seasonality_score > 70) or (momentum_score > 70 and seasonality_score < 30):
+                    # Extremes with opposing seasonality -> Mean Reversion
+                    strategy_type = 'MeanReversion'
+                    composite_score = (composite_score + seasonality_score) / 2
 
                 self.opportunities.append({
                     'symbol': comm['symbol'],
@@ -397,7 +541,7 @@ class AdvancedMCXStrategy:
             d = opp['details']
             print(f"   - Trend: {d['trend_dir']} (ADX: {d['adx']:.1f}) | Momentum: {d['momentum_score']:.0f} (RSI: {d['rsi']:.1f})")
             print(f"   - Global Align: {d['global_score']} | Seasonality: {d['seasonality_score']} | Volatility: {d['volatility_score']}")
-            print(f"   - Fundamental: {d['fundamental_score']} ({d['fundamental_note']})")
+            print(f"   - Fundamental: {d['fundamental_score']:.1f} ({d['fundamental_note']})")
             print(f"   - Volume: {d['volume']} | ATR: {d['atr']:.2f}")
 
             risk_pct = 2.0
@@ -420,6 +564,8 @@ class AdvancedMCXStrategy:
         print("- Global-MCX Arbitrage: Trade MCX when it diverges from global prices -> mcx_global_arbitrage_strategy.py")
         print("  - Logic: Compares MCX Price vs Global Price (yfinance)")
         print("  - Entry: Divergence > 3%")
+        print("- Seasonal Mean Reversion: Trade against seasonal extremes -> mcx_seasonal_mean_reversion.py")
+        print("  - Logic: RSI Extremes + Seasonality Bias")
 
         print("\n⚠️ RISK WARNINGS:")
         if self.market_context['usd_volatility'] > 0.8:
@@ -433,12 +579,23 @@ class AdvancedMCXStrategy:
 
         deploy_cmds = []
         for pick in top_picks:
-            cmd = f"python3 strategies/scripts/{STRATEGY_TEMPLATES.get(pick['strategy_type'], 'mcx_commodity_momentum_strategy.py')} " \
+            script_name = STRATEGY_TEMPLATES.get(pick['strategy_type'], 'mcx_commodity_momentum_strategy.py')
+            cmd = f"python3 openalgo/strategies/scripts/{script_name} " \
                   f"--symbol {pick['symbol']} --underlying {pick['name']} " \
-                  f"--usd_inr_trend {self.market_context['usd_trend']} " \
-                  f"--usd_inr_volatility {self.market_context['usd_volatility']} " \
-                  f"--seasonality_score {pick['details']['seasonality_score']} " \
-                  f"--global_alignment_score {pick['details']['global_score']}"
+                  f"--api_key {self.api_key} "
+
+            if pick['strategy_type'] == 'Momentum':
+                cmd += f"--usd_inr_trend {self.market_context['usd_trend']} " \
+                       f"--usd_inr_volatility {self.market_context['usd_volatility']} " \
+                       f"--seasonality_score {pick['details']['seasonality_score']} " \
+                       f"--global_alignment_score {pick['details']['global_score']} " \
+                       f"--fundamental_score {int(pick['details']['fundamental_score'])}"
+            elif pick['strategy_type'] == 'MeanReversion':
+                cmd += f"--seasonality_score {pick['details']['seasonality_score']} " \
+                       f"--usd_inr_volatility {self.market_context['usd_volatility']}"
+            elif pick['strategy_type'] == 'Arbitrage':
+                cmd += f"--divergence_threshold 3.0"
+
             deploy_cmds.append(cmd)
             print(f"- {pick['name']}: {cmd}")
 
@@ -448,6 +605,7 @@ def main():
     parser = argparse.ArgumentParser(description='Advanced MCX Strategy Analyzer')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
+    parser.add_argument('--mock', action='store_true', help='Use simulated data for testing')
     args = parser.parse_args()
 
     # Overwrite with env vars if present
@@ -455,7 +613,7 @@ def main():
     port = int(os.getenv('OPENALGO_PORT', args.port))
     host = f"http://127.0.0.1:{port}"
 
-    analyzer = AdvancedMCXStrategy(api_key, host)
+    analyzer = AdvancedMCXStrategy(api_key, host, mock=args.mock)
     analyzer.fetch_global_context()
     analyzer.fetch_mcx_data()
     analyzer.analyze_commodities()
