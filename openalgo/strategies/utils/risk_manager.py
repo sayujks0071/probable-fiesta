@@ -407,8 +407,13 @@ class EODSquareOff:
                 result = self.exit_callback(symbol, action, qty)
 
                 if result and result.get('status') == 'success':
-                    # Assume exit at current price (would need actual fill price)
-                    self.rm.register_exit(symbol, pos['entry_price'])  # Placeholder
+                    # Try to get actual execution price
+                    exit_price = float(result.get('average_price', result.get('price', 0)))
+                    if exit_price <= 0: # Avoid 0 price if API returns 0 or fails
+                         exit_price = pos['entry_price']
+                         logger.warning(f"EOD: Could not fetch exit price for {symbol}, using entry price for PnL calculation.")
+
+                    self.rm.register_exit(symbol, exit_price)
                     logger.info(f"EOD: Successfully closed {symbol}")
                 else:
                     logger.error(f"EOD: Failed to close {symbol}: {result}")
