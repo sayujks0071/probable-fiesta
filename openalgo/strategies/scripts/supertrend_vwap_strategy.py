@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 
+# [Optimization 2026-02-18] Changes: stop_pct: 1.8 -> 1.6 (Tightened due to R:R 0.40)
+
 # [Optimization 2026-01-31] Changes: threshold: 155 -> 150 (Lowered due to Rejection 100.0%)
 SuperTrend VWAP Strategy
 VWAP mean reversion with volume profile analysis, Enhanced Sector RSI Filter, and Dynamic Risk.
@@ -74,7 +76,7 @@ class SuperTrendVWAPStrategy:
 
         # Optimization Parameters
         self.threshold = 150
-        self.stop_pct = 1.8
+        self.stop_pct = 1.6
         self.adx_threshold = 20  # Added ADX Filter
         self.adx_period = 14
 
