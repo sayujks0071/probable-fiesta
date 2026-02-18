@@ -282,7 +282,7 @@ if __name__ == "__main__":
         'period_adx': 14,
         'period_rsi': 14,
         'period_atr': 14,
-        'adx_threshold': 25,
+        'adx_threshold': 20, # Relaxed from 25
         'min_atr': 10,
         'risk_per_trade': 0.02,
         'usd_inr_trend': args.usd_inr_trend,
@@ -334,7 +334,7 @@ DEFAULT_PARAMS = {
     'period_adx': 14,
     'period_rsi': 14,
     'period_atr': 14,
-    'adx_threshold': 25,
+    'adx_threshold': 20, # Relaxed
     'min_atr': 10,
     'risk_per_trade': 0.02,
 }
