@@ -1,174 +1,194 @@
 #!/usr/bin/env python3
-"""
-OpenAlgo Health Check & Alerting Script
-Checks service health and queries logs for alerts.
-"""
 import os
 import sys
 import logging
 import logging.handlers
-import subprocess
+import urllib.request
+import urllib.error
+import urllib.parse
+import socket
 import json
 import time
-import urllib.request
-import urllib.parse
-import urllib.error
 from datetime import datetime, timedelta
 
 # Configuration
+LOG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs', 'healthcheck.log')
 LOKI_URL = "http://localhost:3100"
 GRAFANA_URL = "http://localhost:3000"
-LOG_FILE = os.path.join(os.path.dirname(__file__), "../logs/healthcheck.log")
-OPENALGO_LOG_FILE = os.path.join(os.path.dirname(__file__), "../logs/openalgo.log")
+OPENALGO_URL = "http://localhost:5000"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Alert Thresholds
-ERROR_THRESHOLD = 5 # Max errors in 5m
-ALERT_LOOKBACK_MINUTES = 5
+# Setup Logging
+def setup_logging():
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+    logger = logging.getLogger("HealthCheck")
+    logger.setLevel(logging.INFO)
 
-# Setup Logging for Healthcheck itself
-logger = logging.getLogger("HealthCheck")
-logger.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    # File Handler
+    file_handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE, maxBytes=10*1024*1024, backupCount=5
+    )
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
-# Rotating File Handler
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-handler = logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=3)
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+    # Console Handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
 
-# Console Handler
-console = logging.StreamHandler()
-console.setFormatter(formatter)
-logger.addHandler(console)
+    return logger
 
-def check_service(name, url, timeout=2):
+logger = setup_logging()
+
+def check_port(host, port, timeout=2):
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            code = resp.getcode()
-            if code < 400: # 200-399 is OK
-                return True, f"OK ({code})"
-            return False, f"HTTP {code}"
-    except urllib.error.HTTPError as e:
-        return False, f"HTTP {e.code}"
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((host, port))
+        sock.close()
+        return result == 0
     except Exception as e:
-        return False, str(e)
+        logger.error(f"Port check failed for {host}:{port}: {e}")
+        return False
 
-def check_process(pattern):
+def check_http(url, timeout=5):
     try:
-        # Use pgrep
-        cmd = ["pgrep", "-f", pattern]
-        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        pids = output.decode().strip().split('\n')
-        return True, f"Running ({len(pids)} processes: {', '.join(pids)})"
-    except subprocess.CalledProcessError:
-        return False, "Not Running"
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return response.status == 200
+    except (urllib.error.URLError, socket.timeout, ConnectionRefusedError, Exception) as e:
+        # Suppress verbose errors for expected failures when service is down
+        # logger.warning(f"HTTP check failed for {url}: {e}")
+        return False
 
-def query_loki(query, start_time_ns):
+def send_telegram_alert(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("Telegram credentials not set. Skipping alert.")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": f"🚨 *OpenAlgo Alert*\n\n{message}",
+        "parse_mode": "Markdown"
+    }
+
     try:
-        # Loki query_range endpoint
-        url = f"{LOKI_URL}/loki/api/v1/query_range"
-        params = urllib.parse.urlencode({
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.status == 200:
+                logger.info("Telegram alert sent.")
+            else:
+                logger.error(f"Failed to send Telegram alert: Status {response.status}")
+    except Exception as e:
+        logger.error(f"Failed to send Telegram alert: {e}")
+
+def query_loki(query, start_time_ns, end_time_ns):
+    try:
+        params = {
             'query': query,
             'start': start_time_ns,
-            'limit': 1000
-        })
-        full_url = f"{url}?{params}"
+            'end': end_time_ns,
+            'limit': 100
+        }
+        query_string = urllib.parse.urlencode(params)
+        url = f"{LOKI_URL}/loki/api/v1/query_range?{query_string}"
 
-        with urllib.request.urlopen(full_url, timeout=5) as resp:
-            if resp.getcode() == 200:
-                data = json.loads(resp.read().decode())
-                # Extract results
-                # data['data']['result'] is a list of streams
-                # each stream has 'values' -> [[ts, line], ...]
-                count = 0
-                lines = []
-                for stream in data.get('data', {}).get('result', []):
-                    values = stream.get('values', [])
-                    count += len(values)
-                    for v in values:
-                        lines.append(v[1]) # The log line
-                return count, lines
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode('utf-8'))
+                results = data.get('data', {}).get('result', [])
+                return results
             else:
-                logger.error(f"Loki Query Failed: {resp.getcode()}")
-                return 0, []
+                logger.warning(f"Loki query failed: {response.status} {response.reason}")
+                return []
+    except (urllib.error.URLError, socket.timeout, ConnectionRefusedError):
+        # Loki is likely down, handled by service check
+        return []
     except Exception as e:
-        logger.error(f"Loki Connection Failed: {e}")
-        return 0, []
+        logger.error(f"Loki query error: {e}")
+        return []
 
-def send_alert(title, message):
-    alert_msg = f"🚨 {title}\n{message}"
-    logger.warning(alert_msg)
-
-    # 1. Telegram
-    tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    tg_chat = os.getenv("TELEGRAM_CHAT_ID")
-    if tg_token and tg_chat:
-        try:
-            url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
-            payload = json.dumps({"chat_id": tg_chat, "text": alert_msg}).encode('utf-8')
-            req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                logger.info("Telegram notification sent.")
-        except Exception as e:
-            logger.error(f"Failed to send Telegram alert: {e}")
-
-    # 2. Desktop Notification (Linux/Mac)
-    try:
-        if sys.platform == "linux":
-            subprocess.run(["notify-send", title, message], check=False)
-        elif sys.platform == "darwin":
-             subprocess.run(["osascript", "-e", f'display notification "{message}" with title "{title}"'], check=False)
-    except Exception:
-        pass # Ignore errors here
-
-def main():
-    logger.info("--- Starting Health Check ---")
+def run_health_check():
+    logger.info("Starting health check...")
 
     # 1. Service Health
-    loki_ok, loki_msg = check_service("Loki", f"{LOKI_URL}/ready")
-    grafana_ok, graf_msg = check_service("Grafana", f"{GRAFANA_URL}/login")
+    services = {
+        "OpenAlgo": {"port": 5000, "url": f"{OPENALGO_URL}/api/health", "critical": True},
+        "Loki": {"port": 3100, "url": f"{LOKI_URL}/ready", "critical": True},
+        "Grafana": {"port": 3000, "url": f"{GRAFANA_URL}/api/health", "critical": False},
+    }
 
-    # Check OpenAlgo Process (look for python scripts)
-    oa_ok, oa_msg = check_process("openalgo")
+    service_status = {}
+    for name, config in services.items():
+        port_ok = check_port("localhost", config["port"])
 
-    logger.info(f"Loki: {loki_msg}")
-    logger.info(f"Grafana: {graf_msg}")
-    logger.info(f"OpenAlgo: {oa_msg}")
+        http_ok = True
+        if port_ok and name != "OpenAlgo":
+             http_ok = check_http(config["url"])
 
-    if not loki_ok:
-        send_alert("System Alert", "Loki is DOWN. Observability compromised.")
+        # OpenAlgo might be behind auth or not have /api/health accessible without token
+        # So for OpenAlgo, if port is open, we assume it's up for basic check
+        if name == "OpenAlgo":
+            status = port_ok
+        else:
+            status = port_ok and http_ok
 
-    # 2. Log Analysis (Alerting)
-    if loki_ok:
-        now = time.time_ns()
-        start = now - (ALERT_LOOKBACK_MINUTES * 60 * 1_000_000_000)
+        service_status[name] = status
 
-        # A. Error Spike
-        # Query: count_over_time({job="openalgo"} |= "ERROR" [5m])
-        # But here we just fetch lines and count
-        error_count, error_lines = query_loki('{job="openalgo"} |= "ERROR"', start)
-        logger.info(f"Errors in last {ALERT_LOOKBACK_MINUTES}m: {error_count}")
+        if not status:
+            msg = f"{name} is DOWN (Port: {port_ok})"
+            if name != "OpenAlgo":
+                msg += f" (HTTP: {http_ok})"
 
-        if error_count > ERROR_THRESHOLD:
-            sample = "\n".join(error_lines[:3])
-            send_alert("High Error Rate", f"Found {error_count} errors in last {ALERT_LOOKBACK_MINUTES}m.\nSample:\n{sample}")
+            logger.error(msg)
+            if config["critical"]:
+                send_telegram_alert(msg)
+        else:
+            logger.info(f"{name} is UP")
 
-        # B. Critical Keywords (Immediate)
-        # "Auth failed", "Token invalid", "Order rejected", "Broker error"
-        critical_patterns = ["Auth failed", "Token invalid", "Order rejected", "Broker error", "Invalid symbol"]
-        # Construct query: {job="openalgo"} |~ "Auth failed|Token invalid|..."
-        regex = "|".join(critical_patterns)
-        crit_count, crit_lines = query_loki(f'{{job="openalgo"}} |~ "(?i){regex}"', start)
+    # 2. Alert Rules (Query Loki)
+    # Only if Loki is UP
+    if service_status["Loki"]:
+        now = time.time()
+        start_time = int((now - 300) * 1e9) # 5 minutes ago in nanoseconds
+        end_time = int(now * 1e9)
 
-        if crit_count > 0:
-            sample = "\n".join(crit_lines[:3])
-            send_alert("Critical Event", f"Found {crit_count} critical events.\nSample:\n{sample}")
+        # Rule 1: High Error Rate
+        # Count lines with "ERROR"
+        error_query = '{job="openalgo"} |= "ERROR"'
+        results = query_loki(error_query, start_time, end_time)
+        error_count = sum(len(stream['values']) for stream in results)
 
-    else:
-        # Fallback to reading file if Loki is down?
-        pass
+        logger.info(f"Error count in last 5m: {error_count}")
 
-    logger.info("--- Health Check Complete ---")
+        if error_count > 10:
+            msg = f"High Error Rate: {error_count} errors in last 5 minutes."
+            logger.error(msg)
+            send_telegram_alert(msg)
+
+        # Rule 2: Critical Keywords (Auth Failed, Order Rejected)
+        critical_keywords = [
+            ("Auth failed", "Authentication Failure"),
+            ("Order rejected", "Order Rejected"),
+            ("broker error", "Broker Error"),
+            ("token invalid", "Token Invalid")
+        ]
+
+        for keyword, label in critical_keywords:
+            query = f'{{job="openalgo"}} |= "{keyword}"'
+            results = query_loki(query, start_time, end_time)
+            count = sum(len(stream['values']) for stream in results)
+
+            if count > 0:
+                msg = f"Critical Alert: {label} detected {count} times in last 5 minutes."
+                logger.error(msg)
+                send_telegram_alert(msg)
+
+    logger.info("Health check completed.")
 
 if __name__ == "__main__":
-    main()
+    run_health_check()
