@@ -282,8 +282,8 @@ if __name__ == "__main__":
         'period_adx': 14,
         'period_rsi': 14,
         'period_atr': 14,
-        'adx_threshold': 25,
-        'min_atr': 10,
+        'adx_threshold': 20,  # [Improvement] Relaxed from 25
+        'min_atr': 0.1,       # [Improvement] Lowered from 10 to 0.1 to allow lower priced assets
         'risk_per_trade': 0.02,
         'usd_inr_trend': args.usd_inr_trend,
         'usd_inr_volatility': args.usd_inr_volatility,
@@ -334,8 +334,8 @@ DEFAULT_PARAMS = {
     'period_adx': 14,
     'period_rsi': 14,
     'period_atr': 14,
-    'adx_threshold': 25,
-    'min_atr': 10,
+    'adx_threshold': 20,  # [Improvement] Relaxed from 25
+    'min_atr': 0.1,       # [Improvement] Lowered from 10 to 0.1
     'risk_per_trade': 0.02,
 }
 

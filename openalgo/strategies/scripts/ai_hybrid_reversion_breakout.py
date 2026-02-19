@@ -40,7 +40,7 @@ except ImportError:
             is_market_open = lambda: True
 
 class AIHybridStrategy:
-    def __init__(self, symbol, api_key, port, rsi_lower=30, rsi_upper=60, stop_pct=1.0, sector='NIFTY 50', earnings_date=None, logfile=None, time_stop_bars=12):
+    def __init__(self, symbol, api_key, port, rsi_lower=25, rsi_upper=60, stop_pct=1.0, sector='NIFTY 50', earnings_date=None, logfile=None, time_stop_bars=12):
         self.symbol = symbol
         self.host = f"http://127.0.0.1:{port}"
         self.client = APIClient(api_key=api_key, host=self.host)
@@ -69,6 +69,27 @@ class AIHybridStrategy:
         self.sector = sector
         self.earnings_date = earnings_date
         self.time_stop_bars = time_stop_bars
+
+    def calculate_adx(self, df, period=14):
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean()
+
+        up = high.diff()
+        down = low.diff()
+        plus_dm = np.where((up > down) & (up > 0), up, 0)
+        minus_dm = np.where((down > up) & (down > 0), down, 0)
+
+        plus_di = 100 * (pd.Series(plus_dm).rolling(period).mean() / atr)
+        minus_di = 100 * (pd.Series(minus_dm).rolling(period).mean() / atr)
+        dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
+        df['adx'] = dx.rolling(period).mean()
+        return df
 
     def calculate_signal(self, df):
         """Calculate signal for a given dataframe (Backtesting support)."""
@@ -115,8 +136,13 @@ class AIHybridStrategy:
         if not pd.isna(last.get('sma200')) and last['close'] < last['sma200']:
             is_bullish_regime = False
 
-        # Reversion Logic: RSI < 30 and Price < Lower BB (Oversold)
-        if last['rsi'] < self.rsi_lower and last['close'] < last['lower']:
+        # [Improvement] Calculate ADX for Trend Filter
+        df = self.calculate_adx(df)
+        last_adx = df['adx'].iloc[-1]
+
+        # Reversion Logic: RSI < rsi_lower and Price < Lower BB (Oversold)
+        # [Improvement] Tightened RSI default to 25. Added ADX < 25 filter to avoid fading strong trends.
+        if last['rsi'] < self.rsi_lower and last['close'] < last['lower'] and last_adx < 25:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             # Enhanced Volume Confirmation (Stricter than average)
             if last['volume'] > avg_vol * 1.2:
