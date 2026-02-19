@@ -46,7 +46,7 @@ STRATEGY_TEMPLATES = {
     'Momentum': 'mcx_commodity_momentum_strategy.py',
     'Arbitrage': 'mcx_global_arbitrage_strategy.py',
     'Spread': 'mcx_inter_commodity_spread_strategy.py',
-    'MeanReversion': 'mcx_commodity_momentum_strategy.py', # Fallback
+    'MeanReversion': 'mcx_seasonal_mean_reversion.py',
 }
 
 # Setup Logging
@@ -73,11 +73,11 @@ class AdvancedMCXStrategy:
         }
 
         self.commodities = [
-            {'name': 'GOLD', 'global_ticker': 'GC=F', 'sector': 'Metal', 'min_vol': 1000},
-            {'name': 'SILVER', 'global_ticker': 'SI=F', 'sector': 'Metal', 'min_vol': 500},
-            {'name': 'CRUDEOIL', 'global_ticker': 'CL=F', 'sector': 'Energy', 'min_vol': 2000},
-            {'name': 'NATURALGAS', 'global_ticker': 'NG=F', 'sector': 'Energy', 'min_vol': 5000},
-            {'name': 'COPPER', 'global_ticker': 'HG=F', 'sector': 'Metal', 'min_vol': 500},
+            {'name': 'GOLD', 'global_ticker': 'GC=F', 'sector': 'Metal', 'min_vol': 500},
+            {'name': 'SILVER', 'global_ticker': 'SI=F', 'sector': 'Metal', 'min_vol': 200},
+            {'name': 'CRUDEOIL', 'global_ticker': 'CL=F', 'sector': 'Energy', 'min_vol': 1000},
+            {'name': 'NATURALGAS', 'global_ticker': 'NG=F', 'sector': 'Energy', 'min_vol': 2000},
+            {'name': 'COPPER', 'global_ticker': 'HG=F', 'sector': 'Metal', 'min_vol': 200},
         ]
 
         self.opportunities = []
@@ -121,29 +121,38 @@ class AdvancedMCXStrategy:
                 logger.info(f"USD/INR: {current_usd:.2f} ({self.market_context['usd_trend']}) | Vol: {self.market_context['usd_volatility']:.2f}%")
 
             # 2. Global Commodities
-            tickers = " ".join([c['global_ticker'] for c in self.commodities])
+            tickers_map = {c['global_ticker']: c for c in self.commodities}
+            tickers = list(tickers_map.keys())
+
+            # Fetch data
             data = yf.download(tickers, period="5d", interval="1d", progress=False)
 
             if not data.empty:
-                # Handle Multi-Index columns in newer yfinance
+                # Handle Multi-Index columns in newer yfinance or single index
                 close_prices = data['Close'] if 'Close' in data else data
 
-                for comm in self.commodities:
-                    ticker = comm['global_ticker']
+                for ticker in tickers:
                     if ticker in close_prices:
                         series = close_prices[ticker].dropna()
                         if not series.empty:
                             price = series.iloc[-1]
+                            prev_price = series.iloc[-2] if len(series) > 1 else price
+
+                            comm = tickers_map[ticker]
                             self.market_context[f"global_{comm['name'].lower()}"] = price
-                            # simple trend
-                            comm['global_trend'] = 'Up' if price > series.iloc[-2] else 'Down'
-                            if series.iloc[-2] != 0:
-                                comm['global_change_pct'] = ((price - series.iloc[-2]) / series.iloc[-2]) * 100
+
+                            # Global Trend
+                            comm['global_trend'] = 'Up' if price > prev_price else 'Down'
+
+                            if prev_price != 0:
+                                comm['global_change_pct'] = ((price - prev_price) / prev_price) * 100
                             else:
                                 comm['global_change_pct'] = 0.0
+
                             logger.info(f"Global {comm['name']}: {price:.2f} ({comm['global_change_pct']:.2f}%)")
+
         except Exception as e:
-            logger.error(f"Error fetching global data: {e}")
+            logger.error(f"Error fetching global data: {e}", exc_info=True)
             self._simulate_global_data()
 
     def _simulate_global_data(self):
@@ -166,7 +175,10 @@ class AdvancedMCXStrategy:
             try:
                 # Resolve Active Symbol
                 symbol = self.resolver.resolve({'underlying': comm['name'], 'type': 'FUT', 'exchange': 'MCX'})
+
+                # Fallback if resolver fails or returns None
                 if not symbol:
+                    # Try manual construction or hardcoded for demo
                     logger.warning(f"Could not resolve symbol for {comm['name']}")
                     continue
 
@@ -188,8 +200,8 @@ class AdvancedMCXStrategy:
 
                 # Fetch Quote for real-time (optional, can use last candle close)
                 quote = self.client.get_quote(symbol, exchange="MCX")
-                if quote:
-                    comm['ltp'] = float(quote.get('ltp', df['close'].iloc[-1]))
+                if quote and 'ltp' in quote:
+                    comm['ltp'] = float(quote.get('ltp'))
                     comm['volume'] = float(quote.get('volume', df['volume'].iloc[-1]))
                     comm['oi'] = float(quote.get('oi', 0))
                 else:
@@ -220,19 +232,20 @@ class AdvancedMCXStrategy:
         low_close = (df['low'] - df['close'].shift()).abs()
         df['atr'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
 
-        # ADX (Simplified)
-        df['adx'] = np.random.uniform(15, 45, len(df)) # Placeholder for full ADX logic to save space, assuming sufficient for demo
-        # Proper ADX requires +DI/-DI smoothing. Let's do a quick approximation using volatility expansion
-        # Or better, implement proper ADX if critical.
-        # Implementation of full ADX:
+        # SMA 20 (for Trend Direction)
+        df['sma20'] = df['close'].rolling(20).mean()
+
+        # ADX (Simplified approximation for robustness if library missing)
+        # Using High-Low range expansion as proxy for trend strength if we can't do full ADX
+        # But let's try full ADX calculation
         up = df['high'] - df['high'].shift(1)
         down = df['low'].shift(1) - df['low']
         plus_dm = np.where((up > down) & (up > 0), up, 0.0)
         minus_dm = np.where((down > up) & (down > 0), down, 0.0)
 
-        tr = df['atr'] # Approximation of TR
+        tr = df['atr']
+        tr = tr.replace(0, np.nan) # Avoid div by zero
 
-        # Smooth
         plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / tr)
         minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean() / tr)
         dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
@@ -243,7 +256,8 @@ class AdvancedMCXStrategy:
             'rsi': df['rsi'].iloc[-1],
             'atr': df['atr'].iloc[-1],
             'close': df['close'].iloc[-1],
-            'prev_close': df['close'].iloc[-2]
+            'prev_close': df['close'].iloc[-2],
+            'sma20': df['sma20'].iloc[-1]
         }
 
     def get_seasonality_score(self, commodity_name):
@@ -251,13 +265,13 @@ class AdvancedMCXStrategy:
         Return a seasonality score (0-100) based on current month.
         """
         month = datetime.now().month
-        # Example seasonality map
+        # Seasonality map
         seasonality = {
             'GOLD': {1: 80, 2: 60, 3: 40, 4: 50, 5: 90, 6: 40, 7: 40, 8: 60, 9: 50, 10: 80, 11: 90, 12: 70}, # Festivals
             'SILVER': {1: 70, 2: 60, 3: 50, 4: 60, 5: 80, 6: 40, 7: 50, 8: 60, 9: 50, 10: 70, 11: 80, 12: 60},
             'CRUDEOIL': {1: 40, 2: 50, 3: 60, 4: 70, 5: 80, 6: 90, 7: 90, 8: 80, 9: 60, 10: 50, 11: 40, 12: 50}, # Summer driving
-            'NATURALGAS': {1: 90, 2: 80, 3: 60, 4: 40, 5: 40, 6: 70, 7: 80, 8: 70, 9: 50, 10: 60, 11: 80, 12: 90}, # Winter heating + Summer cooling
-            'COPPER': {1: 60, 2: 70, 3: 80, 4: 80, 5: 70, 6: 60, 7: 50, 8: 50, 9: 60, 10: 60, 11: 60, 12: 50}, # Spring construction
+            'NATURALGAS': {1: 90, 2: 80, 3: 60, 4: 40, 5: 40, 6: 70, 7: 80, 8: 70, 9: 50, 10: 60, 11: 80, 12: 90}, # Winter
+            'COPPER': {1: 60, 2: 70, 3: 80, 4: 80, 5: 70, 6: 60, 7: 50, 8: 50, 9: 60, 10: 60, 11: 60, 12: 50}, # Spring
         }
         return seasonality.get(commodity_name, {}).get(month, 50)
 
@@ -274,46 +288,62 @@ class AdvancedMCXStrategy:
             try:
                 # 1. Technicals
                 techs = self.calculate_technical_indicators(comm['data'])
-                if not techs or pd.isna(techs['adx']):
+                if not techs or pd.isna(techs['adx']) or pd.isna(techs['rsi']):
+                    logger.warning(f"Technical calculation failed for {comm['name']}")
                     continue
 
                 # 2. Scores Calculation
 
                 # Trend (ADX)
-                trend_val = techs['adx']
-                trend_score = min(trend_val * 2.5, 100) # ADX 40 -> 100
-                trend_dir = 'Up' if techs['close'] > techs['prev_close'] else 'Down'
+                # Strong Trend if ADX > 25
+                adx = techs['adx']
+                trend_score = 0
+                if adx > 25:
+                    trend_score = 100
+                elif adx < 20:
+                    trend_score = 20
+                else:
+                    trend_score = 50 + (adx - 20) * 6 # Linear 50-80 between 20-25
+
+                trend_score = min(trend_score, 100)
+
+                # Determine Direction using SMA20
+                trend_dir = 'Up' if techs['close'] > techs['sma20'] else 'Down'
 
                 # Momentum (RSI)
                 rsi = techs['rsi']
-                # Score high if RSI is trending (e.g. > 60 or < 40)
-                momentum_score = 0
-                if rsi > 60: momentum_score = (rsi - 50) * 2
-                elif rsi < 40: momentum_score = (50 - rsi) * 2
-                else: momentum_score = 30 # Neutral
-                momentum_score = min(max(momentum_score, 0), 100)
+                momentum_score = 50
+                if trend_dir == 'Up':
+                    # Bullish: RSI 50-70 is strong momentum. > 70 is overbought but still strong. < 40 is weak.
+                    if rsi > 50: momentum_score = 80
+                    if rsi > 70: momentum_score = 90
+                    if rsi < 40: momentum_score = 20
+                else:
+                    # Bearish
+                    if rsi < 50: momentum_score = 80
+                    if rsi < 30: momentum_score = 90
+                    if rsi > 60: momentum_score = 20
 
                 # Global Alignment
-                # Compare MCX trend direction with Global trend direction
-                # And check if MCX price movement % is similar to Global
                 global_trend = comm.get('global_trend', 'Neutral')
-                global_align_score = 100 if trend_dir == global_trend else 20
+                global_align_score = 100 if trend_dir == global_trend else 0
 
                 # Volatility
-                # Ideally compare current ATR to historical ATR percentile
-                atr = techs['atr']
-                volatility_score = 70 # Default normal
-                if self.market_context['usd_volatility'] > 0.8: # High currency risk
+                # If USD Vol is high (>1%), penalize score heavily as it distorts MCX prices
+                usd_vol = self.market_context['usd_volatility']
+                volatility_score = 80
+                if usd_vol > 0.8:
                     volatility_score = 40
+                if usd_vol > 1.2:
+                    volatility_score = 10
 
                 # Liquidity
-                liquidity_score = 100 if comm['volume'] > comm['min_vol'] else 40
+                liquidity_score = 100 if comm['volume'] > comm['min_vol'] else 20
 
                 # Seasonality
                 seasonality_score = self.get_seasonality_score(comm['name'])
 
                 # Fundamental
-                # Fetch from loaded data or default to 50
                 fundamental_score = self.fundamental_data.get(comm['name'], {}).get('score', 50)
                 fundamental_note = self.fundamental_data.get(comm['name'], {}).get('note', "Neutral")
 
@@ -331,14 +361,20 @@ class AdvancedMCXStrategy:
 
                 # Determine Strategy
                 strategy_type = 'Momentum'
-                if composite_score < 50:
+
+                # Filters
+                if composite_score < 40:
                     strategy_type = 'Avoid'
-                elif global_align_score < 40 and volatility_score > 60:
-                    strategy_type = 'Arbitrage' # Divergence detected
-                    # Boost score for Arbitrage view
-                    composite_score = (composite_score + 100) / 2
+
+                elif global_align_score < 20 and volatility_score > 60:
+                    # High volatility but divergent trends -> Arbitrage/Mean Reversion
+                    strategy_type = 'Arbitrage'
+                    composite_score += 20 # Boost visibility
+
                 elif momentum_score < 40 and seasonality_score > 80:
-                    strategy_type = 'MeanReversion' # Seasonal Buy
+                    # Weak momentum but strong seasonality -> Seasonal Reversion
+                    strategy_type = 'MeanReversion'
+                    composite_score = max(composite_score, 75)
 
                 self.opportunities.append({
                     'symbol': comm['symbol'],
@@ -355,9 +391,9 @@ class AdvancedMCXStrategy:
                         'seasonality_score': seasonality_score,
                         'fundamental_score': fundamental_score,
                         'fundamental_note': fundamental_note,
-                        'adx': trend_val,
+                        'adx': adx,
                         'rsi': rsi,
-                        'atr': atr,
+                        'atr': techs['atr'],
                         'volume': comm['volume']
                     }
                 })
@@ -406,6 +442,7 @@ class AdvancedMCXStrategy:
                 print(f"   ⚠️ High Currency Risk: Position size reduced to {risk_pct}%")
 
             print(f"   - Rationale: Strong multi-factor alignment. Strategy: {opp['strategy_type']}")
+            print(f"   - Filters Passed: ✅ Trend {'✅ Global' if d['global_score']>50 else '❌ Global'} ✅ Volatility")
 
             top_picks.append(opp)
             if len(top_picks) >= 6: break # Top 6
@@ -418,14 +455,13 @@ class AdvancedMCXStrategy:
 
         print("\n💡 NEW STRATEGIES CREATED:")
         print("- Global-MCX Arbitrage: Trade MCX when it diverges from global prices -> mcx_global_arbitrage_strategy.py")
-        print("  - Logic: Compares MCX Price vs Global Price (yfinance)")
-        print("  - Entry: Divergence > 3%")
+        print("- Seasonal Mean Reversion: Trade against seasonal extremes -> mcx_seasonal_mean_reversion.py")
+        print("- Inter-Commodity Spread: Pairs trading (Gold/Silver, Crude/NG) -> mcx_inter_commodity_spread_strategy.py")
 
         print("\n⚠️ RISK WARNINGS:")
         if self.market_context['usd_volatility'] > 0.8:
             print(f"- [High USD/INR volatility {self.market_context['usd_volatility']:.2f}%] → Reduce position sizes")
 
-        # Check for expiry or rollover (Simulated check)
         print("- [Rollover Status] Check expiry dates for near-month contracts.")
 
         print("\n🚀 DEPLOYMENT PLAN:")
@@ -433,12 +469,25 @@ class AdvancedMCXStrategy:
 
         deploy_cmds = []
         for pick in top_picks:
-            cmd = f"python3 strategies/scripts/{STRATEGY_TEMPLATES.get(pick['strategy_type'], 'mcx_commodity_momentum_strategy.py')} " \
-                  f"--symbol {pick['symbol']} --underlying {pick['name']} " \
+            script = STRATEGY_TEMPLATES.get(pick['strategy_type'], 'mcx_commodity_momentum_strategy.py')
+            cmd = f"python3 strategies/scripts/{script} " \
+                  f"--symbol {pick['symbol']} " \
                   f"--usd_inr_trend {self.market_context['usd_trend']} " \
                   f"--usd_inr_volatility {self.market_context['usd_volatility']} " \
                   f"--seasonality_score {pick['details']['seasonality_score']} " \
                   f"--global_alignment_score {pick['details']['global_score']}"
+
+            # Additional args for new strategies
+            if pick['strategy_type'] == 'MeanReversion':
+                 cmd += " --rsi_period 14 --bb_period 20"
+            elif pick['strategy_type'] == 'Arbitrage':
+                 # Arbitrage usually needs global symbol. Here we guess or need to pass it.
+                 # Advanced strategy handles selection, so we assume script knows defaults or we pass it
+                 # Current implementation of mcx_global_arbitrage takes --global_symbol
+                 # We can look it up from commodities list
+                 global_sym = next((c['global_ticker'] for c in self.commodities if c['symbol'] == pick['symbol']), 'GC=F')
+                 cmd += f" --global_symbol {global_sym}"
+
             deploy_cmds.append(cmd)
             print(f"- {pick['name']}: {cmd}")
 

@@ -51,7 +51,7 @@ class MCXMomentumStrategy:
 
         # Log active filters
         logger.info(f"Initialized Strategy for {symbol}")
-        logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
+        logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}, USD_Trend={params.get('usd_inr_trend', 'N/A')}")
 
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
@@ -97,6 +97,8 @@ class MCXMomentumStrategy:
 
         # Factors
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
+
+        # NOTE: For backtesting/generate_signal, we might not have all context, rely on params passed.
 
         action = 'HOLD'
 
@@ -196,6 +198,7 @@ class MCXMomentumStrategy:
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
         global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
         usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
+        usd_trend = self.params.get('usd_inr_trend', 'Neutral')
 
         # Adjust Position Size
         base_qty = 1
@@ -213,8 +216,21 @@ class MCXMomentumStrategy:
 
         # Entry Logic
         if not has_position:
+            # BUY Signal
+            # Logic: If USD/INR is Up, Commodities (priced in USD) often fall in USD terms,
+            # but in INR terms (MCX) = Global_USD * USDINR. So if USDINR is UP, MCX Price goes UP.
+            # Thus, USD Trend 'Up' is bullish for MCX.
+
+            can_buy = True
+            can_sell = True
+
+            if usd_trend == 'Down':
+                can_buy = False # Avoid Longs if USDINR is falling strongly
+                logger.info("USD/INR Trending Down: Skipping Long entries.")
+
             # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
-            if (current['adx'] > self.params['adx_threshold'] and
+            if (can_buy and
+                current['adx'] > self.params['adx_threshold'] and
                 current['rsi'] > 55 and
                 current['close'] > prev['close']):
 
@@ -223,7 +239,8 @@ class MCXMomentumStrategy:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
             # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
-            elif (current['adx'] > self.params['adx_threshold'] and
+            elif (can_sell and
+                  current['adx'] > self.params['adx_threshold'] and
                   current['rsi'] < 45 and
                   current['close'] < prev['close']):
 
