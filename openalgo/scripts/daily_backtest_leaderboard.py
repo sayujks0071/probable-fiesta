@@ -11,6 +11,8 @@ import importlib.util
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 sys.path.append(repo_root)
 
+from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+
 # Import Backtest Engine
 try:
     from openalgo.strategies.utils.simple_backtest_engine import SimpleBacktestEngine
@@ -22,32 +24,38 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Leaderboard")
 
+REPORT_DIR = os.path.join(repo_root, "openalgo", "reports")
+os.makedirs(REPORT_DIR, exist_ok=True)
+
+# Define Strategies with Abstract Underlying
 STRATEGIES = [
     {
         "name": "SuperTrend_VWAP",
         "file": "openalgo/strategies/scripts/supertrend_vwap_strategy.py",
-        "symbol": "NIFTY", # Default test symbol
-        "exchange": "NSE_INDEX"
+        "underlying": "NIFTY",
+        "type": "EQUITY",
+        "exchange": "NSE"
     },
     {
         "name": "MCX_Momentum",
         "file": "openalgo/strategies/scripts/mcx_commodity_momentum_strategy.py",
-        "symbol": "SILVERMIC", # Will try to resolve if needed, but engine needs raw symbol usually?
-                               # Engine loads data. We can use a proxy symbol like 'SILVER' if using mock data,
-                               # but usually specific symbol needed.
+        "underlying": "SILVER",
+        "type": "FUT",
         "exchange": "MCX"
     },
     {
         "name": "AI_Hybrid",
         "file": "openalgo/strategies/scripts/ai_hybrid_reversion_breakout.py",
-        "symbol": "NIFTY",
-        "exchange": "NSE_INDEX"
+        "underlying": "RELIANCE",
+        "type": "EQUITY",
+        "exchange": "NSE"
     },
     {
         "name": "ML_Momentum",
         "file": "openalgo/strategies/scripts/advanced_ml_momentum_strategy.py",
-        "symbol": "NIFTY",
-        "exchange": "NSE_INDEX"
+        "underlying": "NIFTY",
+        "type": "EQUITY",
+        "exchange": "NSE"
     }
 ]
 
@@ -100,14 +108,42 @@ def load_strategy_module(filepath):
 
 def run_leaderboard():
     engine = SimpleBacktestEngine(initial_capital=100000.0)
+    resolver = SymbolResolver()
 
-    start_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+    # Changed from 3 days to 5 days per review feedback
+    start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
     end_date = datetime.now().strftime("%Y-%m-%d")
 
     results = []
 
     for strat_config in STRATEGIES:
-        logger.info(f"Backtesting {strat_config['name']}...")
+        logger.info(f"Preparing {strat_config['name']}...")
+
+        # Resolve Symbol
+        try:
+            resolved = resolver.resolve({
+                'underlying': strat_config['underlying'],
+                'type': strat_config['type'],
+                'exchange': strat_config['exchange']
+            })
+
+            if not resolved:
+                logger.error(f"Could not resolve symbol for {strat_config['name']}")
+                continue
+
+            if isinstance(resolved, dict) and 'sample_symbol' in resolved:
+                symbol = resolved['sample_symbol']
+            elif isinstance(resolved, str):
+                symbol = resolved
+            else:
+                logger.error(f"Ambiguous resolution for {strat_config['name']}: {resolved}")
+                continue
+
+            logger.info(f"Resolved {strat_config['underlying']} -> {symbol}")
+
+        except Exception as e:
+            logger.error(f"Resolution failed for {strat_config['name']}: {e}")
+            continue
 
         module = load_strategy_module(strat_config['file'])
         if not module:
@@ -122,16 +158,11 @@ def run_leaderboard():
 
         if strat_config['name'] in TUNING_CONFIG:
             variants = generate_variants(strat_config['name'], TUNING_CONFIG[strat_config['name']])
-            # Limit to top 3 variants if too many? For now run all (small grid)
-            runs.extend(variants)
+            # Limit to top 2 variants to save time
+            runs.extend(variants[:2])
 
         for run in runs:
-            logger.info(f"  > Variant: {run['name']} Params: {run['params']}")
-
-            # Monkey patch module to accept params if needed, or pass via run_backtest extension?
-            # SimpleBacktestEngine.run_backtest calls module.generate_signal(..., symbol=symbol)
-            # It doesn't pass 'params'.
-            # We need to wrap the module or monkey patch generate_signal.
+            logger.info(f"  > Backtesting Variant: {run['name']} Params: {run['params']}")
 
             original_gen = module.generate_signal
 
@@ -146,8 +177,11 @@ def run_leaderboard():
                     pass
                 wrapper = ModuleWrapper()
                 wrapper.generate_signal = wrapped_gen
-                wrapper.ATR_SL_MULTIPLIER = getattr(module, 'ATR_SL_MULTIPLIER', 1.5)
-                wrapper.ATR_TP_MULTIPLIER = getattr(module, 'ATR_TP_MULTIPLIER', 2.5)
+                # Copy module attributes if needed
+                if hasattr(module, 'ATR_SL_MULTIPLIER'): wrapper.ATR_SL_MULTIPLIER = module.ATR_SL_MULTIPLIER
+                if hasattr(module, 'ATR_TP_MULTIPLIER'): wrapper.ATR_TP_MULTIPLIER = module.ATR_TP_MULTIPLIER
+                if hasattr(module, 'TIME_STOP_BARS'): wrapper.TIME_STOP_BARS = module.TIME_STOP_BARS
+
                 target_module = wrapper
             else:
                 target_module = module
@@ -156,7 +190,7 @@ def run_leaderboard():
                 # Run Backtest
                 res = engine.run_backtest(
                     strategy_module=target_module,
-                    symbol=strat_config['symbol'],
+                    symbol=symbol,
                     exchange=strat_config['exchange'],
                     start_date=start_date,
                     end_date=end_date,
@@ -170,6 +204,7 @@ def run_leaderboard():
                 metrics = res.get('metrics', {})
                 results.append({
                     "strategy": run['name'],
+                    "symbol": symbol,
                     "params": run['params'],
                     "total_return": metrics.get('total_return_pct', 0),
                     "sharpe": metrics.get('sharpe_ratio', 0),
@@ -186,22 +221,24 @@ def run_leaderboard():
     results.sort(key=lambda x: (x['sharpe'], x['total_return']), reverse=True)
 
     # Save JSON
-    with open("leaderboard.json", "w") as f:
+    json_path = os.path.join(REPORT_DIR, "leaderboard.json")
+    with open(json_path, "w") as f:
         json.dump(results, f, indent=4)
 
     # Generate Markdown
     md = "# Strategy Leaderboard\n\n"
     md += f"**Date:** {datetime.now().strftime('%Y-%m-%d')}\n\n"
-    md += "| Rank | Strategy | Sharpe | Return % | Drawdown % | Win Rate % | Profit Factor | Trades |\n"
-    md += "|---|---|---|---|---|---|---|---|\n"
+    md += "| Rank | Strategy | Symbol | Sharpe | Return % | Drawdown % | Win Rate % | Profit Factor | Trades |\n"
+    md += "|---|---|---|---|---|---|---|---|---|\n"
 
     for i, r in enumerate(results):
-        md += f"| {i+1} | {r['strategy']} | {r['sharpe']:.2f} | {r['total_return']:.2f}% | {r['drawdown']:.2f}% | {r['win_rate']:.2f}% | {r['profit_factor']:.2f} | {r['trades']} |\n"
+        md += f"| {i+1} | {r['strategy']} | {r['symbol']} | {r['sharpe']:.2f} | {r['total_return']:.2f}% | {r['drawdown']:.2f}% | {r['win_rate']:.2f}% | {r['profit_factor']:.2f} | {r['trades']} |\n"
 
-    with open("LEADERBOARD.md", "w") as f:
+    md_path = os.path.join(REPORT_DIR, "LEADERBOARD.md")
+    with open(md_path, "w") as f:
         f.write(md)
 
-    logger.info("Leaderboard generated: LEADERBOARD.md")
+    logger.info(f"Leaderboard generated: {md_path}")
 
 if __name__ == "__main__":
     run_leaderboard()

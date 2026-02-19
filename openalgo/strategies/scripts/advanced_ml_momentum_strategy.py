@@ -19,22 +19,19 @@ utils_dir = os.path.join(strategies_dir, 'utils')
 
 # Add utils directory to path for imports
 sys.path.insert(0, utils_dir)
+# Also add project root
+sys.path.insert(0, os.path.abspath(os.path.join(script_dir, '../../..')))
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from symbol_resolver import SymbolResolver
 except ImportError:
     try:
-        # Try absolute import
-        sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import APIClient, PositionManager, is_market_open
-    except ImportError:
-        try:
-            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
-        except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            is_market_open = lambda: True
+        from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+        from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+    except ImportError as e:
+        logging.error(f"Critical Import Error: {e}")
+        raise
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -246,6 +243,9 @@ class MLMomentumStrategy:
 def run_strategy():
     parser = argparse.ArgumentParser(description='ML Momentum Strategy')
     parser.add_argument('--symbol', type=str, help='Stock Symbol')
+    parser.add_argument('--underlying', type=str, help='Underlying Asset')
+    parser.add_argument('--type', type=str, default='EQUITY', help='Instrument Type (EQUITY, FUT)')
+    parser.add_argument('--exchange', type=str, default='NSE', help='Exchange')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
     parser.add_argument('--threshold', type=float, default=0.01, help='ROC Threshold')
@@ -255,8 +255,23 @@ def run_strategy():
     
     # Use command-line args if provided, otherwise fall back to environment variables
     symbol = args.symbol or os.getenv('SYMBOL')
+
+    if not symbol and args.underlying:
+        try:
+            resolver = SymbolResolver()
+            res = resolver.resolve({'underlying': args.underlying, 'type': args.type, 'exchange': args.exchange})
+            if res:
+                symbol = res
+                print(f"Resolved {args.underlying} -> {symbol}")
+            else:
+                print(f"Error: Could not resolve symbol for {args.underlying}")
+                sys.exit(1)
+        except Exception as e:
+            print(f"Symbol resolution failed: {e}")
+            sys.exit(1)
+
     if not symbol:
-        print("ERROR: --symbol argument or SYMBOL environment variable is required")
+        print("ERROR: --symbol or --underlying argument is required")
         parser.print_help()
         sys.exit(1)
     

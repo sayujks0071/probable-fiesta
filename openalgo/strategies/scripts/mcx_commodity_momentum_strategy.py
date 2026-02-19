@@ -18,21 +18,19 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 strategies_dir = os.path.dirname(script_dir)
 utils_dir = os.path.join(strategies_dir, 'utils')
 sys.path.insert(0, utils_dir)
+# Also add project root for absolute imports
+sys.path.insert(0, os.path.abspath(os.path.join(script_dir, '../../..')))
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from symbol_resolver import SymbolResolver
 except ImportError:
     try:
-        sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import APIClient, PositionManager, is_market_open
-    except ImportError:
-        try:
-            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
-        except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            is_market_open = lambda: True
+        from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+        from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+    except ImportError as e:
+        logging.error(f"Critical Import Error: {e}")
+        raise
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -271,7 +269,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
@@ -297,26 +295,18 @@ if __name__ == "__main__":
     # Try to resolve from underlying using SymbolResolver
     if not symbol and args.underlying:
         try:
-            from symbol_resolver import SymbolResolver
-        except ImportError:
-            try:
-                from utils.symbol_resolver import SymbolResolver
-            except ImportError:
-                try:
-                    from openalgo.strategies.utils.symbol_resolver import SymbolResolver
-                except ImportError:
-                    SymbolResolver = None
-
-        if SymbolResolver:
             resolver = SymbolResolver()
+            # Explicitly request FUT for MCX
             res = resolver.resolve({'underlying': args.underlying, 'type': 'FUT', 'exchange': 'MCX'})
             if res:
                 symbol = res
                 logger.info(f"Resolved {args.underlying} -> {symbol}")
             else:
                 logger.error(f"Could not resolve symbol for {args.underlying}")
-        else:
-            logger.error("SymbolResolver not available")
+                sys.exit(1)
+        except Exception as e:
+            logger.error(f"Symbol resolution failed: {e}")
+            sys.exit(1)
 
     if not symbol:
         logger.error("Symbol not provided. Use --symbol or --underlying argument, or set SYMBOL env var.")

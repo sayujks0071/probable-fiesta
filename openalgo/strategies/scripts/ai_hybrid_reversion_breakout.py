@@ -21,23 +21,19 @@ utils_dir = os.path.join(strategies_dir, 'utils')
 
 # Add utils directory to path for imports
 sys.path.insert(0, utils_dir)
+# Also add project root
+sys.path.insert(0, os.path.abspath(os.path.join(script_dir, '../../..')))
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+    from symbol_resolver import SymbolResolver
 except ImportError:
     try:
-        # Try absolute import
-        sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
-    except ImportError:
-        try:
-            from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
-        except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            normalize_symbol = lambda s: s
-            is_market_open = lambda: True
+        from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open, normalize_symbol
+        from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+    except ImportError as e:
+        logging.error(f"Critical Import Error: {e}")
+        raise
 
 class AIHybridStrategy:
     def __init__(self, symbol, api_key, port, rsi_lower=30, rsi_upper=60, stop_pct=1.0, sector='NIFTY 50', earnings_date=None, logfile=None, time_stop_bars=12):
@@ -320,7 +316,8 @@ class AIHybridStrategy:
 
 def run_strategy():
     parser = argparse.ArgumentParser(description='AI Hybrid Strategy')
-    parser.add_argument('--symbol', type=str, required=True, help='Stock Symbol')
+    parser.add_argument('--symbol', type=str, help='Stock Symbol')
+    parser.add_argument('--underlying', type=str, help='Underlying Asset')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, help='API Key (or set OPENALGO_APIKEY env var)')
     parser.add_argument('--rsi_lower', type=float, default=35.0, help='RSI Lower Threshold')
