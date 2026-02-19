@@ -36,6 +36,20 @@ except ImportError:
             PositionManager = None
             is_market_open = lambda: True
 
+try:
+    from risk_manager import RiskManager, EODSquareOff
+except ImportError:
+    try:
+        # Try absolute import
+        sys.path.insert(0, strategies_dir)
+        from utils.risk_manager import RiskManager, EODSquareOff
+    except ImportError:
+        try:
+            from openalgo.strategies.utils.risk_manager import RiskManager, EODSquareOff
+        except ImportError:
+            RiskManager = None
+            EODSquareOff = None
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class MLMomentumStrategy:
@@ -44,12 +58,32 @@ class MLMomentumStrategy:
         self.host = f"http://127.0.0.1:{port}"
         self.client = APIClient(api_key=api_key, host=self.host)
         self.logger = logging.getLogger(f"MLMomentum_{symbol}")
-        self.pm = PositionManager(symbol) if PositionManager else None
+
+        # Risk Management
+        if RiskManager:
+            self.rm = RiskManager(
+                strategy_name=f"MLMomentum_{symbol}",
+                exchange="NSE",
+                capital=100000,
+                config={'max_loss_per_trade_pct': stop_pct}
+            )
+            self.eod = EODSquareOff(self.rm, self.exit_callback)
+        else:
+            self.rm = None
+            self.eod = None
+            self.pm = PositionManager(symbol) if PositionManager else None
 
         self.roc_threshold = threshold
         self.stop_pct = stop_pct
         self.sector = sector
         self.vol_multiplier = vol_multiplier
+
+    def exit_callback(self, symbol, action, qty):
+        """Callback for EOD Square-off and manual exits."""
+        self.logger.info(f"Executing Exit: {action} {qty} {symbol}")
+        # In a real strategy, self.client.place_order would be called here.
+        # Since this script simulates execution by logging, we return success.
+        return {'status': 'success'}
 
     def calculate_signal(self, df):
         """Calculate signal for backtesting."""
@@ -199,8 +233,36 @@ class MLMomentumStrategy:
                 # News Sentiment
                 sentiment = self.get_news_sentiment()
 
-                # Manage Position
-                if self.pm and self.pm.has_position():
+                # EOD Square-off Check
+                if self.eod and self.eod.check_and_execute():
+                    time.sleep(60)
+                    continue
+
+                # Manage Position (Risk Manager)
+                if self.rm and self.rm.positions:
+                    # Check Stop Loss (Risk Manager)
+                    stop_hit, reason = self.rm.check_stop_loss(self.symbol, current_price)
+                    if stop_hit:
+                        self.logger.info(reason)
+                        # Execute Exit
+                        pos = self.rm.positions[self.symbol]
+                        self.exit_callback(self.symbol, "SELL", abs(pos['qty']))
+                        self.rm.register_exit(self.symbol, current_price)
+
+                    # Exit if Momentum Fades (RSI < 50)
+                    elif self.symbol in self.rm.positions:
+                        pos = self.rm.positions[self.symbol]
+                        if pos['qty'] > 0 and last['rsi'] < 50:
+                            pnl = (current_price - pos['entry_price']) * pos['qty']
+                            self.logger.info(f"Momentum Faded (RSI < 50). Exit. PnL: {pnl}")
+                            self.exit_callback(self.symbol, "SELL", abs(pos['qty']))
+                            self.rm.register_exit(self.symbol, current_price)
+
+                    time.sleep(60)
+                    continue
+
+                # Fallback to PositionManager (if RiskManager not available)
+                elif self.pm and self.pm.has_position():
                     pnl = self.pm.get_pnl(current_price)
                     entry = self.pm.entry_price
 
@@ -224,7 +286,15 @@ class MLMomentumStrategy:
                 # Price > SMA50 (Uptrend)
                 # Sentiment > 0 (Not Negative)
 
-                if (last['roc'] > self.roc_threshold and
+                can_enter = True
+                if self.rm:
+                    can_enter, reason = self.rm.can_trade()
+                    if not can_enter:
+                        if "cooldown" not in reason: # Log only if not just cooldown spam
+                            self.logger.info(f"Trade skipped by Risk Manager: {reason}")
+
+                if (can_enter and
+                    last['roc'] > self.roc_threshold and
                     last['rsi'] > 55 and
                     rs_excess > 0 and
                     sector_outperformance > 0 and
@@ -235,7 +305,12 @@ class MLMomentumStrategy:
                     avg_vol = df['volume'].rolling(20).mean().iloc[-1]
                     if last['volume'] > avg_vol * 0.5: # At least decent volume
                         self.logger.info(f"Strong Momentum Signal (ROC: {last['roc']:.3f}, RS: {rs_excess:.3f}). BUY.")
-                        self.pm.update_position(100, current_price, 'BUY')
+
+                        qty = 100
+                        if self.rm:
+                            self.rm.register_entry(self.symbol, qty, current_price, "LONG")
+                        elif self.pm:
+                            self.pm.update_position(qty, current_price, 'BUY')
 
             except Exception as e:
                 self.logger.error(f"Error in ML Momentum strategy for {self.symbol}: {e}", exc_info=True)
