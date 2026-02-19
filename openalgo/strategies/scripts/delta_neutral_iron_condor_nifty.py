@@ -26,17 +26,21 @@ logging.basicConfig(
 logger = logging.getLogger("DeltaNeutralIronCondor")
 
 class DeltaNeutralIronCondor:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, max_vix=30, sentiment_score=None, gap_percent=0.0):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.max_vix = max_vix
         self.sentiment_score = sentiment_score
+        self.gap_percent = gap_percent
         self.pm = PositionManager(f"{symbol}_IC")
 
     def get_vix(self):
-        q = self.client.get_quote("INDIA VIX", "NSE")
-        return float(q['ltp']) if q else 15.0
+        try:
+            q = self.client.get_quote("INDIA VIX", "NSE")
+            return float(q['ltp']) if q and 'ltp' in q else 15.0
+        except:
+            return 15.0
 
     def select_strikes(self, spot, vix, chain_data):
         """
@@ -65,6 +69,11 @@ class DeltaNeutralIronCondor:
             logger.info(f"Low VIX ({vix}) -> Narrowing Wings to {wing_width}")
         else:
             logger.info(f"Medium VIX ({vix}) -> Default Wings {wing_width}")
+
+        # Adjust based on Gap (if significant)
+        if self.gap_percent and abs(self.gap_percent) > 0.5:
+             logger.info(f"Significant Gap ({self.gap_percent}%). Widening wings slightly for safety.")
+             wing_width += 50
 
         # Delta-Based Selection Logic
         ce_short = None
@@ -158,7 +167,12 @@ class DeltaNeutralIronCondor:
                 return
 
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
-        spot = float(quote['ltp']) if quote else 0
+        spot = float(quote['ltp']) if quote and 'ltp' in quote else 0
+        if spot == 0:
+            # Try getting quote for exact symbol if "NIFTY 50" failed
+            quote = self.client.get_quote(self.symbol, "NSE")
+            spot = float(quote['ltp']) if quote and 'ltp' in quote else 0
+
         if spot == 0:
             logger.error("Could not fetch spot price.")
             return
@@ -180,6 +194,9 @@ class DeltaNeutralIronCondor:
         # In real scenario:
         # self.client.placesmartorder(...)
 
+        # Log Logic for now
+        self.pm.update_position(self.qty, spot, "SHORT_IC")
+
         logger.info("Strategy execution completed (Simulation).")
 
 def main():
@@ -188,10 +205,11 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
     parser.add_argument("--sentiment_score", type=float, default=None, help="External Sentiment Score (0.0-1.0)")
+    parser.add_argument("--gap_percent", type=float, default=0.0, help="Overnight Gap %%")
     args = parser.parse_args()
 
-    client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score)
+    client = APIClient(api_key=os.getenv("OPENALGO_APIKEY") or os.getenv("OPENALGO_API_KEY", "dummy"), host=f"http://127.0.0.1:{args.port}")
+    strategy = DeltaNeutralIronCondor(client, args.symbol, args.qty, sentiment_score=args.sentiment_score, gap_percent=args.gap_percent)
     strategy.execute()
 
 if __name__ == "__main__":

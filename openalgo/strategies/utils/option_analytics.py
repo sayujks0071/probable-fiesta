@@ -23,7 +23,16 @@ def calculate_greeks(S, K, T, r, sigma, option_type='ce'):
     """
     try:
         # Handle edge cases
-        if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        if T <= 0:
+            # At expiry, delta is 0 or 1 (or -1)
+            delta = 0
+            if option_type.lower() in ['ce', 'call']:
+                if S > K: delta = 1.0
+            else:
+                if S < K: delta = -1.0
+            return {"delta": delta, "gamma": 0, "theta": 0, "vega": 0, "rho": 0}
+
+        if sigma <= 0 or S <= 0 or K <= 0:
             return {
                 "delta": 0, "gamma": 0, "theta": 0, "vega": 0, "rho": 0
             }
@@ -87,29 +96,44 @@ def calculate_iv(price, S, K, T, r, option_type='ce', tol=1e-5, max_iter=100):
 def calculate_max_pain(chain_data):
     """
     Calculate Max Pain Strike.
-    chain_data: List of dicts with 'strike', 'ce_oi', 'pe_oi'
+    chain_data: List of dicts with 'strike' and OI data.
     """
     try:
-        strikes = [item['strike'] for item in chain_data]
-        strikes.sort()
+        strikes = []
+        for item in chain_data:
+            if 'strike' in item:
+                strikes.append(item['strike'])
+        strikes = sorted(list(set(strikes)))
+
+        if not strikes:
+            return None
 
         total_loss = []
         for strike in strikes:
             loss = 0
             for item in chain_data:
-                k = item['strike']
+                k = item.get('strike')
+                if k is None: continue
+
+                # Extract OI robustly
                 ce_oi = item.get('ce_oi', 0)
                 pe_oi = item.get('pe_oi', 0)
 
-                # If market expires at 'strike'
-                # Call writers lose if strike > k
-                if strike > k:
-                    loss += (strike - k) * ce_oi
+                if ce_oi == 0 and 'ce' in item and isinstance(item['ce'], dict):
+                    ce_oi = item['ce'].get('oi', 0)
+                if pe_oi == 0 and 'pe' in item and isinstance(item['pe'], dict):
+                    pe_oi = item['pe'].get('oi', 0)
 
-                # Put writers lose if strike < k
-                if strike < k:
-                    loss += (k - strike) * pe_oi
+                # Call writers lose if expiry price (strike) > k
+                loss += max(0, strike - k) * ce_oi
+
+                # Put writers lose if expiry price (strike) < k
+                loss += max(0, k - strike) * pe_oi
+
             total_loss.append(loss)
+
+        if not total_loss:
+            return None
 
         min_loss_idx = total_loss.index(min(total_loss))
         return strikes[min_loss_idx]
@@ -139,4 +163,17 @@ def calculate_pcr(chain_data):
         return round(total_pe_oi / total_ce_oi, 2)
     except Exception as e:
         logger.error(f"Error calculating PCR: {e}")
+        return 0
+
+def calculate_iv_rank(current_iv, low=10, high=30):
+    """
+    Calculate IV Rank based on current IV and historical range (low, high).
+    """
+    try:
+        if high <= low:
+            return 50 # Default middle
+        rank = (current_iv - low) / (high - low) * 100
+        return max(0, min(100, rank))
+    except Exception as e:
+        logger.error(f"Error calculating IV Rank: {e}")
         return 0
