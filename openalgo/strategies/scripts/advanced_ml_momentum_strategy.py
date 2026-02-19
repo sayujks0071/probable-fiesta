@@ -51,6 +51,38 @@ class MLMomentumStrategy:
         self.sector = sector
         self.vol_multiplier = vol_multiplier
 
+    def calculate_atr(self, df, period=14):
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        df['atr'] = tr.rolling(period).mean()
+        return df
+
+    def calculate_adx(self, df, period=14):
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(period).mean()
+
+        up = high.diff()
+        down = low.diff()
+        plus_dm = np.where((up > down) & (up > 0), up, 0)
+        minus_dm = np.where((down > up) & (down > 0), down, 0)
+
+        plus_di = 100 * (pd.Series(plus_dm).rolling(period).mean() / atr)
+        minus_di = 100 * (pd.Series(minus_dm).rolling(period).mean() / atr)
+        dx = 100 * (abs(plus_di - minus_di) / (plus_di + minus_di))
+        df['adx'] = dx.rolling(period).mean()
+        return df
+
     def calculate_signal(self, df):
         """Calculate signal for backtesting."""
         if df.empty or len(df) < 50:
@@ -69,6 +101,14 @@ class MLMomentumStrategy:
         # SMA for Trend
         df['sma50'] = df['close'].rolling(50).mean()
 
+        # [Improvement] Calculate ADX for Range Filter
+        df = self.calculate_adx(df)
+        last_adx = df['adx'].iloc[-1]
+
+        # [Improvement] Calculate ATR for Trailing Stop
+        df = self.calculate_atr(df)
+        last_atr = df['atr'].iloc[-1]
+
         last = df.iloc[-1]
         current_price = last['close']
 
@@ -82,17 +122,20 @@ class MLMomentumStrategy:
         sentiment = 0.5 # Mock positive
 
         # Entry Logic
+        # [Improvement] Added Range Filter (ADX > 20)
         if (last['roc'] > self.roc_threshold and
             last['rsi'] > 55 and
             rs_excess > 0 and
             sector_outperformance > 0 and
             current_price > last['sma50'] and
-            sentiment >= 0):
+            sentiment >= 0 and
+            last_adx > 20):
 
             # Volume check
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
             if last['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
-                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi']}
+                # [Improvement] Return ATR for Trailing Stop
+                return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi'], 'atr': last_atr}
 
         return 'HOLD', 0.0, {}
 

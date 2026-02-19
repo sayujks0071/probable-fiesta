@@ -1,0 +1,92 @@
+[
+    {
+        "Strategy":"MCX_Momentum",
+        "Regime":"TREND",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0,
+        "Profit Factor":0.0
+    },
+    {
+        "Strategy":"MCX_Momentum",
+        "Regime":"RANGE",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0,
+        "Profit Factor":0.0
+    },
+    {
+        "Strategy":"MCX_Momentum",
+        "Regime":"VOLATILE",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0,
+        "Profit Factor":0.0
+    },
+    {
+        "Strategy":"AI_Hybrid",
+        "Regime":"TREND",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0,
+        "Profit Factor":0.0
+    },
+    {
+        "Strategy":"AI_Hybrid",
+        "Regime":"RANGE",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0,
+        "Profit Factor":0.0
+    },
+    {
+        "Strategy":"AI_Hybrid",
+        "Regime":"VOLATILE",
+        "Return %":1.8420980906,
+        "Sharpe":2.7861204805,
+        "Drawdown %":1.8611888772,
+        "Win Rate %":62.5,
+        "Trades":8,
+        "Profit Factor":1.6945194825
+    },
+    {
+        "Strategy":"ML_Momentum",
+        "Regime":"TREND",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0,
+        "Profit Factor":0.0
+    },
+    {
+        "Strategy":"ML_Momentum",
+        "Regime":"RANGE",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0,
+        "Profit Factor":0.0
+    },
+    {
+        "Strategy":"ML_Momentum",
+        "Regime":"VOLATILE",
+        "Return %":0.0,
+        "Sharpe":0.0,
+        "Drawdown %":0.0,
+        "Win Rate %":0.0,
+        "Trades":0,
+        "Profit Factor":0.0
+    }
+]

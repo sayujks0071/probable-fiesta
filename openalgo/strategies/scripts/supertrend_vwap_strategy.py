@@ -75,7 +75,7 @@ class SuperTrendVWAPStrategy:
         # Optimization Parameters
         self.threshold = 150
         self.stop_pct = 1.8
-        self.adx_threshold = 20  # Added ADX Filter
+        self.adx_threshold = 15  # [Improvement] Relaxed from 20 to 15
         self.adx_period = 14
 
         # State
@@ -142,9 +142,10 @@ class SuperTrendVWAPStrategy:
 
         is_above_vwap = last['close'] > last['vwap']
 
+        # Dynamic Volume Threshold (Mean + 1.0 StdDev)
         vol_mean = df['volume'].rolling(20).mean().iloc[-1]
         vol_std = df['volume'].rolling(20).std().iloc[-1]
-        dynamic_threshold = vol_mean + (1.5 * vol_std)
+        dynamic_threshold = vol_mean + (1.0 * vol_std)  # [Improvement] Relaxed from 1.5
         is_volume_spike = last['volume'] > dynamic_threshold
 
         is_above_poc = last['close'] > poc_price
@@ -352,10 +353,10 @@ class SuperTrendVWAPStrategy:
                 # Logic
                 is_above_vwap = last['close'] > last['vwap']
 
-                # Dynamic Volume Threshold (Mean + 1.5 StdDev)
+                # Dynamic Volume Threshold (Mean + 1.0 StdDev)
                 vol_mean = df['volume'].rolling(20).mean().iloc[-1]
                 vol_std = df['volume'].rolling(20).std().iloc[-1]
-                dynamic_threshold = vol_mean + (1.5 * vol_std)
+                dynamic_threshold = vol_mean + (1.0 * vol_std)  # [Improvement] Relaxed from 1.5
                 is_volume_spike = last['volume'] > dynamic_threshold
 
                 # Volume Profile Logic: Price must be above Point of Control to confirm value migration up
