@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """
+
+# [Optimization 2026-02-19] Changes: threshold: 0.01 -> 0.008 (Lowered due to Rejection 92.9%)
 Advanced ML Momentum Strategy
 Momentum with relative strength and sector overlay.
 """
@@ -248,7 +250,7 @@ def run_strategy():
     parser.add_argument('--symbol', type=str, help='Stock Symbol')
     parser.add_argument('--port', type=int, default=5001, help='API Port')
     parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
-    parser.add_argument('--threshold', type=float, default=0.01, help='ROC Threshold')
+    parser.add_argument('--threshold', type=float, default=0.008, help='ROC Threshold')
     parser.add_argument('--sector', type=str, default='NIFTY 50', help='Sector Benchmark')
 
     args = parser.parse_args()
