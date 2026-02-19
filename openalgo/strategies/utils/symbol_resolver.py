@@ -114,29 +114,60 @@ class SymbolResolver:
                 logger.warning(f"No futures found for {underlying}")
                 return None
 
-        # MCX MINI Logic
+        # MCX MINI Logic: Prefer smallest lot size (MIC -> M -> Standard)
         if exchange == 'MCX':
-            # Priority:
-            # 1. Symbol contains 'MINI'
-            # 2. Symbol matches Name + 'M' + Date (e.g., SILVERM...) vs SILVER...
+            # Sort by Expiry (ASC), then Lot Size (ASC)
+            # This ensures we pick the nearest expiry, and within that, the smallest contract (MINI/MICRO)
+            if 'lot_size' in matches.columns:
+                 # Convert lot_size to numeric to be safe
+                matches['lot_size'] = pd.to_numeric(matches['lot_size'], errors='coerce').fillna(999999)
+                matches = matches.sort_values(['expiry', 'lot_size'])
 
-            # Check for explicitly 'MINI' or 'M' suffix on underlying name
-            # Use non-capturing group to avoid pandas UserWarning
-            mini_pattern = r'(?:{}M|{}MINI)'.format(underlying, underlying)
+                best_match = matches.iloc[0]
+                logger.info(f"Resolved {underlying} to {best_match['symbol']} (Lot: {best_match['lot_size']})")
+                return best_match['symbol']
 
-            mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
+            else:
+                # Fallback to Regex if lot_size missing
+                logger.warning("Lot Size missing, falling back to name regex for MCX MINI preference.")
+                mini_pattern = r'(?:{}M|{}MINI|{}MIC)'.format(underlying, underlying, underlying)
+                mini_matches = matches[matches['symbol'].str.contains(mini_pattern, regex=True, flags=re.IGNORECASE)]
 
-            if not mini_matches.empty:
-                logger.info(f"Found MCX MINI contract for {underlying}: {mini_matches.iloc[0]['symbol']}")
-                return mini_matches.iloc[0]['symbol']
+                if not mini_matches.empty:
+                    # Sort by expiry to be safe
+                    mini_matches = mini_matches.sort_values('expiry')
+                    logger.info(f"Found MCX MINI contract for {underlying}: {mini_matches.iloc[0]['symbol']}")
+                    return mini_matches.iloc[0]['symbol']
 
-            # Also check if the symbol itself ends with 'M' before some digits (less reliable but possible)
-            # e.g. CRUDEOILM23NOV...
-
-            logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
+                logger.info(f"No MCX MINI contract found for {underlying}, falling back to standard.")
 
         # Return nearest expiry
         return matches.iloc[0]['symbol']
+
+    def validate_symbol(self, symbol, exchange=None):
+        """
+        Check if a symbol string is valid and tradable today.
+        Returns: (bool, reason)
+        """
+        if self.df.empty:
+             return False, "Instruments not loaded"
+
+        mask = (self.df['symbol'] == symbol)
+        if exchange:
+            mask &= (self.df['exchange'] == exchange)
+
+        row = self.df[mask]
+        if row.empty:
+            return False, f"Symbol {symbol} not found in master list"
+
+        # Check Expiry if applicable
+        expiry = row.iloc[0].get('expiry')
+        if pd.notna(expiry):
+            now = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            if expiry < now:
+                return False, f"Symbol expired on {expiry}"
+
+        return True, "Valid"
 
     def _resolve_option(self, config):
         underlying = config.get('underlying')

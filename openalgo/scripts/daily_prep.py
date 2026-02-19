@@ -213,12 +213,18 @@ def validate_symbols():
     print(f"{'STRATEGY':<25} | {'TYPE':<8} | {'INPUT':<15} | {'RESOLVED':<30} | {'STATUS'}")
     print("-" * 95)
 
+    resolved_map = {}
+
     for strat_id, config in configs.items():
         try:
             resolved = resolver.resolve(config)
 
             status = "✅ Valid"
             resolved_str = "Unknown"
+
+            # Safe getters for printing
+            p_type = str(config.get('type', 'N/A'))
+            p_underlying = str(config.get('underlying', config.get('symbol', 'N/A')))
 
             if resolved is None:
                 status = "🔴 Invalid"
@@ -229,6 +235,8 @@ def validate_symbols():
                 if resolved.get('status') == 'valid':
                     resolved_str = f"Expiry: {resolved.get('expiry')}"
                     valid_count += 1
+                    # For map, store sample symbol if available
+                    resolved_map[strat_id] = resolved.get('sample_symbol')
                 else:
                     status = "🔴 Invalid"
                     invalid_count += 1
@@ -237,13 +245,27 @@ def validate_symbols():
                 # String result
                 resolved_str = str(resolved)
                 valid_count += 1
+                resolved_map[strat_id] = resolved_str
 
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {resolved_str[:30]:<30} | {status}")
+            print(f"{strat_id:<25} | {p_type:<8} | {p_underlying:<15} | {resolved_str[:30]:<30} | {status}")
 
         except Exception as e:
-            logger.error(f"Error validating {strat_id}: {e}")
+            logger.error(f"Error validating {strat_id}: {e}", exc_info=True)
             invalid_count += 1
-            print(f"{strat_id:<25} | {config.get('type'):<8} | {config.get('underlying'):<15} | {'ERROR':<30} | 🔴 Error")
+            p_type = str(config.get('type', 'N/A'))
+            p_underlying = str(config.get('underlying', config.get('symbol', 'N/A')))
+            print(f"{strat_id:<25} | {p_type:<8} | {p_underlying:<15} | {'ERROR':<30} | 🔴 Error")
+
+    # Save Resolved Map
+    if resolved_map:
+        map_path = os.path.join(STATE_DIR, 'daily_symbol_map.json')
+        try:
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(map_path, 'w') as f:
+                json.dump(resolved_map, f, indent=4)
+            logger.info(f"Saved resolved symbol map to {map_path}")
+        except Exception as e:
+            logger.error(f"Failed to save symbol map: {e}")
 
     print("-" * 95)
     if invalid_count > 0:

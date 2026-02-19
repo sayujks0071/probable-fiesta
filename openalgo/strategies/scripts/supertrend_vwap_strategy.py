@@ -21,44 +21,20 @@ utils_dir = os.path.join(strategies_dir, 'utils')
 
 # Add utils directory to path for imports
 sys.path.insert(0, utils_dir)
+# Also add project root for absolute imports if needed
+sys.path.insert(0, os.path.abspath(os.path.join(script_dir, '../../..')))
 
 try:
     from trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
     from symbol_resolver import SymbolResolver
 except ImportError:
+    # Fallback to absolute imports
     try:
-        sys.path.insert(0, strategies_dir)
-        from utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-        from utils.symbol_resolver import SymbolResolver
-    except ImportError:
-        try:
-            from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
-            from openalgo.strategies.utils.symbol_resolver import SymbolResolver
-        except ImportError:
-            print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            SymbolResolver = None
-            normalize_symbol = lambda s: s
-            is_market_open = lambda: True
-            def calculate_intraday_vwap(df):
-                df = df.copy()
-                if 'datetime' not in df.columns:
-                    if isinstance(df.index, pd.DatetimeIndex):
-                        df['datetime'] = df.index
-                    elif 'timestamp' in df.columns:
-                        df['datetime'] = pd.to_datetime(df['timestamp'], unit='s')
-                    else:
-                        df['datetime'] = pd.to_datetime(df.index)
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df['date'] = df['datetime'].dt.date
-                typical_price = (df['high'] + df['low'] + df['close']) / 3
-                df['pv'] = typical_price * df['volume']
-                df['cum_pv'] = df.groupby('date')['pv'].cumsum()
-                df['cum_vol'] = df.groupby('date')['volume'].cumsum()
-                df['vwap'] = df['cum_pv'] / df['cum_vol']
-                df['vwap_dev'] = (df['close'] - df['vwap']) / df['vwap']
-                return df
+        from openalgo.strategies.utils.trading_utils import is_market_open, calculate_intraday_vwap, PositionManager, APIClient, normalize_symbol
+        from openalgo.strategies.utils.symbol_resolver import SymbolResolver
+    except ImportError as e:
+        logging.error(f"Failed to import utils: {e}")
+        raise
 
 class SuperTrendVWAPStrategy:
     def __init__(self, symbol, quantity, api_key=None, host=None, ignore_time=False, sector_benchmark='NIFTY BANK', logfile=None, client=None):
@@ -419,19 +395,39 @@ def run_strategy():
     args = parser.parse_args()
 
     symbol = args.symbol
+
+    # Resolve Symbol if Underlying provided
     if not symbol and args.underlying:
-        if SymbolResolver:
+        try:
             resolver = SymbolResolver()
             res = resolver.resolve({'underlying': args.underlying, 'type': args.type, 'exchange': args.exchange})
+            if not res:
+                print(f"Error: Could not resolve symbol for {args.underlying}")
+                sys.exit(1)
+
             if isinstance(res, dict):
-                symbol = res.get('sample_symbol')
+                # For options, we might get a dict with status.
+                # Strategies usually need a specific symbol.
+                # If resolve returned a dict (e.g. valid expiry set), we might need to pick one.
+                # However, for 'OPT', resolve returns a validation dict usually.
+                # Strategies running live need a SPECIFIC symbol (e.g. NIFTY23OCT19500CE).
+                # If args.type is OPT, we probably need more info (strike, etc) to pick ONE symbol.
+                # But here, let's assume sample_symbol or fail if ambiguous.
+                if 'sample_symbol' in res:
+                    symbol = res['sample_symbol']
+                else:
+                    print(f"Error: Ambiguous resolution for {args.underlying}")
+                    sys.exit(1)
             else:
                 symbol = res
             print(f"Resolved {args.underlying} -> {symbol}")
+        except Exception as e:
+            print(f"Error resolving symbol: {e}")
+            sys.exit(1)
 
     if not symbol:
         print("Error: Must provide --symbol or --underlying")
-        return
+        sys.exit(1)
 
     # Default logfile if not provided
     logfile = args.logfile
