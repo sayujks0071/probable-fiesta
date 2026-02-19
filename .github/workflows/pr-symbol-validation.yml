@@ -1,40 +1,44 @@
-name: PR Symbol Validation
+name: PR Symbol Validation (Strict)
 
 on:
   pull_request:
     paths:
-      - "openalgo/strategies/**"
-      - "openalgo/configs/**"
-      - "openalgo/data/instruments/**"
+      - "trading/**"
+      - "strategies/**"
+      - "configs/**"
+      - "data/instruments/**"
       - "tools/**"
-
-permissions:
-  contents: read
+      - "openalgo/**"  # Added openalgo root as well to be safe, though prompt listed specific folders
 
 jobs:
   validate-symbols:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
+          cache: 'pip'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
-          pip install pandas httpx
+          pip install -r openalgo/requirements.txt
+          pip install pandas pyyaml
 
       - name: Sync Instruments
-        run: python3 tools/sync_instruments.py
+        id: sync
+        continue-on-error: true  # If sync fails, validation will likely fail with Exit 3 (Stale/Missing), which is desired behavior
+        run: python tools/sync_instruments.py
 
-      - name: Run Strict Validation
-        run: python3 tools/validate_symbols.py --strict --check
+      - name: Strict Symbol Validation
+        id: validate
+        run: python tools/validate_symbols.py --strict --check
 
-      - name: Upload Report
-        if: failure()
+      - name: Upload Audit Reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: symbol-validation-report
-          path: reports/
+          name: pr-symbol-audit-reports
+          path: reports/symbol_audit.*

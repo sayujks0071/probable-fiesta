@@ -15,6 +15,7 @@ if REPO_ROOT not in sys.path:
 DATA_DIR = os.path.join(REPO_ROOT, 'openalgo', 'data')
 INSTRUMENTS_FILE = os.path.join(DATA_DIR, 'instruments.csv')
 CONFIG_FILE = os.path.join(REPO_ROOT, 'openalgo', 'strategies', 'active_strategies.json')
+CONFIGS_DIR = os.path.join(REPO_ROOT, 'configs')
 REPORTS_DIR = os.path.join(REPO_ROOT, 'reports')
 
 # Regex for MCX Symbols
@@ -32,7 +33,7 @@ def check_instruments_freshness():
 
     return True, "Fresh"
 
-def validate_config_symbols(resolver):
+def validate_active_strategies(resolver):
     issues = []
     if not os.path.exists(CONFIG_FILE):
         return issues # No config to validate
@@ -77,6 +78,51 @@ def validate_config_symbols(resolver):
         })
     return issues
 
+def validate_configs_dir(instruments):
+    issues = []
+    if not os.path.exists(CONFIGS_DIR):
+        return issues
+
+    for root, _, files in os.walk(CONFIGS_DIR):
+        for file in files:
+            if file.endswith('.yaml') or file.endswith('.json'):
+                filepath = os.path.join(root, file)
+                try:
+                    with open(filepath, 'r') as f:
+                        content = f.read()
+
+                        # Regex scan
+                        for match in MCX_PATTERN.finditer(content):
+                            symbol_str = match.group(0)
+                            parts = match.groups()
+
+                            # Normalize
+                            normalized = f"{parts[0].upper()}{int(parts[1]):02d}{parts[2].upper()}{parts[3]}FUT"
+
+                            if symbol_str != normalized:
+                                issues.append({
+                                    "source": os.path.relpath(filepath, REPO_ROOT),
+                                    "symbol": symbol_str,
+                                    "normalized": normalized,
+                                    "error": "Symbol is malformed (needs normalization)",
+                                    "status": "MALFORMED"
+                                })
+
+                            if normalized not in instruments:
+                                issues.append({
+                                    "source": os.path.relpath(filepath, REPO_ROOT),
+                                    "symbol": symbol_str,
+                                    "error": "Symbol not found in master",
+                                    "status": "MISSING"
+                                })
+                except Exception as e:
+                     issues.append({
+                        "source": os.path.relpath(filepath, REPO_ROOT),
+                        "error": str(e),
+                        "status": "ERROR"
+                     })
+    return issues
+
 def scan_files_for_hardcoded_symbols(instruments):
     issues = []
     strategies_dir = os.path.join(REPO_ROOT, 'openalgo', 'strategies')
@@ -104,7 +150,7 @@ def scan_files_for_hardcoded_symbols(instruments):
                     # Validate Month
                     if parts[2].upper() not in MONTHS:
                         issues.append({
-                            "source": os.path.basename(filepath),
+                            "source": os.path.relpath(filepath, REPO_ROOT),
                             "symbol": symbol_str,
                             "error": f"Invalid month: {parts[2]}",
                             "status": "INVALID"
@@ -116,7 +162,7 @@ def scan_files_for_hardcoded_symbols(instruments):
 
                     if symbol_str != normalized:
                          issues.append({
-                            "source": os.path.basename(filepath),
+                            "source": os.path.relpath(filepath, REPO_ROOT),
                             "symbol": symbol_str,
                             "normalized": normalized,
                             "error": "Symbol is malformed (needs normalization)",
@@ -125,7 +171,7 @@ def scan_files_for_hardcoded_symbols(instruments):
 
                     if normalized not in instruments:
                         issues.append({
-                            "source": os.path.basename(filepath),
+                            "source": os.path.relpath(filepath, REPO_ROOT),
                             "symbol": symbol_str,
                             "normalized": normalized,
                             "error": "Symbol not found in master",
@@ -163,6 +209,7 @@ def main():
         instruments = set(resolver.df['symbol'].unique()) if not resolver.df.empty else set()
     except Exception as e:
         print(f"Error loading SymbolResolver: {e}")
+        # If strict, this is a critical failure (cannot validate)
         if args.strict:
             sys.exit(3)
         resolver = None
@@ -177,8 +224,11 @@ def main():
 
     # 2. Validate Configs
     if resolver:
-        config_issues = validate_config_symbols(resolver)
+        config_issues = validate_active_strategies(resolver)
         audit_report["issues"].extend(config_issues)
+
+    config_dir_issues = validate_configs_dir(instruments)
+    audit_report["issues"].extend(config_dir_issues)
 
     # 3. Validate Hardcoded Symbols
     hardcoded_issues = scan_files_for_hardcoded_symbols(instruments)
@@ -186,11 +236,14 @@ def main():
 
     # Report Generation
     os.makedirs(REPORTS_DIR, exist_ok=True)
-    with open(os.path.join(REPORTS_DIR, 'symbol_audit.json'), 'w') as f:
+    json_path = os.path.join(REPORTS_DIR, 'symbol_audit.json')
+    with open(json_path, 'w') as f:
         json.dump(audit_report, f, indent=2)
+    print(f"Report generated: {json_path}")
 
     # Also create Markdown
-    with open(os.path.join(REPORTS_DIR, 'symbol_audit.md'), 'w') as f:
+    md_path = os.path.join(REPORTS_DIR, 'symbol_audit.md')
+    with open(md_path, 'w') as f:
          f.write("# Symbol Validation Report\n\n")
          f.write(f"Date: {datetime.now()}\n")
          f.write(f"Strict Mode: {args.strict}\n")
@@ -203,6 +256,7 @@ def main():
               f.write("|---|---|---|---|\n")
               for issue in audit_report["issues"]:
                   f.write(f"| {issue.get('source')} | {issue.get('symbol', issue.get('id', '-'))} | {issue['status']} | {issue.get('error')} |\n")
+    print(f"Report generated: {md_path}")
 
 
     # Print Summary
