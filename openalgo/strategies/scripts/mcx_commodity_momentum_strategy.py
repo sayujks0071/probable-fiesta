@@ -21,22 +21,19 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from strategy_common import setup_strategy_logging, get_strategy_config
 except ImportError:
     try:
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.strategy_common import setup_strategy_logging, get_strategy_config
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.strategy_common import setup_strategy_logging, get_strategy_config
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            is_market_open = lambda: True
-
-# Setup Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("MCX_Momentum")
+            sys.exit(1)
 
 class MCXMomentumStrategy:
     def __init__(self, symbol, api_key, host, params):
@@ -45,22 +42,23 @@ class MCXMomentumStrategy:
         self.host = host
         self.params = params
 
-        self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
+        self.logger = setup_strategy_logging(f"MCXMomentum_{symbol}")
+        self.client = APIClient(api_key=self.api_key, host=self.host)
         self.pm = PositionManager(symbol) if PositionManager else None
         self.data = pd.DataFrame()
 
         # Log active filters
-        logger.info(f"Initialized Strategy for {symbol}")
-        logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
+        self.logger.info(f"Initialized Strategy for {symbol}")
+        self.logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
 
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
         if not self.client:
-            logger.error("API Client not initialized.")
+            self.logger.error("API Client not initialized.")
             return
 
         try:
-            logger.info(f"Fetching data for {self.symbol}...")
+            self.logger.info(f"Fetching data for {self.symbol}...")
             # Fetch last 5 days
             end_date = datetime.now().strftime("%Y-%m-%d")
             start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
@@ -75,12 +73,12 @@ class MCXMomentumStrategy:
 
             if not df.empty and len(df) > 50:
                 self.data = df
-                logger.info(f"Fetched {len(df)} candles.")
+                self.logger.info(f"Fetched {len(df)} candles.")
             else:
-                logger.warning(f"Insufficient data for {self.symbol}.")
+                self.logger.warning(f"Insufficient data for {self.symbol}.")
 
         except Exception as e:
-            logger.error(f"Error fetching data: {e}", exc_info=True)
+            self.logger.error(f"Error fetching data: {e}", exc_info=True)
 
     def generate_signal(self, df):
         """
@@ -156,7 +154,7 @@ class MCXMomentumStrategy:
         df['plus_dm'] = plus_dm
         df['minus_dm'] = minus_dm
 
-        # Smooth (using simple moving average for simplicity as originally intended in simple mock)
+        # Smooth
         tr_smooth = true_range.rolling(window=self.params['period_adx']).mean()
         plus_dm_smooth = df['plus_dm'].rolling(window=self.params['period_adx']).mean()
         minus_dm_smooth = df['minus_dm'].rolling(window=self.params['period_adx']).mean()
@@ -172,6 +170,33 @@ class MCXMomentumStrategy:
 
         self.data = df
 
+    def place_order(self, action, quantity, price):
+        """Place order via API and update local state if successful."""
+        try:
+            response = self.client.placesmartorder(
+                strategy="MCXMomentum",
+                symbol=self.symbol,
+                action=action,
+                exchange="MCX",
+                price_type="MARKET",
+                product="MIS",
+                quantity=quantity,
+                position_size=quantity
+            )
+
+            if response and (response.get("status") == "success" or "order_id" in response):
+                self.logger.info(f"Order Placed Successfully: {response}")
+                if self.pm:
+                    self.pm.update_position(quantity, price, action)
+                return True
+            else:
+                self.logger.error(f"Order Placement Failed: {response}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Exception during order placement: {e}")
+            return False
+
     def check_signals(self):
         """Check entry and exit conditions."""
         if self.data.empty or 'adx' not in self.data.columns:
@@ -183,9 +208,6 @@ class MCXMomentumStrategy:
 
         current = self.data.iloc[-1]
         prev = self.data.iloc[-2]
-
-        # Log current state
-        # logger.info(f"Price: {current['close']:.2f}, RSI: {current['rsi']:.2f}, ADX: {current['adx']:.2f}")
 
         # Check Position
         has_position = False
@@ -200,15 +222,15 @@ class MCXMomentumStrategy:
         # Adjust Position Size
         base_qty = 1
         if usd_vol_high:
-            logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size by 30%.")
+            self.logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size by 30%.")
             base_qty = max(1, int(base_qty * 0.7)) # Reduce size, minimum 1
 
         if not seasonality_ok and not has_position:
-            logger.info("Seasonality Weak: Skipping new entries.")
+            self.logger.info("Seasonality Weak: Skipping new entries.")
             return
 
         if not global_alignment_ok and not has_position:
-            logger.info("Global Alignment Weak: Skipping new entries.")
+            self.logger.info("Global Alignment Weak: Skipping new entries.")
             return
 
         # Entry Logic
@@ -218,78 +240,62 @@ class MCXMomentumStrategy:
                 current['rsi'] > 55 and
                 current['close'] > prev['close']):
 
-                logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                if self.pm:
-                    self.pm.update_position(base_qty, current['close'], 'BUY')
+                self.logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                self.place_order("BUY", base_qty, current['close'])
 
             # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
             elif (current['adx'] > self.params['adx_threshold'] and
                   current['rsi'] < 45 and
                   current['close'] < prev['close']):
 
-                logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                if self.pm:
-                    self.pm.update_position(base_qty, current['close'], 'SELL')
+                self.logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                self.place_order("SELL", base_qty, current['close'])
 
         # Exit Logic
         elif has_position:
-            # Retrieve position details
             pos_qty = self.pm.position
-            entry_price = self.pm.entry_price
-
-            # Stop Loss / Take Profit Logic could be added here
             # Simple Exit: Trend Fades (ADX < 20) or RSI Reversal
 
             if pos_qty > 0: # Long
                 if current['rsi'] < 45 or current['adx'] < 20:
-                     logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                     self.logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                     self.place_order("SELL", abs(pos_qty), current['close'])
             elif pos_qty < 0: # Short
                 if current['rsi'] > 55 or current['adx'] < 20:
-                     logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                     self.logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                     self.place_order("BUY", abs(pos_qty), current['close'])
 
     def run(self):
-        logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
+        self.logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
         while True:
-            if not is_market_open():
-                logger.info("Market is closed. Sleeping...")
-                time.sleep(300)
-                continue
+            try:
+                # Check for Market Open (Assuming MCX hours check is in is_mcx_market_open inside is_market_open or similar)
+                # But is_market_open defaults to NSE. We need to check explicitly or rely on utils.
+                if not is_market_open("MCX"):
+                    self.logger.info("Market is closed. Sleeping...")
+                    time.sleep(300)
+                    continue
 
-            self.fetch_data()
-            self.calculate_indicators()
-            self.check_signals()
+                self.fetch_data()
+                self.calculate_indicators()
+                self.check_signals()
+            except Exception as e:
+                self.logger.error(f"Error in main loop: {e}", exc_info=True)
+
             time.sleep(900) # 15 minutes
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='MCX Commodity Momentum Strategy')
     parser.add_argument('--symbol', type=str, help='MCX Symbol (e.g., GOLDM05FEB26FUT)')
     parser.add_argument('--underlying', type=str, help='Commodity Name (e.g., GOLD, SILVER, CRUDEOIL)')
-    parser.add_argument('--port', type=int, default=5001, help='API Port')
-    parser.add_argument('--api_key', type=str, help='API Key')
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
     args = parser.parse_args()
-
-    # Strategy Parameters
-    PARAMS = {
-        'period_adx': 14,
-        'period_rsi': 14,
-        'period_atr': 14,
-        'adx_threshold': 25,
-        'min_atr': 10,
-        'risk_per_trade': 0.02,
-        'usd_inr_trend': args.usd_inr_trend,
-        'usd_inr_volatility': args.usd_inr_volatility,
-        'seasonality_score': args.seasonality_score,
-        'global_alignment_score': args.global_alignment_score
-    }
 
     # Symbol Resolution
     symbol = args.symbol or os.getenv('SYMBOL')
@@ -312,21 +318,36 @@ if __name__ == "__main__":
             res = resolver.resolve({'underlying': args.underlying, 'type': 'FUT', 'exchange': 'MCX'})
             if res:
                 symbol = res
-                logger.info(f"Resolved {args.underlying} -> {symbol}")
+                print(f"Resolved {args.underlying} -> {symbol}")
             else:
-                logger.error(f"Could not resolve symbol for {args.underlying}")
+                print(f"Could not resolve symbol for {args.underlying}")
         else:
-            logger.error("SymbolResolver not available")
+            print("SymbolResolver not available")
 
     if not symbol:
-        logger.error("Symbol not provided. Use --symbol or --underlying argument, or set SYMBOL env var.")
+        print("Symbol not provided. Use --symbol or --underlying argument, or set SYMBOL env var.")
         sys.exit(1)
 
-    api_key = args.api_key or os.getenv('OPENALGO_APIKEY')
-    port = args.port or int(os.getenv('OPENALGO_PORT', 5001))
-    host = f"http://127.0.0.1:{port}"
+    config = get_strategy_config()
+    if not config['api_key']:
+        print("ERROR: OPENALGO_APIKEY not set.")
+        sys.exit(1)
 
-    strategy = MCXMomentumStrategy(symbol, api_key, host, PARAMS)
+    # Strategy Parameters
+    PARAMS = {
+        'period_adx': 14,
+        'period_rsi': 14,
+        'period_atr': 14,
+        'adx_threshold': 25,
+        'min_atr': 10,
+        'risk_per_trade': 0.02,
+        'usd_inr_trend': args.usd_inr_trend,
+        'usd_inr_volatility': args.usd_inr_volatility,
+        'seasonality_score': args.seasonality_score,
+        'global_alignment_score': args.global_alignment_score
+    }
+
+    strategy = MCXMomentumStrategy(symbol, config['api_key'], config['host'], PARAMS)
     strategy.run()
 
 # Default Strategy Parameters (module level for generate_signal)

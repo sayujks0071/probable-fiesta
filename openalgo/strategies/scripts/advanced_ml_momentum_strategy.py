@@ -22,28 +22,31 @@ sys.path.insert(0, utils_dir)
 
 try:
     from trading_utils import APIClient, PositionManager, is_market_open
+    from strategy_common import setup_strategy_logging, get_strategy_config
 except ImportError:
     try:
         # Try absolute import
         sys.path.insert(0, strategies_dir)
         from utils.trading_utils import APIClient, PositionManager, is_market_open
+        from utils.strategy_common import setup_strategy_logging, get_strategy_config
     except ImportError:
         try:
             from openalgo.strategies.utils.trading_utils import APIClient, PositionManager, is_market_open
+            from openalgo.strategies.utils.strategy_common import setup_strategy_logging, get_strategy_config
         except ImportError:
             print("Warning: openalgo package not found or imports failed.")
-            APIClient = None
-            PositionManager = None
-            is_market_open = lambda: True
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            sys.exit(1)
 
 class MLMomentumStrategy:
-    def __init__(self, symbol, api_key, port, threshold=0.01, stop_pct=1.0, sector='NIFTY 50', vol_multiplier=0.5):
+    def __init__(self, symbol, api_key, host, threshold=0.01, stop_pct=1.0, sector='NIFTY 50', vol_multiplier=0.5):
         self.symbol = symbol
-        self.host = f"http://127.0.0.1:{port}"
+        self.host = host
+        self.api_key = api_key
         self.client = APIClient(api_key=api_key, host=self.host)
-        self.logger = logging.getLogger(f"MLMomentum_{symbol}")
+
+        # improved logging setup
+        self.logger = setup_strategy_logging(f"MLMomentum_{symbol}")
+
         self.pm = PositionManager(symbol) if PositionManager else None
 
         self.roc_threshold = threshold
@@ -72,14 +75,10 @@ class MLMomentumStrategy:
         last = df.iloc[-1]
         current_price = last['close']
 
-        # Simplifications for Backtest (Missing Index/Sector Data)
-        # We assume RS and Sector conditions are met if data missing, or strict if we want.
-        # Let's assume 'rs_excess > 0' and 'sector_outperformance > 0' are TRUE for baseline logic
-        # unless we pass index data in 'df' (which we don't usually).
-
-        rs_excess = 0.01 # Mock positive
-        sector_outperformance = 0.01 # Mock positive
-        sentiment = 0.5 # Mock positive
+        # Simplifications for Backtest
+        rs_excess = 0.01
+        sector_outperformance = 0.01
+        sentiment = 0.5
 
         # Entry Logic
         if (last['roc'] > self.roc_threshold and
@@ -91,7 +90,7 @@ class MLMomentumStrategy:
 
             # Volume check
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-            if last['volume'] > avg_vol * self.vol_multiplier: # Stricter volume
+            if last['volume'] > avg_vol * self.vol_multiplier:
                 return 'BUY', 1.0, {'roc': last['roc'], 'rsi': last['rsi']}
 
         return 'HOLD', 0.0, {}
@@ -99,7 +98,6 @@ class MLMomentumStrategy:
     def calculate_relative_strength(self, df, index_df):
         if index_df.empty: return 1.0
 
-        # Align timestamps (simplistic approach using last N periods)
         try:
             stock_roc = df['close'].pct_change(10).iloc[-1]
             index_roc = index_df['close'].pct_change(10).iloc[-1]
@@ -118,6 +116,43 @@ class MLMomentumStrategy:
             return False
         return True
 
+    def place_order(self, action, quantity, price):
+        """Place order via API and update local state if successful."""
+        try:
+            exchange = "NSE"
+            if "NIFTY" in self.symbol.upper() and ("FUT" in self.symbol.upper() or len(self.symbol) > 10):
+                exchange = "NFO"
+            elif "MCX" in self.symbol.upper() or "FUT" in self.symbol.upper(): # Heuristic for MCX
+                 # Check if it's MCX based on symbol format usually
+                 if self.symbol.endswith("FUT") and not self.symbol.startswith("NIFTY") and not self.symbol.startswith("BANKNIFTY"):
+                     exchange = "MCX"
+
+            # Use smart order
+            # Using defaults for product (MIS) and price_type (MARKET for simplicity in this momentum strat)
+            response = self.client.placesmartorder(
+                strategy="MLMomentum",
+                symbol=self.symbol,
+                action=action,
+                exchange=exchange,
+                price_type="MARKET",
+                product="MIS",
+                quantity=quantity,
+                position_size=quantity
+            )
+
+            if response and response.get("status") == "success":
+                self.logger.info(f"Order Placed Successfully: {response}")
+                if self.pm:
+                    self.pm.update_position(quantity, price, action)
+                return True
+            else:
+                self.logger.error(f"Order Placement Failed: {response}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Exception during order placement: {e}")
+            return False
+
     def run(self):
         # Normalize symbol (NIFTY50 -> NIFTY, NIFTY 50 -> NIFTY, NIFTYBANK -> BANKNIFTY)
         original_symbol = self.symbol
@@ -133,19 +168,19 @@ class MLMomentumStrategy:
         self.logger.info(f"Starting ML Momentum Strategy for {self.symbol} (Sector: {self.sector})")
 
         while True:
-            if not is_market_open():
-                time.sleep(60)
-                continue
-
-            # Time Filter
-            if not self.check_time_filter():
-                # If we have a position, we might hold, but no new entries
-                if not (self.pm and self.pm.has_position()):
-                    self.logger.info("Lunch hour (12:00-13:00). Skipping new entries.")
-                    time.sleep(300)
+            try:
+                if not is_market_open():
+                    time.sleep(60)
                     continue
 
-            try:
+                # Time Filter
+                if not self.check_time_filter():
+                    # If we have a position, we might hold, but no new entries
+                    if not (self.pm and self.pm.has_position()):
+                        self.logger.info("Lunch hour (12:00-13:00). Skipping new entries.")
+                        time.sleep(300)
+                        continue
+
                 # 1. Fetch Stock Data
                 end_date = datetime.now().strftime("%Y-%m-%d")
                 start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
@@ -194,7 +229,7 @@ class MLMomentumStrategy:
                          sector_outperformance = last['roc'] - sector_roc
                     except: pass
                 else:
-                    sector_outperformance = 0.001 # Assume positive if missing to not block
+                    sector_outperformance = 0.001
 
                 # News Sentiment
                 sentiment = self.get_news_sentiment()
@@ -206,24 +241,17 @@ class MLMomentumStrategy:
 
                     if (self.pm.position > 0 and current_price < entry * (1 - self.stop_pct/100)):
                         self.logger.info(f"Stop Loss Hit. PnL: {pnl}")
-                        self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                        self.place_order("SELL", abs(self.pm.position), current_price)
 
                     # Exit if Momentum Fades (RSI < 50)
                     elif (self.pm.position > 0 and last['rsi'] < 50):
                          self.logger.info(f"Momentum Faded (RSI < 50). Exit. PnL: {pnl}")
-                         self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                         self.place_order("SELL", abs(self.pm.position), current_price)
 
                     time.sleep(60)
                     continue
 
                 # Entry Logic
-                # ROC > Threshold
-                # RSI > 55
-                # Relative Strength > 0 (Outperforming NIFTY)
-                # Sector Outperformance > 0 (Outperforming Sector)
-                # Price > SMA50 (Uptrend)
-                # Sentiment > 0 (Not Negative)
-
                 if (last['roc'] > self.roc_threshold and
                     last['rsi'] > 55 and
                     rs_excess > 0 and
@@ -235,7 +263,7 @@ class MLMomentumStrategy:
                     avg_vol = df['volume'].rolling(20).mean().iloc[-1]
                     if last['volume'] > avg_vol * 0.5: # At least decent volume
                         self.logger.info(f"Strong Momentum Signal (ROC: {last['roc']:.3f}, RS: {rs_excess:.3f}). BUY.")
-                        self.pm.update_position(100, current_price, 'BUY')
+                        self.place_order("BUY", 100, current_price)
 
             except Exception as e:
                 self.logger.error(f"Error in ML Momentum strategy for {self.symbol}: {e}", exc_info=True)
@@ -246,8 +274,6 @@ class MLMomentumStrategy:
 def run_strategy():
     parser = argparse.ArgumentParser(description='ML Momentum Strategy')
     parser.add_argument('--symbol', type=str, help='Stock Symbol')
-    parser.add_argument('--port', type=int, default=5001, help='API Port')
-    parser.add_argument('--api_key', type=str, default='demo_key', help='API Key')
     parser.add_argument('--threshold', type=float, default=0.01, help='ROC Threshold')
     parser.add_argument('--sector', type=str, default='NIFTY 50', help='Sector Benchmark')
 
@@ -260,11 +286,14 @@ def run_strategy():
         parser.print_help()
         sys.exit(1)
     
-    port = args.port or int(os.getenv('OPENALGO_PORT', '5001'))
-    api_key = args.api_key or os.getenv('OPENALGO_APIKEY', 'demo_key')
+    config = get_strategy_config()
+    if not config['api_key']:
+        print("ERROR: OPENALGO_APIKEY not set.")
+        sys.exit(1)
+
     threshold = args.threshold or float(os.getenv('THRESHOLD', '0.01'))
 
-    strategy = MLMomentumStrategy(symbol, api_key, port, threshold=threshold, sector=args.sector)
+    strategy = MLMomentumStrategy(symbol, config['api_key'], config['host'], threshold=threshold, sector=args.sector)
     strategy.run()
 
 # Module level wrapper for SimpleBacktestEngine
@@ -278,10 +307,12 @@ def generate_signal(df, client=None, symbol=None, params=None):
     if params:
         strat_params.update(params)
 
+    # Mocking for backtest wrapper
+    # In backtest we don't want real logging or API calls usually
     strat = MLMomentumStrategy(
         symbol=symbol or "TEST",
         api_key="dummy",
-        port=5001,
+        host="http://127.0.0.1:5001",
         threshold=float(strat_params.get('threshold', 0.01)),
         stop_pct=float(strat_params.get('stop_pct', 1.0)),
         sector=strat_params.get('sector', 'NIFTY 50'),
