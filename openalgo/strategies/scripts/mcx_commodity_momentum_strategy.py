@@ -49,8 +49,11 @@ class MCXMomentumStrategy:
         self.pm = PositionManager(symbol) if PositionManager else None
         self.data = pd.DataFrame()
 
+        # Determine exchange from symbol
+        self.exchange = "MCX" if "FUT" in symbol else "NSE"
+
         # Log active filters
-        logger.info(f"Initialized Strategy for {symbol}")
+        logger.info(f"Initialized Strategy for {symbol} on {self.exchange}")
         logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
 
     def fetch_data(self):
@@ -68,7 +71,7 @@ class MCXMomentumStrategy:
             df = self.client.history(
                 symbol=self.symbol,
                 interval="15m",
-                exchange="MCX",
+                exchange=self.exchange,
                 start_date=start_date,
                 end_date=end_date
             )
@@ -219,6 +222,17 @@ class MCXMomentumStrategy:
                 current['close'] > prev['close']):
 
                 logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                if self.client:
+                    self.client.placesmartorder(
+                        strategy="MCXMomentumStrategy",
+                        symbol=self.symbol,
+                        action="BUY",
+                        exchange=self.exchange,
+                        price_type="MARKET",
+                        product="MIS",
+                        quantity=base_qty,
+                        position_size=base_qty
+                    )
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'BUY')
 
@@ -228,6 +242,17 @@ class MCXMomentumStrategy:
                   current['close'] < prev['close']):
 
                 logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                if self.client:
+                    self.client.placesmartorder(
+                        strategy="MCXMomentumStrategy",
+                        symbol=self.symbol,
+                        action="SELL",
+                        exchange=self.exchange,
+                        price_type="MARKET",
+                        product="MIS",
+                        quantity=base_qty,
+                        position_size=base_qty
+                    )
                 if self.pm:
                     self.pm.update_position(base_qty, current['close'], 'SELL')
 
@@ -243,17 +268,42 @@ class MCXMomentumStrategy:
             if pos_qty > 0: # Long
                 if current['rsi'] < 45 or current['adx'] < 20:
                      logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                     if self.client:
+                        self.client.placesmartorder(
+                            strategy="MCXMomentumStrategy",
+                            symbol=self.symbol,
+                            action="SELL",
+                            exchange=self.exchange,
+                            price_type="MARKET",
+                            product="MIS",
+                            quantity=abs(pos_qty),
+                            position_size=abs(pos_qty)
+                        )
+                     if self.pm:
+                        self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
             elif pos_qty < 0: # Short
                 if current['rsi'] > 55 or current['adx'] < 20:
                      logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                     self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                     if self.client:
+                        self.client.placesmartorder(
+                            strategy="MCXMomentumStrategy",
+                            symbol=self.symbol,
+                            action="BUY",
+                            exchange=self.exchange,
+                            price_type="MARKET",
+                            product="MIS",
+                            quantity=abs(pos_qty),
+                            position_size=abs(pos_qty)
+                        )
+                     if self.pm:
+                        self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")
         while True:
-            if not is_market_open():
-                logger.info("Market is closed. Sleeping...")
+            # Use correct market hours check!
+            if not is_market_open(exchange=self.exchange):
+                logger.info(f"Market ({self.exchange}) is closed. Sleeping...")
                 time.sleep(300)
                 continue
 
@@ -271,7 +321,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
