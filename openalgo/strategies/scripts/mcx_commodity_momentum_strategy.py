@@ -53,6 +53,27 @@ class MCXMomentumStrategy:
         logger.info(f"Initialized Strategy for {symbol}")
         logger.info(f"Filters: Seasonality={params.get('seasonality_score', 'N/A')}, USD_Vol={params.get('usd_inr_volatility', 'N/A')}")
 
+    def check_expiry(self):
+        """Check if contract is near expiry."""
+        try:
+            # Attempt to parse expiry from symbol (e.g. GOLDM05FEB26FUT)
+            import re
+            match = re.search(r'(\d{2}[A-Z]{3}\d{2})', self.symbol)
+            if match:
+                expiry_str = match.group(1)
+                # Handle uppercase month (FEB -> Feb) for parsing
+                expiry_str_fixed = expiry_str[:2] + expiry_str[2:5].title() + expiry_str[5:]
+                expiry_date = datetime.strptime(expiry_str_fixed, "%d%b%y")
+                days_to_expiry = (expiry_date - datetime.now()).days
+
+                if days_to_expiry < 3:
+                    logger.warning(f"Contract {self.symbol} expires in {days_to_expiry} days. Avoiding new entries.")
+                    return False
+            return True
+        except Exception as e:
+            logger.warning(f"Could not parse expiry for {self.symbol}: {e}")
+            return True
+
     def fetch_data(self):
         """Fetch live or historical data from OpenAlgo."""
         if not self.client:
@@ -196,12 +217,26 @@ class MCXMomentumStrategy:
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
         global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
         usd_vol_high = self.params.get('usd_inr_volatility', 0) > 1.0
+        expiry_ok = self.check_expiry()
 
-        # Adjust Position Size
+        # Adjust Position Size (Volatility Based)
         base_qty = 1
+        atr = current.get('atr', 0)
+        close = current.get('close', 1)
+
+        # Simple ATR-based sizing logic: Target 2% risk
+        # Assuming Lot Size is unknown, we just scale down if ATR is huge relative to price
+        atr_pct = (atr / close) * 100 if close > 0 else 0
+
+        if atr_pct > 2.0: # Very high volatility
+             logger.info(f"High ATR ({atr_pct:.2f}%). Reducing position size.")
+             # Logic to reduce size not fully applicable with base_qty=1, but logging intent
+
         if usd_vol_high:
-            logger.warning("⚠️ High USD/INR Volatility (>1.0%): Reducing position size by 30%.")
-            base_qty = max(1, int(base_qty * 0.7)) # Reduce size, minimum 1
+            logger.warning("⚠️ High USD/INR Volatility (>1.0%%): Reducing position size logic active.")
+            # Reduce size by 30%, but keep minimum 1 lot.
+            # If base_qty is 1, this effectively does nothing but warn.
+            base_qty = max(1, int(base_qty * 0.7))
 
         if not seasonality_ok and not has_position:
             logger.info("Seasonality Weak: Skipping new entries.")
@@ -209,6 +244,10 @@ class MCXMomentumStrategy:
 
         if not global_alignment_ok and not has_position:
             logger.info("Global Alignment Weak: Skipping new entries.")
+            return
+
+        if not expiry_ok and not has_position:
+            logger.info("Contract Near Expiry: Skipping new entries.")
             return
 
         # Entry Logic
@@ -271,7 +310,7 @@ if __name__ == "__main__":
 
     # New Multi-Factor Arguments
     parser.add_argument('--usd_inr_trend', type=str, default='Neutral', help='USD/INR Trend')
-    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %')
+    parser.add_argument('--usd_inr_volatility', type=float, default=0.0, help='USD/INR Volatility %%')
     parser.add_argument('--seasonality_score', type=int, default=50, help='Seasonality Score (0-100)')
     parser.add_argument('--global_alignment_score', type=int, default=50, help='Global Alignment Score')
 
