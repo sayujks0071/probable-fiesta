@@ -6,6 +6,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+import pandas as pd
 
 # Add project root to path
 current_file = Path(__file__).resolve()
@@ -27,48 +28,52 @@ logging.basicConfig(
 logger = logging.getLogger("GapFadeStrategy")
 
 class GapFadeStrategy:
-    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5):
+    def __init__(self, api_client, symbol="NIFTY", qty=50, gap_threshold=0.5, vix=None):
         self.client = api_client
         self.symbol = symbol
         self.qty = qty
         self.gap_threshold = gap_threshold # Percentage
+        self.vix = vix
         self.pm = PositionManager(f"{symbol}_GapFade")
 
     def execute(self):
         logger.info(f"Starting Gap Fade Check for {self.symbol}")
 
         # 1. Get Previous Close
-        # Using history API for last 2 days
+        # Using history API for last 5 days to ensure we find a close
         today = datetime.now()
-        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d") # Go back enough to get prev day
+        start_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
         end_date = today.strftime("%Y-%m-%d")
 
         # Get daily candles
         df = self.client.history(f"{self.symbol} 50", interval="day", start_date=start_date, end_date=end_date)
 
-        if df.empty or len(df) < 1:
-            logger.error("Could not fetch history for previous close.")
-            return
+        prev_close = 0.0
+        if not df.empty and len(df) >= 1:
+             # Try to find previous day close.
+             # If last row is today, take previous.
+             if pd.to_datetime(df.iloc[-1]['datetime']).date() == today.date():
+                 if len(df) > 1:
+                     prev_close = df.iloc[-2]['close']
+             else:
+                 prev_close = df.iloc[-1]['close']
 
-        # Assuming the last completed row is previous day, or if market just opened, we might have today's open
-        # We need yesterday's close.
-        # If we run this at 9:15, the last row in 'day' history might be yesterday.
-
-        prev_close = df.iloc[-1]['close']
-        # If the last row is today (because market started), check date
-        # This logic depends on how the API returns daily candles during the day.
-        # Let's assume we get prev close from quote 'ohlc' if available.
-
+        # Fallback to quote close if history fails or ambiguous
         quote = self.client.get_quote(f"{self.symbol} 50", "NSE")
         if not quote:
             logger.error("Could not fetch quote.")
+            # For testing/dry-run, maybe use a mock if really needed, but better to fail safe
             return
 
         current_price = float(quote['ltp'])
 
         # Some APIs provide 'close' in quote which is prev_close
-        if 'close' in quote and quote['close'] > 0:
+        if prev_close == 0.0 and 'close' in quote and quote['close'] > 0:
             prev_close = float(quote['close'])
+
+        if prev_close == 0.0:
+            logger.warning("Could not determine previous close. Assuming flat for safety.")
+            prev_close = current_price
 
         logger.info(f"Prev Close: {prev_close}, Current: {current_price}")
 
@@ -104,8 +109,11 @@ class GapFadeStrategy:
         logger.info(f"Signal: Buy {option_type} at {atm} (Gap Fade)")
 
         # 4. Check VIX for Sizing (inherited from general rules)
-        vix_quote = self.client.get_quote("INDIA VIX", "NSE")
-        vix = float(vix_quote['ltp']) if vix_quote else 15
+        if self.vix is not None:
+            vix = self.vix
+        else:
+            vix_quote = self.client.get_quote("INDIA VIX", "NSE")
+            vix = float(vix_quote['ltp']) if vix_quote else 15
 
         qty = self.qty
         if vix > 30:
@@ -123,10 +131,11 @@ def main():
     parser.add_argument("--qty", type=int, default=50, help="Quantity")
     parser.add_argument("--threshold", type=float, default=0.5, help="Gap Threshold %%")
     parser.add_argument("--port", type=int, default=5002, help="Broker API Port")
+    parser.add_argument("--vix", type=float, default=None, help="Force VIX value")
     args = parser.parse_args()
 
     client = APIClient(api_key=os.getenv("OPENALGO_API_KEY"), host=f"http://127.0.0.1:{args.port}")
-    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold)
+    strategy = GapFadeStrategy(client, args.symbol, args.qty, args.threshold, args.vix)
     strategy.execute()
 
 if __name__ == "__main__":
