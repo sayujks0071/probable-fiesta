@@ -142,7 +142,21 @@ class WeeklyAudit:
             content += "\nDetails:\n" + "\n".join(position_details)
 
         self.add_section("📊 PORTFOLIO RISK STATUS:", content)
-        return tracked_symbols
+
+        # Return dict of {symbol: position} instead of just set of symbols
+        tracked_positions = {}
+        if self.state_dir.exists():
+            for state_file in self.state_dir.glob("*_state.json"):
+                try:
+                    with open(state_file, 'r') as f:
+                        data = json.load(f)
+                        pos = data.get('position', 0)
+                        symbol = state_file.stem.replace('_state', '')
+                        if pos != 0:
+                            tracked_positions[symbol] = pos
+                except:
+                    pass
+        return tracked_positions
 
     def get_market_price(self, symbol):
         ticker = self._get_ticker(symbol)
@@ -158,8 +172,9 @@ class WeeklyAudit:
             pass
         return None
 
-    def analyze_correlations(self, tracked_symbols):
+    def analyze_correlations(self, tracked_positions):
         logger.info("Analyzing Correlations...")
+        tracked_symbols = list(tracked_positions.keys())
         if len(tracked_symbols) < 2:
             return
 
@@ -207,8 +222,9 @@ class WeeklyAudit:
         except Exception as e:
             logger.error(f"Correlation analysis failed: {e}")
 
-    def analyze_sector_distribution(self, tracked_symbols):
+    def analyze_sector_distribution(self, tracked_positions):
         logger.info("Analyzing Sector Distribution...")
+        tracked_symbols = list(tracked_positions.keys())
         if not tracked_symbols:
             return
 
@@ -233,8 +249,9 @@ class WeeklyAudit:
 
         self.add_section("🍰 SECTOR DISTRIBUTION:", content)
 
-    def check_data_quality(self, tracked_symbols):
+    def check_data_quality(self, tracked_positions):
         logger.info("Checking Data Quality...")
+        tracked_symbols = list(tracked_positions.keys())
         issues = []
         for sym in tracked_symbols:
             t = self._get_ticker(sym)
@@ -285,14 +302,14 @@ class WeeklyAudit:
         except Exception:
             return "🔴 Error"
 
-    def reconcile_positions(self, tracked_symbols):
+    def reconcile_positions(self, tracked_positions):
         logger.info("Reconciling Positions...")
 
         # Fetch Real Positions
         kite_positions = self.fetch_broker_positions(5001)
         dhan_positions = self.fetch_broker_positions(5002)
 
-        broker_symbols = set()
+        broker_data = {} # {symbol: quantity}
         details = []
 
         if kite_positions is None and dhan_positions is None:
@@ -300,12 +317,19 @@ class WeeklyAudit:
         else:
             if kite_positions:
                 for p in kite_positions:
-                    broker_symbols.add(p.get('symbol', 'UNKNOWN'))
+                    sym = p.get('symbol', 'UNKNOWN')
+                    qty = p.get('quantity', 0)
+                    broker_data[sym] = broker_data.get(sym, 0) + qty
                 details.append(f"Kite: {len(kite_positions)} positions")
             if dhan_positions:
                 for p in dhan_positions:
-                    broker_symbols.add(p.get('symbol', 'UNKNOWN'))
+                    sym = p.get('symbol', 'UNKNOWN')
+                    qty = p.get('quantity', 0)
+                    broker_data[sym] = broker_data.get(sym, 0) + qty
                 details.append(f"Dhan: {len(dhan_positions)} positions")
+
+        broker_symbols = set(broker_data.keys())
+        tracked_symbols = set(tracked_positions.keys())
 
         # Mock Discrepancy (Test hook)
         if (self.root_dir / "mock_discrepancy.json").exists():
@@ -325,6 +349,13 @@ class WeeklyAudit:
                 discrepancies.append(f"Missing in Broker: {', '.join(missing_in_broker)}")
             if orphaned_in_broker:
                 discrepancies.append(f"Orphaned in Broker: {', '.join(orphaned_in_broker)}")
+
+            # Quantity Check
+            for sym in tracked_symbols.intersection(broker_symbols):
+                tracked_qty = tracked_positions[sym]
+                broker_qty = broker_data[sym]
+                if tracked_qty != broker_qty:
+                    discrepancies.append(f"{sym} Qty Mismatch: Tracked {tracked_qty} vs Broker {broker_qty}")
 
         action = "None"
         if discrepancies:
@@ -452,11 +483,11 @@ class WeeklyAudit:
         self.add_section("✅ COMPLIANCE CHECK:", content)
 
     def run(self):
-        tracked_symbols = self.analyze_portfolio_risk()
-        self.analyze_correlations(tracked_symbols)
-        self.analyze_sector_distribution(tracked_symbols)
-        self.check_data_quality(tracked_symbols)
-        self.reconcile_positions(tracked_symbols)
+        tracked_positions = self.analyze_portfolio_risk()
+        self.analyze_correlations(tracked_positions)
+        self.analyze_sector_distribution(tracked_positions)
+        self.check_data_quality(tracked_positions)
+        self.reconcile_positions(tracked_positions)
         self.check_system_health()
         self.detect_market_regime()
         self.check_compliance()
