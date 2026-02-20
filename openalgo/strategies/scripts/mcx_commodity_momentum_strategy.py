@@ -34,6 +34,19 @@ except ImportError:
             PositionManager = None
             is_market_open = lambda: True
 
+try:
+    from risk_manager import RiskManager
+except ImportError:
+    try:
+        sys.path.insert(0, strategies_dir)
+        from utils.risk_manager import RiskManager
+    except ImportError:
+        try:
+            from openalgo.strategies.utils.risk_manager import RiskManager
+        except ImportError:
+            print("Warning: RiskManager not found.")
+            RiskManager = None
+
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("MCX_Momentum")
@@ -47,6 +60,10 @@ class MCXMomentumStrategy:
 
         self.client = APIClient(api_key=self.api_key, host=self.host) if APIClient else None
         self.pm = PositionManager(symbol) if PositionManager else None
+
+        # Initialize Risk Manager
+        self.rm = RiskManager(f"MCX_Momentum_{symbol}", "MCX", 500000) if RiskManager else None # Higher capital for MCX
+
         self.data = pd.DataFrame()
 
         # Log active filters
@@ -192,6 +209,32 @@ class MCXMomentumStrategy:
         if self.pm:
             has_position = self.pm.has_position()
 
+        # Risk Manager Checks (if position exists)
+        if has_position and self.rm:
+            current_price = current['close']
+
+            # Check Stop Loss
+            stop_hit, stop_reason = self.rm.check_stop_loss(self.symbol, current_price)
+            if stop_hit:
+                logger.info(f"{stop_reason}. Closing Position.")
+                qty = abs(self.pm.position)
+                action = 'SELL' if self.pm.position > 0 else 'BUY'
+                self.pm.update_position(qty, current_price, action)
+                self.rm.register_exit(self.symbol, current_price)
+                return
+
+            # Update Trailing Stop
+            self.rm.update_trailing_stop(self.symbol, current_price)
+
+            # EOD Square Off
+            if self.rm.should_square_off_eod():
+                logger.warning("EOD Square-off Triggered.")
+                qty = abs(self.pm.position)
+                action = 'SELL' if self.pm.position > 0 else 'BUY'
+                self.pm.update_position(qty, current_price, action)
+                self.rm.register_exit(self.symbol, current_price)
+                return
+
         # Multi-Factor Checks
         seasonality_ok = self.params.get('seasonality_score', 50) > 40
         global_alignment_ok = self.params.get('global_alignment_score', 50) >= 40
@@ -213,23 +256,35 @@ class MCXMomentumStrategy:
 
         # Entry Logic
         if not has_position:
-            # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
-            if (current['adx'] > self.params['adx_threshold'] and
-                current['rsi'] > 55 and
-                current['close'] > prev['close']):
+            # Check Risk Manager
+            can_trade = True
+            if self.rm:
+                can_trade, reason = self.rm.can_trade()
+                if not can_trade:
+                     logger.warning(f"Trade Blocked by Risk Manager: {reason}")
 
-                logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                if self.pm:
-                    self.pm.update_position(base_qty, current['close'], 'BUY')
+            if can_trade:
+                # BUY Signal: ADX > 25 (Trend Strength), RSI > 50 (Bullish), Price > Prev Close
+                if (current['adx'] > self.params['adx_threshold'] and
+                    current['rsi'] > 55 and
+                    current['close'] > prev['close']):
 
-            # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
-            elif (current['adx'] > self.params['adx_threshold'] and
-                  current['rsi'] < 45 and
-                  current['close'] < prev['close']):
+                    logger.info(f"BUY SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                    if self.pm:
+                        self.pm.update_position(base_qty, current['close'], 'BUY')
+                    if self.rm:
+                        self.rm.register_entry(self.symbol, base_qty, current['close'], 'LONG')
 
-                logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
-                if self.pm:
-                    self.pm.update_position(base_qty, current['close'], 'SELL')
+                # SELL Signal: ADX > 25, RSI < 45, Price < Prev Close
+                elif (current['adx'] > self.params['adx_threshold'] and
+                      current['rsi'] < 45 and
+                      current['close'] < prev['close']):
+
+                    logger.info(f"SELL SIGNAL: Price={current['close']}, RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
+                    if self.pm:
+                        self.pm.update_position(base_qty, current['close'], 'SELL')
+                    if self.rm:
+                        self.rm.register_entry(self.symbol, base_qty, current['close'], 'SHORT')
 
         # Exit Logic
         elif has_position:
@@ -244,10 +299,12 @@ class MCXMomentumStrategy:
                 if current['rsi'] < 45 or current['adx'] < 20:
                      logger.info(f"EXIT LONG: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'SELL')
+                     if self.rm: self.rm.register_exit(self.symbol, current['close'])
             elif pos_qty < 0: # Short
                 if current['rsi'] > 55 or current['adx'] < 20:
                      logger.info(f"EXIT SHORT: Trend Faded. RSI={current['rsi']:.2f}, ADX={current['adx']:.2f}")
                      self.pm.update_position(abs(pos_qty), current['close'], 'BUY')
+                     if self.rm: self.rm.register_exit(self.symbol, current['close'])
 
     def run(self):
         logger.info(f"Starting MCX Momentum Strategy for {self.symbol}")

@@ -36,6 +36,19 @@ except ImportError:
             PositionManager = None
             is_market_open = lambda: True
 
+try:
+    from risk_manager import RiskManager
+except ImportError:
+    try:
+        sys.path.insert(0, strategies_dir)
+        from utils.risk_manager import RiskManager
+    except ImportError:
+        try:
+            from openalgo.strategies.utils.risk_manager import RiskManager
+        except ImportError:
+            print("Warning: RiskManager not found.")
+            RiskManager = None
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 class MLMomentumStrategy:
@@ -45,6 +58,9 @@ class MLMomentumStrategy:
         self.client = APIClient(api_key=api_key, host=self.host)
         self.logger = logging.getLogger(f"MLMomentum_{symbol}")
         self.pm = PositionManager(symbol) if PositionManager else None
+
+        # Initialize Risk Manager
+        self.rm = RiskManager(f"MLMomentum_{symbol}", "NSE", 100000) if RiskManager else None
 
         self.roc_threshold = threshold
         self.stop_pct = stop_pct
@@ -204,14 +220,37 @@ class MLMomentumStrategy:
                     pnl = self.pm.get_pnl(current_price)
                     entry = self.pm.entry_price
 
+                    # Risk Manager Checks (Stop Loss / Trailing Stop)
+                    if self.rm:
+                         stop_hit, stop_reason = self.rm.check_stop_loss(self.symbol, current_price)
+                         if stop_hit:
+                             self.logger.info(f"{stop_reason}. Closing Position.")
+                             self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                             self.rm.register_exit(self.symbol, current_price)
+                             time.sleep(60)
+                             continue
+
+                         # Update Trailing Stop
+                         self.rm.update_trailing_stop(self.symbol, current_price)
+
+                         # EOD Square Off
+                         if self.rm.should_square_off_eod():
+                             self.logger.warning("EOD Square-off Triggered.")
+                             self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                             self.rm.register_exit(self.symbol, current_price)
+                             time.sleep(60)
+                             continue
+
                     if (self.pm.position > 0 and current_price < entry * (1 - self.stop_pct/100)):
                         self.logger.info(f"Stop Loss Hit. PnL: {pnl}")
                         self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                        if self.rm: self.rm.register_exit(self.symbol, current_price)
 
                     # Exit if Momentum Fades (RSI < 50)
                     elif (self.pm.position > 0 and last['rsi'] < 50):
                          self.logger.info(f"Momentum Faded (RSI < 50). Exit. PnL: {pnl}")
                          self.pm.update_position(abs(self.pm.position), current_price, 'SELL')
+                         if self.rm: self.rm.register_exit(self.symbol, current_price)
 
                     time.sleep(60)
                     continue
@@ -231,11 +270,21 @@ class MLMomentumStrategy:
                     current_price > last['sma50'] and
                     sentiment >= 0):
 
-                    # Volume check
-                    avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-                    if last['volume'] > avg_vol * 0.5: # At least decent volume
-                        self.logger.info(f"Strong Momentum Signal (ROC: {last['roc']:.3f}, RS: {rs_excess:.3f}). BUY.")
-                        self.pm.update_position(100, current_price, 'BUY')
+                    # Risk Check
+                    can_trade = True
+                    if self.rm:
+                        can_trade, reason = self.rm.can_trade()
+                        if not can_trade:
+                            self.logger.warning(f"Trade Blocked by Risk Manager: {reason}")
+
+                    if can_trade:
+                        # Volume check
+                        avg_vol = df['volume'].rolling(20).mean().iloc[-1]
+                        if last['volume'] > avg_vol * 0.5: # At least decent volume
+                            self.logger.info(f"Strong Momentum Signal (ROC: {last['roc']:.3f}, RS: {rs_excess:.3f}). BUY.")
+                            qty = 100
+                            self.pm.update_position(qty, current_price, 'BUY')
+                            if self.rm: self.rm.register_entry(self.symbol, qty, current_price, 'LONG')
 
             except Exception as e:
                 self.logger.error(f"Error in ML Momentum strategy for {self.symbol}: {e}", exc_info=True)
